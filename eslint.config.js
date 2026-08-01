@@ -2,11 +2,20 @@ import js from '@eslint/js';
 import ts from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
 import vueParser from 'vue-eslint-parser';
+import eslintConfigPrettier from 'eslint-config-prettier';
 
 export default [
   js.configs.recommended,
+  eslintConfigPrettier,
   {
-    ignores: ['dist/', 'node_modules/', 'src/shared/*.js', 'src/content/*.js', 'src/service-worker/*.js', 'src/offscreen/*.js', 'src/lib/*', 'src/sidepanel/**/*.js', 'vite.config.ts'],
+    // Ignore generated files, type declarations, and test files
+    ignores: [
+      'dist/',
+      'node_modules/',
+      '**/*.d.ts',
+      '**/*.js',  // Ignore all JS files (Chrome extension internal code)
+      'vite.config.ts',
+    ],
   },
   {
     files: ['**/*.vue'],
@@ -37,14 +46,17 @@ export default [
         trustedTypes: 'readonly',
         FormData: 'readonly',
         confirm: 'readonly',
+        Event: 'readonly',
+        KeyboardEvent: 'readonly',
         HTMLDivElement: 'readonly',
+        HTMLInputElement: 'readonly',
+        HTMLElement: 'readonly',
+        ClipboardItem: 'readonly',
+        MutationObserver: 'readonly',
       },
     },
     plugins: {
       '@typescript-eslint': ts,
-      vue: {
-        rules: {},
-      },
     },
     rules: {
       'no-console': 'warn',
@@ -79,6 +91,10 @@ export default [
         FormData: 'readonly',
         confirm: 'readonly',
         HTMLDivElement: 'readonly',
+        HTMLInputElement: 'readonly',
+        HTMLElement: 'readonly',
+        ClipboardItem: 'readonly',
+        MutationObserver: 'readonly',
       },
     },
     plugins: {

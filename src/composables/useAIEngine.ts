@@ -835,7 +835,7 @@ export function useAIEngine() {
     }
   }
 
-  function formatStepSummary(result: ExecutionResult, toolName: string): string {
+  function formatStepSummary(result: ExecutionResult, _toolName: string): string {
     const r = result as Record<string, unknown>;
     if (r.code === 'NEEDS_CONFIRM') return `⚠️ ${r.message}`;
     if (r.code) return `[${r.code}] ${r.message || '操作失败'}`;
