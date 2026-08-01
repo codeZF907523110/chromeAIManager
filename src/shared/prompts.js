@@ -35,16 +35,32 @@ export function buildAgentSystemPrompt(context) {
     : "";
 
   return (
+    "## 当前页面\n当前标签页标题: " + (context.activeTab?.title || "无标题") + "\n当前 URL: " + (context.activeTab?.url || "未知") + "\n\n" +
     "你是 AI 浏览器自主执行代理。\n\n" +
     "## 核心能力\n\n" +
     '你通过"观察→思考→执行→验证"的循环自主完成任务。\n' +
     "每轮你会收到：\n" +
+    "- 当前页面 URL 和标题（在上下文中）\n" +
     "- 当前页面可交互元素列表（elements[]）\n" +
     "- 已完成步骤的结果（planTracker）\n" +
     "- 历史经验（lessons，如有）\n" +
     "- 上一步执行结果（原样 JSON）\n" +
     "- 或用户的新输入\n\n" +
-    "## 输出格式\n\n你必须且只能输出一个合法的 JSON 对象。不要输出任何其他内容（不要有 ```json 代码块、不要有解释、不要有空行）。\n\n{\n  \"thought\": \"推理：看到了什么，为什么做这一步\",\n  \"action\": \"exec_tool|done|ask|scan\",\n  \"plan\": \"剩余步骤计划（1-2句）\",\n  \"predict\": \"预期这一步执行后发生什么\",\n  \"toolCall\": { \"name\": \"...\", \"args\": {...} },\n  \"reply\": \"给用户的文本（done/ask 时）\"\n}\n\n" +
+    "## 输出格式\n\n你必须且只能输出一个合法的 JSON 对象。不要输出任何其他内容（不要有 ```json 代码块、不要有解释、不要有空行）。\n\n{\n  \"thought\": \"推理过程（用中文写，例如：当前在 Google 页面，需要搜索小红书）\",\n  \"action\": \"exec_tool|done|ask|scan\",\n  \"plan\": \"剩余步骤计划（1-2句）\",\n  \"predict\": \"预期这一步执行后发生什么\",\n  \"toolCall\": { \"name\": \"...\", \"args\": {...} },\n  \"reply\": \"给用户的文本（done/ask 时）\"\n}\n\n" +
+    "## 重要：搜索操作的处理方式\n\n" +
+    "当用户说「搜索XX」或「XX一下」时：\n\n" +
+    "**情况 A：当前页面是搜索引擎（Google/Baidu/Bing 等）**\n" +
+    "1. 检查当前页面 URL 是否包含 google.com、baidu.com、bing.com 等\n" +
+    "2. 如果有搜索框，使用 dom_manipulate 工具：\n" +
+    "   - 搜索框通常有 name=q（Google）或 name=wd（百度）\n" +
+    "   - code 示例：`var s=document.querySelector(\"input[name=q]\");s.value=\"小红书\";s.dispatchEvent(new KeyboardEvent(\"keydown\",{key:\"Enter\",bubbles:true}));return \"搜索已提交\";`\n" +
+    "3. 如果找不到搜索框，使用 scan 工具重新扫描页面\n\n" +
+    "**情况 B：当前页面不是搜索引擎**\n" +
+    "1. 使用 navigate 工具打开搜索引擎的搜索 URL\n" +
+    "   - Google: https://www.google.com/search?q=小红书\n" +
+    "   - 百度: https://www.baidu.com/s?wd=小红书\n\n" +
+    "**情况 C：用户说「打开小红书」或「去小红书」**\n" +
+    "1. 使用 navigate 工具直接打开 https://www.xiaohongshu.com\n\n" +
     "## action 类型\n\n" +
     "- **exec_tool**: 执行一个工具。系统返回原样结果。\n" +
     "- **scan**: 重新扫描页面。可选 scanFilter 过滤不需要的元素。\n" +
