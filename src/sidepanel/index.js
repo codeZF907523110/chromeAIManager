@@ -348,7 +348,10 @@ class SidePanel {
       // chat
       if (json.action === "chat") {
         this.renderAIChat(json.toolCall?.args?.reply || json.reply || "");
-        this._cleanup();
+        messages.push({ role: "assistant", content: raw });
+        this._conversationMessages = [...messages];
+        this._activeLoopId = null;
+        this._persistPlanTracker();
         return;
       }
 
