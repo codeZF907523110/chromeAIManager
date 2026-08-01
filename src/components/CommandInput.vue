@@ -57,7 +57,7 @@ const inputValue = computed({
   set: (val) => emit('update:modelValue', val),
 });
 
-const inputRef = ref<HTMLInputElement>();
+const inputRef = ref<HTMLInputElement | null>(null);
 const showPalette = ref(false);
 const paletteIndex = ref(0);
 

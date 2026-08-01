@@ -123,7 +123,7 @@ onMounted(async () => {
   const raw = sessionStorage.getItem('ai_message_log');
   if (raw) {
     try {
-      const logs = JSON.parse(raw);
+      JSON.parse(raw);
       // 消息会在 MessageList 中自动渲染
     } catch {
       // ignore
