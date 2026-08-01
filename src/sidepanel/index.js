@@ -302,10 +302,10 @@ class SidePanel {
           if (jsonRetryCount >= 2) {
             // AI 无法理解用户意图，提示用户换一种说法
             this.renderError({
-              message: "抱歉，我不太理解您的请求。请尝试用更具体的方式描述，例如：\n" +
-                       "• 如果要搜索：请说明在哪个网站搜索，如「在 Google 搜索小红书」\n" +
-                       "• 如果要操作页面：请明确指出要点击或输入的内容\n" +
-                       "• 如果是闲聊：请直接说，如「你好」「帮我解释XX」",
+              message: "抱歉，我不太理解您的请求。请尝试用更完整、更具体的方式描述：\n" +
+                       "• 明确说明要执行的操作和对象\n" +
+                       "• 说明当前页面的上下文（如「在搜索页面上查找XX」）\n" +
+                       "• 避免模糊表达，直接指出要做什么",
             });
             console.error("[AI Commander] AI failed to understand, raw response:", raw);
             console.error("[AI Commander] Response length:", raw?.length);
