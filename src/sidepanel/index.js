@@ -253,7 +253,6 @@ class SidePanel {
     let stepCount = 0;
     let consecutiveErrors = 0;
     let jsonRetryCount = 0;
-    const MAX_JSON_RETRIES = 3;
 
     this.renderSystemMessage("思考中...");
 
@@ -299,15 +298,18 @@ class SidePanel {
         }
         if (!json || !json.action) {
           jsonRetryCount++;
-          if (jsonRetryCount >= MAX_JSON_RETRIES) {
+          if (jsonRetryCount >= 2) {
+            // AI 无法理解用户意图，提示用户换一种说法
             this.renderError({
-              message: `AI 连续 ${MAX_JSON_RETRIES} 次返回格式异常，任务已停止。请重试或换一种说法。`,
+              message: "抱歉，我不太理解您的请求。请尝试用更具体的方式描述，例如：\n" +
+                       "• 如果要搜索：请说明在哪个网站搜索，如「在 Google 搜索小红书」\n" +
+                       "• 如果要操作页面：请明确指出要点击或输入的内容\n" +
+                       "• 如果是闲聊：请直接说，如「你好」「帮我解释XX」",
             });
-            console.error("[AI Commander] JSON parse failed after retries, raw:", raw);
+            console.error("[AI Commander] AI failed to understand, raw response:", raw);
             this._cleanup();
             return;
           }
-          this.renderSystemMessage(`⚠️ AI 返回格式异常（第 ${jsonRetryCount}/${MAX_JSON_RETRIES} 次），将重试...`);
           messages.push({ role: "assistant", content: raw });
           messages.push({ role: "user", content: "请重新输出，严格按照 JSON 格式，只输出 JSON 对象，不要有其他内容。" });
           continue;
