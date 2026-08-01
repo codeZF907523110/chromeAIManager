@@ -301,15 +301,13 @@ class SidePanel {
           jsonRetryCount++;
           if (jsonRetryCount >= 2) {
             // AI 无法理解用户意图，提示用户换一种说法
+            // 显示 AI 实际返回的内容（前200字符），帮助诊断问题
+            const rawPreview = raw ? raw.slice(0, 200) + (raw.length > 200 ? '...' : '') : '(空响应)';
             this.renderError({
-              message: "抱歉，我不太理解您的请求。请尝试用更完整、更具体的方式描述：\n" +
-                       "• 明确说明要执行的操作和对象\n" +
-                       "• 说明当前页面的上下文（如「在搜索页面上查找XX」）\n" +
-                       "• 避免模糊表达，直接指出要做什么",
+              message: "抱歉，我不太理解您的请求。请尝试用更完整、更具体的方式描述。\n\n" +
+                       "AI 返回的内容（前200字符）：" + rawPreview,
             });
             console.error("[AI Commander] AI failed to understand, raw response:", raw);
-            console.error("[AI Commander] Response length:", raw?.length);
-            console.error("[AI Commander] First 500 chars:", raw?.slice(0, 500));
             this._cleanup();
             return;
           }
