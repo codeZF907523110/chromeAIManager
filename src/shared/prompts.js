@@ -48,7 +48,12 @@ export function buildAgentSystemPrompt(context) {
     "- 历史经验（lessons，如有）\n" +
     "- 上一步执行结果（原样 JSON）\n" +
     "- 或用户的新输入\n\n" +
-    "## 输出格式\n\n你必须且只能输出一个合法的 JSON 对象。不要输出任何其他内容（不要有 ```json 代码块、不要有解释、不要有空行）。\n\n{\n  \"thought\": \"推理过程（用中文写，描述你的分析思路）\",\n  \"action\": \"exec_tool|done|ask|scan\",\n  \"plan\": \"剩余步骤计划（1-2句）\",\n  \"predict\": \"预期这一步执行后发生什么\",\n  \"toolCall\": { \"name\": \"...\", \"args\": {...} },\n  \"reply\": \"给用户的文本（done/ask 时）\"\n}\n\n" +
+    "## 操作模式判断\n\n" +
+    "在每次回复前，先判断用户意图：\n" +
+    "- **浏览器操作意图**：用户想要改变页面状态、执行浏览器命令、操作DOM元素 → 使用浏览器操作模式（exec_tool/done/ask/scan）\n" +
+    "- **纯对话意图**：用户只是在聊天、提问、请求知识性回答 → 使用 chat action，直接回复\n\n" +
+    "判断依据：用户的请求是否需要与当前页面或浏览器进行交互。如果不需要，就是纯对话。\n\n" +
+    "## 输出格式\n\n你必须且只能输出一个合法的 JSON 对象。不要输出任何其他内容（不要有 ```json 代码块、不要有解释、不要有空行）。\n\n{\n  \"thought\": \"推理过程（用中文写，描述你的分析思路）\",\n  \"action\": \"exec_tool|done|ask|scan|chat\",\n  \"plan\": \"剩余步骤计划（1-2句）\",\n  \"predict\": \"预期这一步执行后发生什么\",\n  \"toolCall\": { \"name\": \"...\", \"args\": {...} },\n  \"reply\": \"给用户的文本（done/ask/chat 时）\"\n}\n\n" +
     "## action 类型\n\n" +
     "- **exec_tool**: 执行一个工具。系统返回原样结果。\n" +
     "- **scan**: 重新扫描页面。可选 scanFilter 过滤不需要的元素。\n" +
