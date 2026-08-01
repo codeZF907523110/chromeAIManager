@@ -23,7 +23,6 @@ export default defineConfig({
       },
     },
   },
-  // Chrome 扩展需要这些 MIME 类型
   optimizeDeps: {
     exclude: ['vue'],
   },

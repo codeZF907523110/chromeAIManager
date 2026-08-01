@@ -34,7 +34,7 @@
     "default_title": "AI 浏览器管家 — Ctrl+Shift+U"
   },
   "side_panel": {
-    "default_path": "src/sidepanel/index.html"
+    "default_path": "dist/src/sidepanel/index.html"
   },
   "background": {
     "service_worker": "src/service-worker/index.js",
@@ -62,12 +62,14 @@
   },
   "web_accessible_resources": [{
     "resources": [
-      "src/sidepanel/*",
-      "src/sidepanel/ai/*",
-      "src/sidepanel/command/*",
-      "src/shared/*",
+      "dist/src/sidepanel/*",
+      "dist/src/sidepanel/ai/*",
+      "dist/src/sidepanel/command/*",
+      "dist/src/shared/*",
       "src/offscreen/*",
-      "src/lib/*"
+      "src/lib/*",
+      "src/content/*",
+      "src/service-worker/*"
     ],
     "matches": ["<all_urls>"]
   }]
