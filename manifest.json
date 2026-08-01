@@ -1,0 +1,74 @@
+{
+  "manifest_version": 3,
+  "name": "AI Browser Commander",
+  "version": "0.1.0",
+  "description": "键盘驱动的 AI 浏览器命令中心。用自然语言管理标签、书签和浏览会话。",
+  "minimum_chrome_version": "125",
+  "permissions": [
+    "tabs",
+    "bookmarks",
+    "sessions",
+    "history",
+    "storage",
+    "tabGroups",
+    "scripting",
+    "activeTab",
+    "browsingData",
+    "fontSettings",
+    "cookies",
+    "topSites",
+    "management",
+    "contentSettings",
+    "privacy",
+    "tabCapture",
+    "desktopCapture",
+    "notifications",
+    "downloads",
+    "offscreen",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "AI 浏览器管家 — Ctrl+Shift+U"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "background": {
+    "service_worker": "src/service-worker/index.js",
+    "type": "module"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["src/content/dom-commander.js"],
+    "run_at": "document_idle"
+  }],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
+      "description": "打开 AI 命令面板"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "web_accessible_resources": [{
+    "resources": [
+      "src/sidepanel/*",
+      "src/sidepanel/ai/*",
+      "src/sidepanel/command/*",
+      "src/shared/*",
+      "src/offscreen/*",
+      "src/lib/*"
+    ],
+    "matches": ["<all_urls>"]
+  }]
+}

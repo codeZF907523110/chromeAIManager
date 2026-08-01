@@ -1,0 +1,36 @@
+/** 容错 JSON 解析：处理 AI 输出常见格式问题 */
+export function repairJSON(raw) {
+  if (!raw || typeof raw !== 'string') {
+    throw new Error('输入不是字符串');
+  }
+
+  let text = raw.trim();
+
+  // 0. 检查是否为空
+  if (!text) {
+    throw new Error('JSON 字符串为空');
+  }
+
+  // 1. 移除 markdown 代码块
+  text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?\s*```$/i, '');
+
+  // 2. 直接解析
+  try { return JSON.parse(text); } catch (_) {}
+
+  // 3. 提取花括号内容
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start !== -1 && end > start) text = text.slice(start, end + 1);
+
+  // 4. 修复常见问题
+  // 4.1 修复尾部逗号
+  text = text.replace(/,(\s*[}\]])/g, '$1');
+  // 4.2 单引号转双引号
+  text = text.replace(/'/g, '"');
+  // 4.3 修复 unquoted keys（可选）
+  text = text.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":');
+
+  try { return JSON.parse(text); } catch (e) {
+    throw new Error('JSON 解析失败: ' + e.message);
+  }
+}
