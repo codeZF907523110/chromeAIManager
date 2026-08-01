@@ -345,6 +345,13 @@ class SidePanel {
         continue;
       }
 
+      // chat
+      if (json.action === "chat") {
+        this.renderAIChat(json.toolCall?.args?.reply || json.reply || "");
+        this._cleanup();
+        return;
+      }
+
       // exec_tool
       if (json.action !== "exec_tool" || !json.toolCall) {
         // 兼容旧格式 exec + command
