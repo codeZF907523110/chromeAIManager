@@ -274,6 +274,7 @@ class SidePanel {
           temperature: 0.2,
           maxTokens: 4096,
         });
+        console.log("[AI Commander] Raw response (first 500 chars):", raw?.slice(0, 500));
       } catch (e) {
         this.messageContainer.lastChild?.remove();
         this.renderError({ message: `AI 调用失败: ${e.message}` });
@@ -307,9 +308,12 @@ class SidePanel {
                        "• 如果是闲聊：请直接说，如「你好」「帮我解释XX」",
             });
             console.error("[AI Commander] AI failed to understand, raw response:", raw);
+            console.error("[AI Commander] Response length:", raw?.length);
+            console.error("[AI Commander] First 500 chars:", raw?.slice(0, 500));
             this._cleanup();
             return;
           }
+          console.warn("[AI Commander] JSON parse failed, retry", jsonRetryCount, "raw:", raw?.slice(0, 200));
           messages.push({ role: "assistant", content: raw });
           messages.push({ role: "user", content: "请重新输出，严格按照 JSON 格式，只输出 JSON 对象，不要有其他内容。" });
           continue;
