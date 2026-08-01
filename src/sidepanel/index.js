@@ -8,7 +8,6 @@ import {
   MSG_GET_BOOKMARKS,
   MSG_EXECUTE,
   MSG_SET_DISPLAY_MODE,
-  MSG_GET_DISPLAY_MODE,
   MAX_AGENT_STEPS,
   STEP_TIMEOUT_MS,
   TOTAL_TASK_TIMEOUT_MS,
@@ -1263,7 +1262,6 @@ class SidePanel {
     }
     // 处理结构化错误格式
     if (response.success === false && response.code) {
-      const errMsg = `[${response.code}] ${response.message || "操作失败"}`;
       this.renderError({ code: response.code, message: response.message });
       return;
     }
