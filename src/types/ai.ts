@@ -12,6 +12,7 @@ export interface ChatMessage {
 export interface MessageLog {
   type: 'user' | 'system' | 'ai' | 'ai-chat' | 'error'
   text: string
+  image?: string // base64 data URL for screenshots
 }
 
 // ──── AI 响应类型 ────

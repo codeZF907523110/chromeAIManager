@@ -1,5 +1,8 @@
 <template>
-  <div class="bubble" :class="`bubble-${msg.type}`" v-html="processedText"></div>
+  <div class="bubble" :class="`bubble-${msg.type}`">
+    <div v-html="processedText"></div>
+    <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -195,5 +198,12 @@ function escapeHtml(text: string): string {
 
 .bubble :deep(th) {
   background: rgba(0, 0, 0, 0.2);
+}
+
+.screenshot-img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin-top: 8px;
+  display: block;
 }
 </style>

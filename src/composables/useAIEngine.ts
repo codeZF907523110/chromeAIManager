@@ -242,8 +242,7 @@ export function useAIEngine() {
       jsonRetryCount = 0
 
       if (json.action === 'done') {
-        addMessage('ai-chat', json.reply || json.content || '操作完成')
-        cleanup()
+        emitAIChat(json.reply || json.content || '操作完成', true)
         return
       }
 
@@ -252,7 +251,7 @@ export function useAIEngine() {
         conversationMessages.value = [...messages]
         activeLoopId.value = null
         persistPlanTracker()
-        addMessage('ai-chat', json.reply || json.content || '请提供更多信息')
+        emitAIChat(json.reply || json.content || '请提供更多信息', false)
         return
       }
 
@@ -269,7 +268,7 @@ export function useAIEngine() {
 
       if (json.action === 'chat') {
         const reply = (json.toolCall?.args?.reply as string) || json.reply || ''
-        addMessage('ai-chat', reply)
+        emitAIChat(reply, false)
         messages.push({ role: 'assistant', content: raw })
         conversationMessages.value = [...messages]
         activeLoopId.value = null
@@ -292,8 +291,7 @@ export function useAIEngine() {
       const toolName = toolCall.name
 
       if (toolName === 'chat') {
-        addMessage('ai-chat', (toolCall.args?.reply as string) || '')
-        cleanup()
+        emitAIChat((toolCall.args?.reply as string) || '', true)
         return
       }
 
@@ -396,8 +394,7 @@ export function useAIEngine() {
       addMessage('system', '思考中...')
     }
 
-    addMessage('ai-chat', '已达到最大执行步数。任务可能未完成，请继续告诉我下一步。')
-    cleanup()
+    emitAIChat('已达到最大执行步数。任务可能未完成，请继续告诉我下一步。', true)
   }
 
   // ──── 命令处理 ────
@@ -742,8 +739,8 @@ export function useAIEngine() {
 
   // ──── 辅助函数 ────
 
-  function addMessage(type: MessageLog['type'], text: string): void {
-    messageLog.value.push({ type, text })
+  function addMessage(type: MessageLog['type'], text: string, image?: string): void {
+    messageLog.value.push({ type, text, image })
     if (isInitialized.value) {
       persistMessages()
     }
@@ -943,8 +940,15 @@ export function useAIEngine() {
       return
     }
 
-    let text = '操作完成'
     const r = result as Record<string, unknown>
+
+    // 截图：显示图片并自动复制到剪贴板
+    if (r.screenshot && typeof r.screenshot === 'string') {
+      showScreenshot(r.screenshot, r.tabTitle as string | undefined)
+      return
+    }
+
+    let text = '操作完成'
 
     if (intent === 'sort_tabs' && r.moved) text = `已按域名排序 ${r.moved} 个标签`
     else if (intent === 'pin_tab') {
@@ -963,6 +967,42 @@ export function useAIEngine() {
     else if (r.message && typeof r.message === 'string') text = r.message
 
     addMessage('ai-chat', text)
+  }
+
+  /**
+   * 显示截图并复制到剪贴板（供 slash command 路径使用）
+   */
+  function showScreenshot(dataUrl: string, tabTitle?: string) {
+    addMessage('ai-chat', `[截图: ${tabTitle || '页面'}]`, dataUrl)
+    copyScreenshotToClipboard(dataUrl)
+  }
+
+  /**
+   * 发送 AI 对话消息，自动附带待处理的截图。
+   * 保证文字和截图在同一个气泡中显示。
+   */
+  function emitAIChat(text: string, doCleanup: boolean) {
+    const image = lastScreenshot.value
+    if (image) {
+      copyScreenshotToClipboard(image)
+      lastScreenshot.value = null
+    }
+    addMessage('ai-chat', text, image || undefined)
+    if (doCleanup) cleanup()
+  }
+
+  /**
+   * 将 data URL 截图复制到剪贴板
+   */
+  async function copyScreenshotToClipboard(dataUrl: string) {
+    try {
+      const response = await fetch(dataUrl)
+      const blob = await response.blob()
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })])
+      console.log('[AI管家] 截图已复制到剪贴板')
+    } catch (err) {
+      console.warn('[AI管家] 复制截图失败:', err)
+    }
   }
 
   function mdToHtml(text: string): string {
