@@ -1,211 +1,178 @@
 <template>
-  <div class="command-wrapper">
-    <div class="command-input-row">
-      <span class="command-prefix">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-        </svg>
-      </span>
-      <input
-        ref="inputRef"
-        v-model="inputValue"
-        type="text"
-        placeholder="输入命令或 /help 查看帮助..."
-        autofocus
-        @input="onInput"
-        @keydown="onKeydown"
-      />
-      <button class="submit-btn" title="发送" @click="handleSubmit">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="22" y1="2" x2="11" y2="13"/>
-          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-        </svg>
-      </button>
-    </div>
-    <div v-if="showPalette" class="command-palette">
-      <div
-        v-for="(cmd, index) in filteredCommands"
-        :key="cmd.slash"
-        class="palette-item"
-        :class="{ active: index === paletteIndex }"
-        @click="selectCommand(cmd)"
-      >
-        <span class="palette-cmd">
-          /{{ cmd.slash }}{{ cmd.hasArg ? ' <' + (cmd.placeholder || '') + '>' : '' }}
-        </span>
-        <span class="palette-desc">{{ cmd.description }}</span>
-      </div>
-    </div>
+  <div class="command-area">
+    <el-autocomplete
+      ref="inputRef"
+      v-model="inputValue"
+      :fetch-suggestions="querySearch"
+      :trigger-on-focus="false"
+      placeholder="输入命令或 / 查看帮助..."
+      class="command-input"
+      @select="handleSelect"
+      @keydown.enter="handleEnter"
+    >
+      <template #prefix>
+        <Send :size="16" class="input-icon" />
+      </template>
+      <template #default="{ item }">
+        <div class="cmd-item">
+          <span class="cmd-slash">/{{ item.slash }}</span>
+          <span class="cmd-desc">{{ item.description }}</span>
+        </div>
+      </template>
+    </el-autocomplete>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
-import { SLASH_COMMANDS } from '../sidepanel/command/slash-commands.js';
+import { ref, computed, onMounted } from 'vue'
+import { Send } from 'lucide-vue-next'
+import { SLASH_COMMANDS } from '../sidepanel/command/slash-commands'
+import type { SlashCommand } from '../types'
+
+interface CommandSuggestion {
+  value: string
+  slash: string
+  description: string
+  command: SlashCommand
+}
 
 const props = defineProps<{
-  modelValue: string;
-}>();
+  modelValue: string
+}>()
 
 const emit = defineEmits<{
-  (e: 'update:modelValue', value: string): void;
-  (e: 'submit'): void;
-}>();
+  (e: 'update:modelValue', value: string): void
+  (e: 'submit'): void
+}>()
 
 const inputValue = computed({
   get: () => props.modelValue,
-  set: (val) => emit('update:modelValue', val),
-});
+  set: (val: string) => emit('update:modelValue', val),
+})
 
-const inputRef = ref<HTMLInputElement | null>(null);
-const showPalette = ref(false);
-const paletteIndex = ref(0);
+const inputRef = ref<{ focus: () => void }>()
 
 const filteredCommands = computed(() => {
-  if (!inputValue.value.startsWith('/')) return [];
-  const query = inputValue.value.slice(1).toLowerCase();
+  if (!inputValue.value.startsWith('/')) return []
+  const query = inputValue.value.slice(1).toLowerCase()
   return SLASH_COMMANDS.filter(
-    (c) =>
-      c.slash.includes(query) ||
-      (c.aliases || []).some((a) => a.includes(query)),
-  );
-});
+    (c) => c.slash.includes(query) || (c.aliases || []).some((a) => a.includes(query))
+  )
+})
 
-function onInput() {
-  if (inputValue.value.startsWith('/')) {
-    showPalette.value = filteredCommands.value.length > 0;
+function querySearch(query: string, cb: (results: CommandSuggestion[]) => void) {
+  if (query.startsWith('/')) {
+    const results = filteredCommands.value.map((cmd) => ({
+      value: '/' + cmd.slash + (cmd.hasArg ? ' ' : ''),
+      slash: cmd.slash,
+      description: cmd.description,
+      command: cmd,
+    }))
+    cb(results)
   } else {
-    showPalette.value = false;
+    cb([])
   }
 }
 
-function onKeydown(e: KeyboardEvent) {
-  if (showPalette.value && filteredCommands.value.length > 0) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      paletteIndex.value = Math.min(paletteIndex.value + 1, filteredCommands.value.length - 1);
-      return;
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      paletteIndex.value = Math.max(paletteIndex.value - 1, 0);
-      return;
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      showPalette.value = false;
-      return;
-    }
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      selectCommand(filteredCommands.value[paletteIndex.value]);
-      return;
-    }
-  }
-
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    handleSubmit();
-  }
+function handleSelect(item: CommandSuggestion) {
+  inputValue.value = item.value
+  inputRef.value?.focus()
 }
 
-function selectCommand(cmd: (typeof SLASH_COMMANDS)[0]) {
-  inputValue.value = '/' + cmd.slash + (cmd.hasArg ? ' ' : '');
-  showPalette.value = false;
-  inputRef.value?.focus();
-}
-
-function handleSubmit() {
+function handleEnter() {
   if (inputValue.value.trim()) {
-    emit('submit');
-    inputValue.value = '';
+    emit('submit')
+    inputValue.value = ''
   }
 }
 
-// 点击外部关闭下拉框
-document.addEventListener('click', (e) => {
-  if (!(e.target as HTMLElement).closest('.command-wrapper')) {
-    showPalette.value = false;
-  }
-});
+onMounted(() => {
+  inputRef.value?.focus()
+})
 </script>
 
+<style>
+.el-autocomplete__popper {
+  background-color: rgb(0, 0, 0, 8) !important;
+}
+.el-autocomplete__popper li:hover {
+  background-color: rgba(100, 100, 100, 8) !important;
+}
+</style>
+
 <style scoped>
-.command-wrapper {
-  position: relative;
+.command-area {
+  padding: 12px 16px 16px;
+  background: rgba(10, 10, 10, 0.9);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
 }
 
-.command-input-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: #fff;
-  border-top: 1px solid #e0e0e0;
+.command-input {
+  width: 100%;
 }
 
-.command-prefix {
+.input-icon {
   color: #666;
 }
 
-.command-input-row input {
-  flex: 1;
-  border: none;
-  outline: none;
+:deep(.el-input__wrapper) {
+  background-color: rgba(255, 255, 255, 0.05);
+  box-shadow: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 0 12px;
+}
+
+:deep(.el-input__wrapper:hover) {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+:deep(.el-input__wrapper.is-focus) {
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.05);
+}
+
+:deep(.el-input__inner) {
+  color: #f0f0f0;
   font-size: 14px;
 }
 
-.submit-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: #666;
-  padding: 4px;
+:deep(.el-input__inner::placeholder) {
+  color: #555;
 }
 
-.submit-btn:hover {
-  color: #1976d2;
-}
-
-.command-palette {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
-  background: #fff;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  max-height: 300px;
-  overflow-y: auto;
-  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
-  z-index: 100;
-}
-
-.palette-item {
+.cmd-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 10px 16px;
-  cursor: pointer;
-  border-bottom: 1px solid #f5f5f5;
+  gap: 12px;
 }
 
-.palette-item:last-child {
-  border-bottom: none;
-}
-
-.palette-item:hover,
-.palette-item.active {
-  background: #f5f5f5;
-}
-
-.palette-cmd {
+.cmd-slash {
   font-weight: 500;
-  color: #1976d2;
+  color: #fff;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  white-space: nowrap;
 }
 
-.palette-desc {
+.cmd-desc {
   font-size: 12px;
-  color: #666;
+  color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.el-autocomplete-suggestion__list) {
+  padding: 4px 0;
+}
+
+:deep(.el-autocomplete-suggestion__item) {
+  padding: 8px 12px;
+}
+
+:deep(.el-autocomplete-suggestion__item.hover),
+:deep(.el-autocomplete-suggestion__item:hover) {
+  background-color: rgba(255, 255, 255, 0.05);
 }
 </style>

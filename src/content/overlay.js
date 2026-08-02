@@ -52,7 +52,7 @@
 
   // iframe 加载扩展页面
   const iframe = document.createElement("iframe");
-  iframe.src = chrome.runtime.getURL("src/sidepanel/index.html");
+  iframe.src = chrome.runtime.getURL("sidepanel.html");
   Object.assign(iframe.style, {
     width: "100%",
     height: "100%",

@@ -1,135 +1,384 @@
 <template>
   <div class="app">
+    <!-- 粒子背景 -->
+    <ParticleCanvas />
+
     <!-- 标题栏 -->
     <header class="header">
-      <span class="header-brand">
+      <div class="header-brand">
         <span class="header-icon">◆</span>
         <span class="header-title">AI 浏览器管家</span>
-      </span>
+      </div>
       <div class="header-actions">
-        <button class="header-btn" title="设置" @click="toggleSettings">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
-        <button
-          class="header-btn mode-btn"
-          :class="{ active: state.displayMode === 'sidepanel' }"
-          title="侧边栏模式"
-          @click="switchMode('sidepanel')"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="15" y1="3" x2="15" y2="21"/>
-          </svg>
-        </button>
-        <button
-          class="header-btn mode-btn"
-          :class="{ active: state.displayMode === 'popup' }"
-          title="弹窗模式"
-          @click="switchMode('popup')"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <circle cx="8.5" cy="8.5" r="1.5"/>
-            <polyline points="8.5 12 12 15.5 16.5 11"/>
-          </svg>
-        </button>
+        <!-- 模型选择 -->
+        <el-dropdown trigger="click" @command="handleSelectModel" :show-arrow="false">
+          <el-button text>
+            {{ activeModelName }}
+            <ChevronDown :size="14" />
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu v-if="models.length > 0">
+              <el-dropdown-item
+                v-for="model in models"
+                :key="model.id"
+                :command="model.id"
+                :disabled="model.id === activeModelId"
+              >
+                {{ model.name }}
+                <el-tag v-if="model.isDefault" size="small" class="ml-2">默认</el-tag>
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+
+        <el-button text @click="toggleSettings">
+          <Settings :size="16" />
+        </el-button>
+
+        <el-button text @click="switchMode('sidepanel')" title="侧边栏模式">
+          <LayoutPanelLeft :size="16" />
+        </el-button>
+
+        <el-button text @click="switchMode('popup')" title="弹窗模式">
+          <PanelRight :size="16" />
+        </el-button>
       </div>
     </header>
 
-    <!-- 消息展示区 -->
-    <MessageList :messages="state.messageLog" />
+    <!-- 消息列表 -->
+    <el-scrollbar class="messages" wrap-class="messages-wrap">
+      <MessageList :messages="state.messageLog" />
+    </el-scrollbar>
 
     <!-- 设置面板 -->
     <div v-if="isSettingsOpen" class="settings-panel">
-      <form @submit="saveSettingsHandler">
-        <label>
-          AI 提供者
-          <select v-model="settings.aiProvider">
-            <option value="auto">自动（优先本地）</option>
-            <option value="gemini-nano">Gemini Nano（本地）</option>
-            <option value="openai">OpenAI 兼容 API</option>
-          </select>
-        </label>
-        <label>
-          API Key
-          <input type="password" v-model="settings.apiKey" placeholder="sk-..." />
-        </label>
-        <label>
-          API 端点
-          <input type="text" v-model="settings.apiEndpoint" placeholder="https://api.deepseek.com" />
-        </label>
-        <label>
-          模型名称
-          <input type="text" v-model="settings.modelName" placeholder="deepseek-chat" />
-        </label>
-        <button type="submit">保存设置</button>
-      </form>
+      <!-- 设置首页 -->
+      <div v-if="settingsPage === 'home'" class="settings-home">
+        <div class="settings-header">
+          <span class="settings-title">设置</span>
+        </div>
+        <div class="settings-cells">
+          <div class="settings-cell" @click="settingsPage = 'models'">
+            <div class="cell-content">
+              <span class="cell-title">模型管理</span>
+              <span class="cell-desc">添加、编辑、删除 AI 模型</span>
+            </div>
+            <ChevronRight :size="16" class="cell-arrow" />
+          </div>
+          <div class="settings-cell" @click="settingsPage = 'theme'">
+            <div class="cell-content">
+              <span class="cell-title">主题设置</span>
+              <span class="cell-desc">自定义界面外观</span>
+            </div>
+            <ChevronRight :size="16" class="cell-arrow" />
+          </div>
+          <div class="settings-cell" @click="settingsPage = 'about'">
+            <div class="cell-content">
+              <span class="cell-title">关于</span>
+              <span class="cell-desc">版本信息和帮助</span>
+            </div>
+            <ChevronRight :size="16" class="cell-arrow" />
+          </div>
+        </div>
+        <el-button class="close-btn" @click="toggleSettings">关闭</el-button>
+      </div>
+
+      <!-- 模型管理页面 -->
+      <div v-if="settingsPage === 'models'" class="settings-page">
+        <div class="settings-header">
+          <div class="back-btn" @click="settingsPage = 'home'">
+            <ChevronLeft :size="16" />
+            <span>返回</span>
+          </div>
+          <span class="settings-title">模型管理</span>
+          <el-button text @click="showAddDialog = true">
+            <Plus :size="16" />
+          </el-button>
+        </div>
+
+        <!-- 模型列表 -->
+        <div class="model-list">
+          <div v-for="model in models" :key="model.id" class="model-item">
+            <div class="model-info">
+              <div class="model-name-row">
+                <span class="model-name">{{ model.name }}</span>
+                <el-tag v-if="model.isDefault" size="small">默认</el-tag>
+              </div>
+              <span class="model-provider">{{ getProviderLabel(model.provider) }}</span>
+            </div>
+            <div class="model-actions">
+              <el-button
+                v-if="!model.isDefault"
+                size="small"
+                text
+                @click="handleSetDefault(model.id)"
+              >
+                设为默认
+              </el-button>
+              <el-button size="small" text @click="startEditModel(model)">编辑</el-button>
+              <el-button
+                v-if="models.length > 1"
+                size="small"
+                text
+                type="danger"
+                @click="handleDeleteModel(model.id)"
+              >
+                删除
+              </el-button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 主题设置页面 -->
+      <div v-if="settingsPage === 'theme'" class="settings-page">
+        <div class="settings-header">
+          <div class="back-btn" @click="settingsPage = 'home'">
+            <ChevronLeft :size="16" />
+            <span>返回</span>
+          </div>
+          <span class="settings-title">主题设置</span>
+        </div>
+        <div class="placeholder-text">主题设置功能开发中...</div>
+      </div>
+
+      <!-- 关于页面 -->
+      <div v-if="settingsPage === 'about'" class="settings-page">
+        <div class="settings-header">
+          <div class="back-btn" @click="settingsPage = 'home'">
+            <ChevronLeft :size="16" />
+            <span>返回</span>
+          </div>
+          <span class="settings-title">关于</span>
+        </div>
+        <div class="about-content">
+          <h3>AI 浏览器管家</h3>
+          <p class="version">版本 0.1.0</p>
+          <p class="desc">一个基于 AI 的浏览器命令中心</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 添加模型弹窗 -->
+    <div v-if="showAddDialog" class="modal-overlay" @click.self="showAddDialog = false">
+      <div class="modal-content">
+        <div class="modal-header">
+          <span>添加模型</span>
+          <div class="modal-close" @click="showAddDialog = false">
+            <X :size="16" />
+          </div>
+        </div>
+        <div class="modal-body">
+          <div class="form-item">
+            <label>模型名称</label>
+            <el-input v-model="newModel.name" placeholder="如：DeepSeek V3" />
+          </div>
+          <div class="form-item">
+            <label>提供商</label>
+            <el-select v-model="newModel.provider" placeholder="选择提供商">
+              <el-option value="openai" label="OpenAI 兼容 API" />
+              <el-option value="gemini-nano" label="Gemini Nano（本地）" />
+              <el-option value="auto" label="自动" />
+            </el-select>
+          </div>
+          <template v-if="newModel.provider !== 'gemini-nano'">
+            <div class="form-item">
+              <label>API Key</label>
+              <el-input
+                v-model="newModel.apiKey"
+                type="password"
+                placeholder="sk-..."
+                show-password
+              />
+            </div>
+            <div class="form-item">
+              <label>API 端点</label>
+              <el-input v-model="newModel.apiEndpoint" placeholder="https://api.deepseek.com" />
+            </div>
+            <div class="form-item">
+              <label>模型名称</label>
+              <el-input v-model="newModel.modelName" placeholder="deepseek-chat" />
+            </div>
+          </template>
+        </div>
+        <div class="modal-footer">
+          <el-button @click="showAddDialog = false">取消</el-button>
+          <el-button type="primary" @click="handleAddModel">保存</el-button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 编辑模型弹窗 -->
+    <div v-if="editDialogVisible" class="modal-overlay" @click.self="editDialogVisible = false">
+      <div class="modal-content">
+        <div class="modal-header">
+          <span>编辑模型</span>
+          <div class="modal-close" @click="editDialogVisible = false">
+            <X :size="16" />
+          </div>
+        </div>
+        <div class="modal-body">
+          <div class="form-item">
+            <label>模型名称</label>
+            <el-input v-model="editingModel!.name" />
+          </div>
+          <div class="form-item">
+            <label>提供商</label>
+            <el-select v-model="editingModel!.provider">
+              <el-option value="openai" label="OpenAI 兼容 API" />
+              <el-option value="gemini-nano" label="Gemini Nano（本地）" />
+              <el-option value="auto" label="自动" />
+            </el-select>
+          </div>
+          <template v-if="editingModel && editingModel.provider !== 'gemini-nano'">
+            <div class="form-item">
+              <label>API Key</label>
+              <el-input v-model="editingModel!.apiKey" type="password" show-password />
+            </div>
+            <div class="form-item">
+              <label>API 端点</label>
+              <el-input v-model="editingModel!.apiEndpoint" />
+            </div>
+            <div class="form-item">
+              <label>模型名称</label>
+              <el-input v-model="editingModel!.modelName" />
+            </div>
+          </template>
+        </div>
+        <div class="modal-footer">
+          <el-button @click="editDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="handleSaveEdit">保存</el-button>
+        </div>
+      </div>
     </div>
 
     <!-- 命令输入区 -->
-    <CommandInput
-      v-model="commandInput"
-      @submit="handleSubmit"
-    />
+    <CommandInput v-model="commandInput" @submit="handleSubmit" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import MessageList from './components/MessageList.vue';
-import CommandInput from './components/CommandInput.vue';
-import { useAIEngine } from './composables/useAIEngine';
+import { ref, computed, onMounted } from 'vue'
+import {
+  Settings,
+  LayoutPanelLeft,
+  PanelRight,
+  ChevronDown,
+  ChevronRight,
+  ChevronLeft,
+  Plus,
+  X,
+} from 'lucide-vue-next'
+import ParticleCanvas from './components/ParticleCanvas.vue'
+import MessageList from './components/MessageList.vue'
+import CommandInput from './components/CommandInput.vue'
+import { useAIEngine } from './composables/useAIEngine'
+import type { AIModel, AIProvider } from './types'
+
+type SettingsPage = 'home' | 'models' | 'theme' | 'about'
 
 const {
   state,
-  handleSubmit,
+  handleSubmit: aiHandleSubmit,
   toggleSettings,
   switchMode,
-  loadSettings,
-  saveSettings,
-} = useAIEngine();
+  initEngine,
+  selectModel,
+  models,
+  activeModelId,
+  getActiveModel,
+  addModel,
+  updateModel,
+  deleteModel,
+  setDefaultModel,
+  commandInputValue,
+} = useAIEngine()
 
-const isSettingsOpen = ref(false);
-const commandInput = ref('');
+const isSettingsOpen = state.isSettingsOpen
+const commandInput = commandInputValue
 
-interface Settings {
-  aiProvider: string;
-  apiKey: string;
-  apiEndpoint: string;
-  modelName: string;
-}
+// 当前激活的模型名称
+const activeModelName = computed(() => {
+  const model = getActiveModel()
+  if (!model) return '选择模型'
+  return model.name
+})
 
-const settings = ref<Settings>({
-  aiProvider: 'auto',
+// 设置页面
+const settingsPage = ref<SettingsPage>('home')
+
+// 添加模型弹窗
+const showAddDialog = ref(false)
+const newModel = ref({
+  name: '',
+  provider: 'openai' as AIProvider,
   apiKey: '',
   apiEndpoint: 'https://api.deepseek.com',
   modelName: 'deepseek-chat',
-});
+})
 
-async function saveSettingsHandler(e: Event) {
-  e.preventDefault();
-  await saveSettings(settings.value);
-  isSettingsOpen.value = false;
+async function handleAddModel() {
+  if (!newModel.value.name.trim()) return
+  await addModel(newModel.value)
+  newModel.value = {
+    name: '',
+    provider: 'openai',
+    apiKey: '',
+    apiEndpoint: 'https://api.deepseek.com',
+    modelName: 'deepseek-chat',
+  }
+  showAddDialog.value = false
+}
+
+// 编辑模型弹窗
+const editDialogVisible = ref(false)
+const editingModel = ref<AIModel | null>(null)
+
+function startEditModel(model: AIModel) {
+  editingModel.value = { ...model }
+  editDialogVisible.value = true
+}
+
+async function handleSaveEdit() {
+  if (!editingModel.value) return
+  await updateModel(editingModel.value.id, editingModel.value)
+  editDialogVisible.value = false
+}
+
+// 模型操作
+async function handleSelectModel(modelId: string) {
+  await selectModel(modelId)
+}
+
+async function handleDeleteModel(modelId: string) {
+  if (models.value.length <= 1) return
+  await deleteModel(modelId)
+}
+
+async function handleSetDefault(modelId: string) {
+  await setDefaultModel(modelId)
+}
+
+function getProviderLabel(provider: AIProvider): string {
+  const labels: Record<AIProvider, string> = {
+    openai: 'OpenAI 兼容',
+    'gemini-nano': 'Gemini Nano',
+    auto: '自动',
+  }
+  return labels[provider] || provider
+}
+
+// 提交命令
+function handleSubmit() {
+  const text = commandInput.value
+  if (text.trim()) {
+    aiHandleSubmit(text)
+  }
 }
 
 onMounted(async () => {
-  const saved = await loadSettings();
-  settings.value = saved as Settings;
-
-  // 恢复上次会话
-  const raw = sessionStorage.getItem('ai_message_log');
-  if (raw) {
-    try {
-      JSON.parse(raw);
-      // 消息会在 MessageList 中自动渲染
-    } catch {
-      // ignore
-    }
-  }
-});
+  await initEngine()
+})
 </script>
 
 <style>
@@ -140,96 +389,309 @@ onMounted(async () => {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
+  background: #0a0a0a;
+  color: #f0f0f0;
 }
 
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  position: relative;
 }
 
+/* 标题栏 */
 .header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #e0e0e0;
-  background: #fff;
+  background: rgba(10, 10, 10, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
 }
 
 .header-brand {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 600;
 }
 
 .header-icon {
-  color: #1976d2;
+  color: #fff;
+  font-size: 16px;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.header-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
 }
 
 .header-actions {
   display: flex;
-  gap: 8px;
+  gap: 4px;
 }
 
-.header-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 4px;
-  color: #666;
+/* 消息区域 */
+.messages {
+  flex: 1;
+  padding: 0;
 }
 
-.header-btn:hover {
-  background: #f5f5f5;
-}
-
-.header-btn.active {
-  color: #1976d2;
-}
-
-.settings-panel {
-  padding: 16px;
-  border-bottom: 1px solid #e0e0e0;
-  background: #fafafa;
-}
-
-.settings-panel form {
+.messages-wrap {
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.settings-panel label {
+/* 设置面板 */
+.settings-panel {
+  padding: 16px;
+  background: rgba(10, 10, 10, 0.95);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.settings-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.back-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #888;
+  cursor: pointer;
+  margin-right: 12px;
+  transition: color 0.15s ease;
+}
+
+.back-btn:hover {
+  color: #fff;
+}
+
+/* 设置 Cell */
+.settings-cells {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.settings-cell:last-child {
+  border-bottom: none;
+}
+
+.settings-cell:hover {
+  opacity: 0.7;
+}
+
+.cell-content {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 14px;
 }
 
-.settings-panel input,
-.settings-panel select {
-  padding: 8px 12px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+.cell-title {
   font-size: 14px;
+  color: #e0e0e0;
 }
 
-.settings-panel button {
-  padding: 10px 20px;
-  background: #1976d2;
+.cell-desc {
+  font-size: 12px;
+  color: #666;
+}
+
+.cell-arrow {
+  color: #555;
+}
+
+/* 模型列表 */
+.model-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.model-item:last-child {
+  border-bottom: none;
+}
+
+.model-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.model-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #e0e0e0;
+}
+
+.model-provider {
+  font-size: 12px;
+  color: #666;
+}
+
+.model-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* 占位文本 */
+.placeholder-text {
+  text-align: center;
+  color: #555;
+  padding: 40px 0;
+}
+
+/* 关于页面 */
+.about-content {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.about-content h3 {
+  font-size: 18px;
   color: #fff;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 14px;
+  margin-bottom: 12px;
 }
 
-.settings-panel button:hover {
-  background: #1565c0;
+.about-content .version {
+  font-size: 13px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.about-content .desc {
+  font-size: 13px;
+  color: #666;
+}
+
+/* 关闭按钮 */
+.close-btn {
+  width: 100%;
+  margin-top: 16px;
+}
+
+/* 弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.modal-content {
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 400px;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.modal-header span {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.modal-close {
+  color: #666;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.modal-close:hover {
+  color: #fff;
+}
+
+.modal-body {
+  padding: 16px;
+}
+
+.form-item {
+  margin-bottom: 14px;
+}
+
+.form-item:last-child {
+  margin-bottom: 0;
+}
+
+.form-item label {
+  display: block;
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 6px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ml-2 {
+  margin-left: 8px;
 }
 </style>

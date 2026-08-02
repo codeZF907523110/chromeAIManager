@@ -1,21 +1,24 @@
-import js from '@eslint/js';
-import ts from '@typescript-eslint/eslint-plugin';
-import tsParser from '@typescript-eslint/parser';
-import vueParser from 'vue-eslint-parser';
-import eslintConfigPrettier from 'eslint-config-prettier';
+import js from '@eslint/js'
+import ts from '@typescript-eslint/eslint-plugin'
+import tsParser from '@typescript-eslint/parser'
+import vueParser from 'vue-eslint-parser'
+import prettierRecommended from 'eslint-plugin-prettier/recommended'
+import prettierPlugin from 'eslint-plugin-prettier'
 
 export default [
   js.configs.recommended,
-  eslintConfigPrettier,
+  prettierRecommended,
   {
-    // Ignore generated files, type declarations, and test files
-    ignores: [
-      'dist/',
-      'node_modules/',
-      '**/*.d.ts',
-      '**/*.js',  // Ignore all JS files (Chrome extension internal code)
-      'vite.config.ts',
-    ],
+    ignores: ['dist/', 'node_modules/', '**/*.d.ts', '**/*.js', 'vite.config.ts'],
+  },
+  {
+    files: ['**/*.vue', '**/*.ts'],
+    plugins: {
+      prettier: prettierPlugin,
+    },
+    rules: {
+      'prettier/prettier': 'error',
+    },
   },
   {
     files: ['**/*.vue'],
@@ -48,6 +51,7 @@ export default [
         confirm: 'readonly',
         Event: 'readonly',
         KeyboardEvent: 'readonly',
+        MouseEvent: 'readonly',
         HTMLDivElement: 'readonly',
         HTMLInputElement: 'readonly',
         HTMLElement: 'readonly',
@@ -59,8 +63,10 @@ export default [
       '@typescript-eslint': ts,
     },
     rules: {
-      'no-console': 'warn',
+      'no-console': 'off',
       'no-debugger': 'off',
+      'no-undef': 'off',
+      'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
     },
@@ -90,6 +96,9 @@ export default [
         trustedTypes: 'readonly',
         FormData: 'readonly',
         confirm: 'readonly',
+        Event: 'readonly',
+        KeyboardEvent: 'readonly',
+        MouseEvent: 'readonly',
         HTMLDivElement: 'readonly',
         HTMLInputElement: 'readonly',
         HTMLElement: 'readonly',
@@ -101,10 +110,12 @@ export default [
       '@typescript-eslint': ts,
     },
     rules: {
-      'no-console': 'warn',
+      'no-console': 'off',
       'no-debugger': 'off',
+      'no-undef': 'off',
+      'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
     },
   },
-];
+]
