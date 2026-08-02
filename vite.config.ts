@@ -29,15 +29,18 @@ function chromeExtensionPlugin() {
       mkdirSync(distDir, { recursive: true })
     },
     closeBundle() {
-      // 修复 HTML 输出路径
-      const htmlFiles = [{ src: 'src/index.html', dst: 'sidepanel.html' }]
+      // 修复 HTML 输出路径：public/index.html -> sidepanel.html
+      const htmlFiles = [
+        { src: 'public/index.html', dst: 'sidepanel.html' },
+        { src: 'src/index.html', dst: 'index.html' },
+      ]
 
       for (const { src, dst } of htmlFiles) {
         const htmlSrc = resolve(distDir, src)
         const htmlDst = resolve(distDir, dst)
         if (existsSync(htmlSrc)) {
           let html = readFileSync(htmlSrc, 'utf-8')
-          // Vite 输出 HTML 在 dist/src/，资源在 dist/，所以引用路径都是 ../xxx
+          // Vite 输出 HTML 在 dist/xxx/，资源在 dist/，所以引用路径都是 ../xxx
           // 移动到 dist/ 后，统一改成 ./
           html = html.replace(/(src|href)="\.\.\//g, '$1="./')
           writeFileSync(htmlDst, html)

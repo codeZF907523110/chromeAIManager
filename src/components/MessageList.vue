@@ -1,12 +1,11 @@
 <template>
   <div ref="containerRef" class="messages">
     <MessageBubble v-for="(msg, index) in messages" :key="index" :msg="msg" />
-    <div ref="bottomRef"></div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, onMounted } from 'vue'
 import type { MessageLog } from '../types'
 import MessageBubble from './MessageBubble.vue'
 
@@ -15,21 +14,38 @@ const props = defineProps<{
 }>()
 
 const containerRef = ref<HTMLDivElement>()
-const bottomRef = ref<HTMLDivElement>()
+let scrollTimer: ReturnType<typeof setTimeout> | null = null
 
+function scrollToBottom() {
+  if (!containerRef.value) return
+  containerRef.value.scrollTo({
+    top: containerRef.value.scrollHeight,
+    behavior: 'smooth',
+  })
+}
+
+// 延迟滚动，确保 DOM 渲染完成
+function scheduleScroll() {
+  if (scrollTimer) clearTimeout(scrollTimer)
+  scrollTimer = setTimeout(() => {
+    nextTick(() => {
+      scrollToBottom()
+    })
+  }, 50)
+}
+
+// 监听消息数组长度变化
 watch(
-  () => props.messages,
-  async () => {
-    await nextTick()
-    scrollToBottom()
+  () => props.messages.length,
+  () => {
+    scheduleScroll()
   }
 )
 
-function scrollToBottom() {
-  if (containerRef.value) {
-    containerRef.value.scrollTop = containerRef.value.scrollHeight
-  }
-}
+// 初始化时滚动
+onMounted(() => {
+  scheduleScroll()
+})
 </script>
 
 <style scoped>

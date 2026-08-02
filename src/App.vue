@@ -10,27 +10,6 @@
         <span class="header-title">AI 浏览器管家</span>
       </div>
       <div class="header-actions">
-        <!-- 模型选择 -->
-        <el-dropdown trigger="click" @command="handleSelectModel" :show-arrow="false">
-          <el-button text>
-            {{ activeModelName }}
-            <ChevronDown :size="14" />
-          </el-button>
-          <template #dropdown>
-            <el-dropdown-menu v-if="models.length > 0">
-              <el-dropdown-item
-                v-for="model in models"
-                :key="model.id"
-                :command="model.id"
-                :disabled="model.id === activeModelId"
-              >
-                {{ model.name }}
-                <el-tag v-if="model.isDefault" size="small" class="ml-2">默认</el-tag>
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-
         <el-button text @click="toggleSettings">
           <Settings :size="16" />
         </el-button>
@@ -46,9 +25,7 @@
     </header>
 
     <!-- 消息列表 -->
-    <el-scrollbar class="messages" wrap-class="messages-wrap">
-      <MessageList :messages="state.messageLog" />
-    </el-scrollbar>
+    <MessageList :messages="state.messageLog" />
 
     <!-- 设置面板 -->
     <div v-if="isSettingsOpen" class="settings-panel">
@@ -263,7 +240,6 @@ import {
   Settings,
   LayoutPanelLeft,
   PanelRight,
-  ChevronDown,
   ChevronRight,
   ChevronLeft,
   Plus,
@@ -296,13 +272,6 @@ const {
 
 const isSettingsOpen = state.isSettingsOpen
 const commandInput = commandInputValue
-
-// 当前激活的模型名称
-const activeModelName = computed(() => {
-  const model = getActiveModel()
-  if (!model) return '选择模型'
-  return model.name
-})
 
 // 设置页面
 const settingsPage = ref<SettingsPage>('home')
@@ -346,10 +315,6 @@ async function handleSaveEdit() {
 }
 
 // 模型操作
-async function handleSelectModel(modelId: string) {
-  await selectModel(modelId)
-}
-
 async function handleDeleteModel(modelId: string) {
   if (models.value.length <= 1) return
   await deleteModel(modelId)

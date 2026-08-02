@@ -11,6 +11,10 @@ const STORAGE_KEYS = {
   ACTIVE_MODEL_ID: 'active_model_id',
 }
 
+// 单例状态
+const modelsState = ref<AIModel[]>([])
+const activeModelIdState = ref<string>('')
+
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2)
 }
@@ -29,14 +33,11 @@ function createDefaultModel(): AIModel {
 }
 
 export function useSettings() {
-  const models = ref<AIModel[]>([])
-  const activeModelId = ref<string>('')
-
   /**
    * 获取当前激活的模型
    */
   function getActiveModel(): AIModel | undefined {
-    return models.value.find((m) => m.id === activeModelId.value)
+    return modelsState.value.find((m) => m.id === activeModelIdState.value)
   }
 
   /**
@@ -69,9 +70,10 @@ export function useSettings() {
       await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVE_MODEL_ID]: loadedActiveId })
     }
 
-    models.value = loadedModels
-    activeModelId.value = loadedActiveId
+    modelsState.value = loadedModels
+    activeModelIdState.value = loadedActiveId
 
+    console.log('[useSettings] loaded models:', loadedModels)
     return { models: loadedModels, activeModelId: loadedActiveId }
   }
 
@@ -79,7 +81,7 @@ export function useSettings() {
    * 保存所有模型
    */
   async function saveModels(newModels: AIModel[]): Promise<void> {
-    models.value = newModels
+    modelsState.value = newModels
     await chrome.storage.local.set({ [STORAGE_KEYS.MODELS]: newModels })
   }
 
@@ -95,7 +97,7 @@ export function useSettings() {
       isDefault: false,
       createdAt: Date.now(),
     }
-    const newModels = [...models.value, newModel]
+    const newModels = [...modelsState.value, newModel]
     await saveModels(newModels)
     return newModel
   }
@@ -104,7 +106,7 @@ export function useSettings() {
    * 更新模型
    */
   async function updateModel(modelId: string, updates: Partial<AIModel>): Promise<void> {
-    const newModels = models.value.map((m) => (m.id === modelId ? { ...m, ...updates } : m))
+    const newModels = modelsState.value.map((m) => (m.id === modelId ? { ...m, ...updates } : m))
     await saveModels(newModels)
   }
 
@@ -112,14 +114,14 @@ export function useSettings() {
    * 删除模型（至少保留一个）
    */
   async function deleteModel(modelId: string): Promise<boolean> {
-    if (models.value.length <= 1) {
+    if (modelsState.value.length <= 1) {
       return false
     }
-    const newModels = models.value.filter((m) => m.id !== modelId)
+    const newModels = modelsState.value.filter((m) => m.id !== modelId)
     await saveModels(newModels)
 
     // 如果删除的是当前激活的模型，切换到第一个
-    if (activeModelId.value === modelId) {
+    if (activeModelIdState.value === modelId) {
       await setActiveModel(newModels[0].id)
     }
     return true
@@ -129,7 +131,7 @@ export function useSettings() {
    * 设置当前激活的模型
    */
   async function setActiveModel(modelId: string): Promise<void> {
-    activeModelId.value = modelId
+    activeModelIdState.value = modelId
     await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVE_MODEL_ID]: modelId })
   }
 
@@ -137,7 +139,7 @@ export function useSettings() {
    * 设置默认模型
    */
   async function setDefaultModel(modelId: string): Promise<void> {
-    const newModels = models.value.map((m) => ({
+    const newModels = modelsState.value.map((m) => ({
       ...m,
       isDefault: m.id === modelId,
     }))
@@ -145,8 +147,8 @@ export function useSettings() {
   }
 
   return {
-    models: readonly(models),
-    activeModelId: readonly(activeModelId),
+    models: readonly(modelsState),
+    activeModelId: readonly(activeModelIdState),
     getActiveModel,
     loadSettings,
     addModel,
