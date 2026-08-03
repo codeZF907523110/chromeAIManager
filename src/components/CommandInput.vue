@@ -17,10 +17,10 @@
           <div class="slash-picker-header">可用命令</div>
           <div class="slash-picker-list">
             <div
-              v-for="cmd in filteredCommands"
+              v-for="(cmd, idx) in filteredCommands"
               :key="cmd.slash"
               class="slash-item"
-              :class="{ active: cmd.slash === selectedSlashIndex }"
+              :class="{ active: idx === selectedSlashIndex }"
               @click="selectSlashCommand(cmd)"
             >
               <span class="slash-name">/{{ cmd.slash }}</span>
@@ -68,9 +68,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Mic, ArrowUp } from 'lucide-vue-next'
 import { useAIEngine } from '../composables/useAIEngine'
+import { useCommandHistory } from '../composables/useCommandHistory'
 import { SLASH_COMMANDS } from '../sidepanel/command/slash-commands'
 import type { SlashCommand } from '../types'
 
@@ -83,7 +84,14 @@ const emit = defineEmits<{
   (e: 'submit'): void
 }>()
 
+defineExpose({
+  focus() {
+    textareaRef.value?.focus()
+  },
+})
+
 const { models, getActiveModel, selectModel } = useAIEngine()
+const { addToHistory, navigateHistory } = useCommandHistory()
 
 const inputValue = computed({
   get: () => props.modelValue,
@@ -111,6 +119,19 @@ const filteredCommands = computed(() => {
       (c.aliases || []).some((a) => a.toLowerCase().includes(q))
   )
 })
+
+// 外部点击关闭斜杠面板（点击 picker 外任意位置关闭）
+function handleDocClick(e: MouseEvent) {
+  if (!showSlashPicker.value) return
+  const picker = document.querySelector('.slash-picker')
+  // 点击在 picker 内 → 保持打开
+  if (picker?.contains(e.target as Node)) return
+  // 点击在 picker 外任意位置 → 关闭
+  showSlashPicker.value = false
+}
+
+onMounted(() => document.addEventListener('click', handleDocClick))
+onUnmounted(() => document.removeEventListener('click', handleDocClick))
 
 function handleInput() {
   const val = inputValue.value
@@ -147,7 +168,15 @@ function handleKeydown(e: KeyboardEvent) {
       showSlashPicker.value = false
     }
   } else {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault()
+      const prev = navigateHistory(-1, inputValue.value)
+      if (prev !== null) inputValue.value = prev
+    } else if (e.key === 'ArrowDown' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault()
+      const next = navigateHistory(1, inputValue.value)
+      if (next !== null) inputValue.value = next
+    } else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
@@ -157,11 +186,19 @@ function handleKeydown(e: KeyboardEvent) {
 function selectSlashCommand(cmd: SlashCommand) {
   inputValue.value = '/' + cmd.slash + (cmd.hasArg ? ' ' : '')
   showSlashPicker.value = false
-  textareaRef.value?.focus()
+  // 光标定位到命令末尾（参数位置）
+  nextTick(() => {
+    if (textareaRef.value) {
+      textareaRef.value.focus()
+      const len = textareaRef.value.value.length
+      textareaRef.value.setSelectionRange(len, len)
+    }
+  })
 }
 
 function handleSend() {
   if (!inputValue.value.trim()) return
+  addToHistory(inputValue.value)
   emit('submit')
   inputValue.value = ''
 }

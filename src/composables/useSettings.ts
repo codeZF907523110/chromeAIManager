@@ -44,10 +44,10 @@ export function useSettings() {
    * 加载所有设置
    */
   async function loadSettings(): Promise<{ models: AIModel[]; activeModelId: string }> {
-    const result = await chrome.storage.local.get([
+    const result = (await chrome.storage.local.get([
       STORAGE_KEYS.MODELS,
       STORAGE_KEYS.ACTIVE_MODEL_ID,
-    ])
+    ])) as Record<string, unknown>
 
     let loadedModels = result[STORAGE_KEYS.MODELS] as AIModel[] | undefined
     let loadedActiveId = result[STORAGE_KEYS.ACTIVE_MODEL_ID] as string | undefined

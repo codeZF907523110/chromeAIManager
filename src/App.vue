@@ -27,6 +27,16 @@
     <!-- 消息列表 -->
     <MessageList :messages="state.messageLog" />
 
+    <!-- 确认卡片 -->
+    <ConfirmCard
+      v-if="pendingConfirm"
+      :title="pendingConfirm.title"
+      :description="pendingConfirm.description"
+      :items="pendingConfirm.items"
+      :on-confirm="pendingConfirm.onConfirm"
+      @cancel="pendingConfirm.onCancel"
+    />
+
     <!-- 设置面板 -->
     <div v-if="isSettingsOpen" class="settings-panel">
       <!-- 设置首页 -->
@@ -230,12 +240,12 @@
     </div>
 
     <!-- 命令输入区 -->
-    <CommandInput v-model="commandInput" @submit="handleSubmit" />
+    <CommandInput ref="commandInputRef" v-model="commandInput" @submit="handleSubmit" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import {
   Settings,
   LayoutPanelLeft,
@@ -248,6 +258,7 @@ import {
 import ParticleCanvas from './components/ParticleCanvas.vue'
 import MessageList from './components/MessageList.vue'
 import CommandInput from './components/CommandInput.vue'
+import ConfirmCard from './components/ConfirmCard.vue'
 import { useAIEngine } from './composables/useAIEngine'
 import type { AIModel, AIProvider } from './types'
 
@@ -259,19 +270,19 @@ const {
   toggleSettings,
   switchMode,
   initEngine,
-  selectModel,
   models,
-  activeModelId,
-  getActiveModel,
   addModel,
   updateModel,
   deleteModel,
   setDefaultModel,
   commandInputValue,
+  pendingConfirm,
+  renderExecutionResult,
 } = useAIEngine()
 
 const isSettingsOpen = state.isSettingsOpen
 const commandInput = commandInputValue
+const commandInputRef = ref<InstanceType<typeof import('./components/CommandInput.vue').default>>()
 
 // 设置页面
 const settingsPage = ref<SettingsPage>('home')
@@ -333,17 +344,57 @@ function getProviderLabel(provider: AIProvider): string {
   return labels[provider] || provider
 }
 
+// 上次发送的命令（用于连续去重，成功提交后清零以允许非连续重复）
+let lastSubmittedText = ''
+
+// chrome.runtime 消息监听器（需在 onBeforeUnmount 中清理）
+const msgListener = (msg: { type?: string; intent?: string; response?: unknown }) => {
+  if (msg.type === 'EXECUTE_RESULT' && msg.intent) {
+    renderExecutionResult(msg.intent, msg.response)
+  }
+}
+
 // 提交命令
 function handleSubmit() {
   const text = commandInput.value
-  if (text.trim()) {
-    aiHandleSubmit(text)
-  }
+  if (!text.trim()) return
+  // 连续重复命令不重复发送
+  if (text.trim() === lastSubmittedText) return
+  lastSubmittedText = text.trim()
+  aiHandleSubmit(text)
+  lastSubmittedText = '' // 清零，允许发送相同命令（非连续）
 }
 
 onMounted(async () => {
   await initEngine()
+  // 自动聚焦到输入框
+  commandInputRef.value?.focus()
+  // 恢复上次的输入草稿
+  try {
+    const draft = sessionStorage.getItem('lastInput')
+    if (draft) commandInput.value = draft
+  } catch {
+    /* empty */
+  }
+  // beforeunload 保存输入草稿
+  window.addEventListener('beforeunload', saveSession)
+
+  // 监听 SW 主动推送的执行结果
+  chrome.runtime.onMessage.addListener(msgListener)
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', saveSession)
+  chrome.runtime.onMessage.removeListener(msgListener)
+})
+
+function saveSession() {
+  try {
+    sessionStorage.setItem('lastInput', commandInput.value)
+  } catch {
+    /* empty */
+  }
+}
 </script>
 
 <style>

@@ -72,6 +72,19 @@ interface Lesson {
   timestamp: number
 }
 
+interface ConfirmItem {
+  primary: string
+  secondary: string
+}
+
+interface PendingConfirm {
+  title: string
+  description?: string
+  items: ConfirmItem[]
+  onConfirm: () => Promise<void>
+  onCancel?: () => void
+}
+
 export function useAIEngine() {
   // ──── 子 Composable ────
   const settingsComposable = useSettings()
@@ -80,6 +93,7 @@ export function useAIEngine() {
   // ──── 状态 ────
   const messageLog = ref<MessageLog[]>([])
   const contextCache = ref<Context | null>(null)
+  const contextCacheTime = ref(0)
   const activeLoopId = ref<string | null>(null)
   const conversationMessages = ref<ChatMessage[] | null>(null)
   const planTracker = ref<PlanTracker | null>(null)
@@ -89,6 +103,7 @@ export function useAIEngine() {
   const commandInputValue = ref('')
   const isSettingsOpen = ref(false)
   const isInitialized = ref(false)
+  const pendingConfirm = ref<PendingConfirm | null>(null)
 
   // ──── 初始化 AI 引擎 ────
 
@@ -100,7 +115,50 @@ export function useAIEngine() {
     }
     // 加载持久化的消息
     await loadPersistedMessages()
+    // 尝试恢复未完成的会话
+    await recoverContext()
     isInitialized.value = true
+  }
+
+  /**
+   * 恢复上次未完成的任务（5分钟过期）
+   */
+  async function recoverContext() {
+    try {
+      const raw = sessionStorage.getItem(SESSION_KEY)
+      if (!raw) return
+      const data = JSON.parse(raw)
+      // 5 分钟过期
+      if (Date.now() - data.timestamp > 5 * 60 * 1000) {
+        sessionStorage.removeItem(SESSION_KEY)
+        return
+      }
+      if (data.planTracker) {
+        const savedPlan = data.planTracker
+        const savedLessons = data.lessons || []
+        pendingConfirm.value = {
+          title: '恢复上次的任务？',
+          description: '上次的任务还在进行中，是否要继续？',
+          items: [
+            {
+              primary: savedPlan.stepDescription || '未完成的任务',
+              secondary: `${Math.round((Date.now() - data.timestamp) / 1000 / 60)} 分钟前`,
+            },
+          ],
+          onConfirm: async () => {
+            planTracker.value = savedPlan
+            lessons.value = savedLessons
+            addMessage('system', '已恢复上次任务的上下文。请继续告诉我你的需求。')
+          },
+          onCancel: () => {
+            sessionStorage.removeItem(SESSION_KEY)
+            addMessage('system', '已放弃上次的任务。')
+          },
+        }
+      }
+    } catch {
+      // ignore
+    }
   }
 
   /**
@@ -108,7 +166,7 @@ export function useAIEngine() {
    */
   async function loadPersistedMessages() {
     try {
-      const result = await chrome.storage.local.get(MESSAGE_LOG_KEY)
+      const result = (await chrome.storage.local.get(MESSAGE_LOG_KEY)) as Record<string, unknown>
       const persisted = result[MESSAGE_LOG_KEY] as MessageLog[] | undefined
       if (persisted && Array.isArray(persisted)) {
         messageLog.value = persisted.slice(-MAX_PERSISTED_MESSAGES)
@@ -152,7 +210,7 @@ export function useAIEngine() {
     const context = await getContext()
 
     const pageData = await scanCurrentPage()
-    context.pageStructure = pageData as Context['pageStructure']
+    context.pageStructure = (pageData ?? undefined) as unknown as typeof context.pageStructure
     context.recentLessons = lessons.value.slice(-3)
 
     const systemPrompt = buildAgentSystemPrompt(context)
@@ -317,7 +375,42 @@ export function useAIEngine() {
       }
 
       if (result.success === false && result.code === 'NEEDS_CONFIRM') {
-        addMessage('system', `⚠️ ${result.message}`)
+        const detail = (result.detail || {}) as Record<string, unknown>
+        const confirmItems = (detail.children as Array<{ title?: string; url?: string }>) || []
+        const nodeId = detail.nodeId as string | undefined
+        const title = detail.title as string | undefined
+        cleanup() // 取消任何挂起的操作，再显示新的确认卡
+        pendingConfirm.value = {
+          title: (result.message as string) || '确认操作',
+          description: detail.childCount
+            ? `包含 ${detail.childCount} 个子项的文件夹 "${title || ''}"`
+            : undefined,
+          items: confirmItems.map((c) => ({
+            primary: c.title || c.url || '',
+            secondary: c.url || '',
+          })),
+          onConfirm: async () => {
+            try {
+              const confirmResult = await executeCommand(toolName, {
+                ...toolCall.args,
+                nodeId,
+                force: true,
+              })
+              if (confirmResult.success !== false) {
+                addMessage('system', `✓ 已删除文件夹 "${title || ''}"`)
+              } else {
+                addMessage('error', confirmResult.error || confirmResult.message || '操作失败')
+              }
+            } catch (e: unknown) {
+              addMessage('error', e instanceof Error ? e.message : String(e))
+            }
+            cleanup()
+          },
+          onCancel: () => {
+            addMessage('system', `已取消删除 "${title || ''}"`)
+            cleanup()
+          },
+        }
         return
       }
 
@@ -376,9 +469,10 @@ export function useAIEngine() {
         lastScreenshot.value = result.screenshot as string
       }
 
+      const stepStatus = !result.error && !result.code ? '✓' : '❌'
       addMessage(
         'system',
-        `[${stepCount}] 💭 ${thought}\n    ${formatStepSummary(result, toolName)}`
+        `[${stepCount}] ${stepStatus} 💭 ${thought}\n    ${formatStepSummary(result, toolName)}`
       )
 
       if (messages.length > MAX_MESSAGES_COUNT) {
@@ -400,7 +494,7 @@ export function useAIEngine() {
   // ──── 命令处理 ────
 
   async function handleSlashCommand(text: string) {
-    if (activeLoopId.value) cleanup()
+    if (activeLoopId.value || pendingConfirm.value) cleanup()
 
     const result = matchSlashCommand(text)
     if (!result) {
@@ -436,9 +530,21 @@ export function useAIEngine() {
       const context = await getContext()
       const preview = generateConfirmPreview(resolvedIntent, slotsAny, context)
       if (preview) {
-        addMessage('system', `⚠️ ${preview.title}`)
+        pendingConfirm.value = {
+          title: preview.title,
+          description: preview.description,
+          items: preview.items,
+          onConfirm: async () => {
+            await dispatchToSW(resolvedIntent, slotsAny)
+            pendingConfirm.value = null // 执行完毕关闭确认卡
+          },
+          onCancel: () => {
+            addMessage('system', '操作已取消')
+          },
+        }
       } else {
-        addMessage('system', '没有需要操作的内容')
+        // 没有预览项时，直接执行（没有危险操作需要确认）
+        await dispatchToSW(resolvedIntent, slotsAny)
       }
     } else {
       await dispatchToSW(resolvedIntent, slotsAny)
@@ -455,20 +561,8 @@ export function useAIEngine() {
       return
     }
 
-    if (activeLoopId.value) {
-      if (conversationMessages.value) {
-        cleanup()
-      } else {
-        await new Promise<void>((resolve) => {
-          const check = () => {
-            if (!activeLoopId.value) resolve()
-            else setTimeout(check, 100)
-          }
-          check()
-        })
-        await new Promise<void>((r) => setTimeout(r, 3000))
-        if (activeLoopId.value) cleanup()
-      }
+    if (activeLoopId.value || pendingConfirm.value) {
+      cleanup() // 取消挂起的循环和确认对话框
     }
 
     await agentLoop(text)
@@ -532,10 +626,16 @@ export function useAIEngine() {
       payload = await precompute(userIntent, slots)
     }
 
-    const response = (await chrome.runtime.sendMessage({
-      type: MSG_EXECUTE,
-      command: { intent: cmd.swIntent, payload },
-    })) as ExecutionResult
+    let response: ExecutionResult
+    try {
+      response = (await chrome.runtime.sendMessage({
+        type: MSG_EXECUTE,
+        command: { intent: cmd.swIntent, payload },
+      })) as ExecutionResult
+    } catch (e: unknown) {
+      addMessage('error', `Service Worker 响应失败: ${e instanceof Error ? e.message : String(e)}`)
+      return { success: false, code: 'SW_ERROR', message: String(e) }
+    }
     renderExecutionResult(userIntent, response)
     return response
   }
@@ -547,7 +647,7 @@ export function useAIEngine() {
     if (!contextCache.value?.tabs) {
       contextCache.value = await getContext()
     }
-    const { tabs } = contextCache.value
+    const { tabs = [] } = contextCache.value ?? {}
     const activeTab = tabs.find((t) => t.active)
 
     switch (intent) {
@@ -685,12 +785,25 @@ export function useAIEngine() {
     }
   }
 
+  const CONTEXT_CACHE_TTL_MS = 30_000 // 30 秒过期
+
   async function getContext(): Promise<Context> {
-    contextCache.value = (await chrome.runtime.sendMessage({
-      type: MSG_GET_CONTEXT,
-      options: { mode: 'detailed' },
-    })) as Context
-    return contextCache.value
+    const now = Date.now()
+    // 缓存未过期且已有数据则直接返回
+    if (contextCache.value && now - contextCacheTime.value < CONTEXT_CACHE_TTL_MS) {
+      return contextCache.value
+    }
+    try {
+      contextCache.value = (await chrome.runtime.sendMessage({
+        type: MSG_GET_CONTEXT,
+        options: { mode: 'detailed' },
+      })) as Context
+      contextCacheTime.value = now
+    } catch (e: unknown) {
+      console.warn('[AI管家] 获取上下文失败:', e)
+      contextCache.value = { tabs: [], pageStructure: undefined } as unknown as Context
+    }
+    return contextCache.value!
   }
 
   async function scanCurrentPage(
@@ -759,6 +872,7 @@ export function useAIEngine() {
     conversationMessages.value = null
     lessons.value = []
     lastScreenshot.value = null
+    pendingConfirm.value = null // 取消挂起的确认对话框
     try {
       sessionStorage.removeItem(SESSION_KEY)
     } catch {
@@ -878,40 +992,117 @@ export function useAIEngine() {
     if (r.code === 'NEEDS_CONFIRM') return `⚠️ ${r.message}`
     if (r.code) return `[${r.code}] ${r.message || '操作失败'}`
     if (r.error) return `失败: ${typeof r.error === 'object' ? JSON.stringify(r.error) : r.error}`
+    // DOM 脚本结果
     if (r.result !== undefined) {
       if (r.result === null) return '脚本结果: null（通常表示未命中元素）'
       const s = typeof r.result === 'string' ? r.result : JSON.stringify(r.result)
       return '脚本结果: ' + s.slice(0, 100)
     }
+    // Tabs
     if (r.tabs) return `列出 ${r.observed || (r.tabs as unknown[]).length} 个标签`
+    if (r.tab && r.active !== undefined)
+      return r.active
+        ? `切换到标签 *${(r.tab as { title?: string }).title || ''}*`
+        : `更新标签 *${(r.tab as { title?: string }).title || ''}*`
+    if (r.tab)
+      return `创建标签 *${(r.tab as { title?: string }).title || (r.tab as { url?: string }).url || ''}*`
     if (r.moved !== undefined) return `移动 ${r.moved} 个标签`
     if (r.removed !== undefined) return `关闭 ${r.removed} 个标签`
     if (r.groupedTabs) return `创建分组 *${r.title || r.groupName}* (${r.groupedTabs} 个标签)`
+    if (r.groupId && !r.groupedTabs) return `更新分组 *${r.title || r.groupId}*`
+    if (r.ungrouped !== undefined) return `取消 ${r.ungrouped} 个分组`
     if (r.groups) return `列出 ${(r.groups as unknown[]).length} 个标签组`
     if (r.reloaded) return '刷新标签'
     if (r.pinned !== undefined) return r.pinned ? '固定标签' : '取消固定'
     if (r.discarded !== undefined) return `休眠 ${r.discarded} 个标签`
     if (r.duplicated !== undefined) return '复制标签'
+    // Bookmarks
     if (r.nodes) return `观察到 ${r.observed || (r.nodes as unknown[]).length} 个书签节点`
+    if (r.movedNode)
+      return `移动 ${(r.movedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.movedNode as { title: string }).title}*`
+    if (r.createdNode)
+      return `创建 ${(r.createdNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.createdNode as { title: string }).title}*`
+    if (r.existingNode)
+      return `目标已存在，复用 ${(r.existingNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.existingNode as { title: string }).title}*`
+    if (r.updatedNode)
+      return `更新 ${(r.updatedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.updatedNode as { title: string }).title}*`
+    if (r.openedNode) return `打开书签 *${(r.openedNode as { title: string }).title}*`
+    if (r.removedNode)
+      return `删除 ${(r.removedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.removedNode as { title: string }).title}*`
     if (r.bookmark) return `添加书签 *${(r.bookmark as { title: string }).title}*`
+    // Windows
     if (r.windows) return `列出 ${(r.windows as unknown[]).length} 个窗口`
+    if (r.window) return '创建窗口'
+    // History
     if (r.items) return `搜索到 ${r.found} 条历史`
+    if (r.deleted !== undefined && r.timeRange) return `删除 ${r.deleted} 条历史 (${r.timeRange})`
+    if (r.deleted !== undefined) return `删除 ${r.deleted} 条记录`
+    // Navigation
     if (r.navigated) return `导航至 ${r.navigated}`
+    if (r.dataUrl) return '截图已捕获'
+    // Page
     if (r.zoomFactor !== undefined) return `缩放至 ${Math.round((r.zoomFactor as number) * 100)}%`
+    if (r.opened) return '打开下载页面'
+    // Theme
     if (r.themeMode !== undefined) return `主题: ${r.themeMode}`
+    // Font
     if (r.fontSize !== undefined) return `字号: ${r.fontSizeLabel || r.fontSize + 'px'}`
     if (r.font) return `字体: ${r.font}`
+    // Cookies
     if (r.cookies) return `查看 ${r.found || 0} 个 Cookie (${r.domain})`
+    if (r.domain && r.deleted !== undefined) return `清除 ${r.domain} 的 ${r.deleted} 个 Cookie`
+    // Top Sites
     if (r.sites) return `展示 ${r.found || 0} 个常用网站`
+    // Extensions
     if (r.extensions) return `列出 ${r.found || 0} 个扩展`
+    if (r.id && r.enabled !== undefined) return r.enabled ? '启用扩展' : '禁用扩展'
+    if (r.id && (r as { uninstalled?: string }).uninstalled) return `卸载扩展`
+    // Permissions
     if (r.permissions) return `查看 ${r.domain} 的权限设置`
+    if (r.setting && r.value) return `设置 ${r.domain} 的 ${r.setting} 权限`
+    // Storage
     if (r.key && r.value !== undefined)
       return `存储 *${r.key}* = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
+    if (r.storageRemoved) return `删除存储 *${r.storageRemoved}*`
+    // Recording
     if (r.recording) return `开始录制 ${r.recording}`
     if (r.saved) return `录制已保存为 ${r.saved}`
     if (r.stopped) return '录制已停止'
+    // Sessions
     if (r.restored) return `恢复标签 ${r.restored}`
+    // Batch
     if (r.results && r.total !== undefined) return `批量执行 ${r.total} 个操作`
+    // 旧格式兼容
+    if (r.action === 'query') return `查询 ${r.count} 个 "${r.value || r.selector || '元素'}"`
+    if (r.action === 'modify')
+      return `修改 ${r.changed} 个 "${r.value || r.selector}" 的 ${r.property}`
+    if (r.action === 'remove') return `删除 ${r.removed} 个 "${r.value || r.selector}"`
+    if (r.action === 'add') return `添加 <${r.tag}> 到 ${r.target || r.parentSelector || 'body'}`
+    if (r.action === 'style') return `修改 ${r.changed} 个 "${r.value || r.selector}" 样式`
+    if (r.action === 'event') {
+      const evLabels: Record<string, string> = {
+        click: '点击',
+        input: '输入',
+        focus: '聚焦',
+        blur: '失焦',
+        submit: '提交表单',
+        change: '变更',
+        scroll: '滚动',
+        select: '全选',
+        keydown: '按键',
+        keyup: '抬起',
+      }
+      return `${evLabels[r.eventType as string] || r.eventType} "${r.value || r.selector}"${r.eventValue ? ' -> ' + r.eventValue : ''}`
+    }
+    if (r.enabled) return `启用扩展 *${r.enabled}*`
+    if (r.disabled) return `禁用扩展 *${r.disabled}*`
+    if (r.moved && r.to) return `移动 *${r.moved}* → ${r.to}`
+    if (r.reordered) return `调整 *${r.reordered}* 位置`
+    if (r.sortedBookmarks) return `整理 *${r.folder}* 中 ${r.sortedBookmarks} 个书签`
+    if ((r.folder as { title?: string })?.title)
+      return `创建文件夹 *${(r.folder as { title: string }).title}*`
+    if (r.renamed && r.to) return `重命名 *${r.renamed}* -> *${r.to}*`
+    if (r.renamed) return `重命名 *${r.renamed}*`
     return JSON.stringify(result).slice(0, 100)
   }
 
@@ -947,24 +1138,148 @@ export function useAIEngine() {
       showScreenshot(r.screenshot, r.tabTitle as string | undefined)
       return
     }
+    // 截图摘要（agent loop 步骤中显示）
+    else if (r.dataUrl) {
+      // 已在 agent loop 中通过 lastScreenshot + emitAIChat 处理，此处仅作兜底摘要
+    }
 
     let text = '操作完成'
 
+    // intent 感知覆盖
     if (intent === 'sort_tabs' && r.moved) text = `已按域名排序 ${r.moved} 个标签`
     else if (intent === 'pin_tab') {
       const tab = r.tab as { pinned?: boolean } | undefined
       text = tab?.pinned ? '已固定标签' : '已取消固定'
     } else if (intent === 'reload_tab') text = '已刷新'
     else if (intent === 'rename_group') text = r.title ? `已重命名分组: ${r.title}` : '已重命名分组'
+    else if (intent === 'duplicate_tab') text = '标签已复制'
+    else if (intent === 'mute_tabs_by_domain' && r.tab) text = '已静音'
+    else if (intent === 'unmute_tabs_by_domain' && r.tab) text = '已取消静音'
+    else if (intent === 'discard_tabs' && r.tab) text = '已休眠'
+    else if (intent === 'remove_bookmark') text = '已删除书签'
+    else if (intent === 'clear_cookies') text = 'Cookie 已清理'
+    else if (intent === 'close_duplicate_tabs' && r.removed) text = `已关闭 ${r.removed} 个重复标签`
+    else if (intent === 'close_tabs_by_domain' && r.removed) text = `已关闭 ${r.removed} 个标签`
+    else if (intent === 'close_other_tabs' && r.removed) text = `已关闭 ${r.removed} 个标签`
+    // 通用结果类型
     else if (r.closed) text = `已为你关闭 ${r.closed} 个标签页`
-    else if (r.focused) {
-      const focused = r.focused as { title?: string }
-      text = `已切换到: ${focused.title || ''}`
-    } else if (r.found && r.bookmarks)
+    else if (r.focused) text = `已切换到: ${(r.focused as { title?: string }).title || ''}`
+    else if (r.found && r.bookmarks)
       text = `为你找到 ${r.found} 个书签:\n${(r.bookmarks as Array<{ title: string; url: string }>).map((b) => `  ${b.title} — ${b.url}`).join('\n')}`
     else if (r.items)
-      text = `为你找到 ${r.found || (r.items as unknown[]).length} 条历史记录:\n${(r.items as Array<{ title: string; url: string }>).map((it) => `  ${it.title}\n    ${it.url}`).join('\n')}`
+      text = `为你找到 ${r.found || (r.items as unknown[]).length} 条历史记录:\n${(
+        r.items as Array<{
+          lastVisitTime?: number
+          title?: string
+          url: string
+          visitCount?: number
+        }>
+      )
+        .map((it) => {
+          const time = it.lastVisitTime ? new Date(it.lastVisitTime).toLocaleString('zh-CN') : ''
+          return `  ${it.title}\n    ${it.url}${time ? '\n    ' + time : ''}${it.visitCount ? ' · 访问 ' + it.visitCount + ' 次' : ''}`
+        })
+        .join('\n')}`
+    else if (r.cookies)
+      text = `为你找到 ${r.found} 个 Cookie (${r.domain}):\n${(r.cookies as Array<{ name: string; value: string; secure?: boolean; httpOnly?: boolean; sameSite?: string }>).map((c) => `  ${c.name} = ${c.value}${c.secure ? ' [安全]' : ''}${c.httpOnly ? ' [HttpOnly]' : ''}${c.sameSite ? ' SameSite=' + c.sameSite : ''}`).join('\n')}`
+    else if (r.sites)
+      text = `为你展示最常访问的 ${r.found} 个网站:\n${(r.sites as Array<{ title: string; url: string }>).map((s, i) => `  ${i + 1}. ${s.title} — ${s.url}`).join('\n')}`
+    else if (r.extensions)
+      text = `为你找到 ${r.found} 个扩展:\n${(r.extensions as Array<{ enabled: boolean; name: string; id: string; description?: string }>).map((e) => `  ${e.enabled ? '✓' : '✗'} ${e.name} (${e.id.slice(0, 12)}...)${e.description ? '\n    ' + e.description : ''}`).join('\n')}`
+    else if (r.enabled) text = `已为你启用扩展 "${r.enabled}"`
+    else if (r.disabled) text = `已为你禁用扩展 "${r.disabled}"`
+    else if (r.uninstalled) text = `已为你卸载扩展 "${r.uninstalled}"`
+    else if (r.permissions) {
+      const labels: Record<string, string> = { allow: '允许', block: '阻止', default: '默认' }
+      text = `为你查看 ${r.domain} 的权限设置:\n${Object.entries(
+        r.permissions as Record<string, string>
+      )
+        .map(([k, v]) => `  ${k}: ${labels[v] || v}`)
+        .join('\n')}`
+    } else if (r.setting && r.value !== undefined) {
+      const label: Record<string, string> = { allow: '允许', block: '阻止', default: '默认' }
+      text = `已将 ${r.domain} 的 ${r.setting} 权限设置为 ${label[r.value as string] || r.value}`
+    } else if (r.key && r.value !== undefined)
+      text = `存储 "${r.key}" = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
+    else if (r.found) text = `为你找到 ${r.found} 条结果`
+    else if (r.sorted) text = `已按 ${r.order} 排序 ${r.sorted} 个标签`
+    else if (r.groupedTabs)
+      text = `已创建分组 "${r.title || r.groupName}"，包含 ${r.groupedTabs} 个标签`
+    else if (r.ungrouped) text = `已取消 ${r.ungrouped} 个标签的分组`
+    else if (r.restored) text = `已恢复: ${r.restored}`
+    else if (r.navigated) text = `已导航至 ${r.navigated}`
+    else if (r.muted) text = `已静音 ${r.muted} 个标签`
+    else if (r.pinned !== undefined) text = r.pinned ? '已固定标签' : '已取消固定'
+    else if (r.reloaded) text = '已刷新'
+    else if (r.duplicated) text = '标签已复制'
+    else if (r.removed) text = `已删除 ${r.removed} 个书签`
+    else if (r.storageRemoved) text = `已删除存储键 "${r.storageRemoved}"`
+    else if (r.bookmark)
+      text = `已添加书签: ${(r.bookmark as { title: string; folder?: string }).title}${r.bookmark && (r.bookmark as { folder?: string }).folder ? ` → ${(r.bookmark as { folder?: string }).folder}` : ''}`
+    else if (r.opened) text = `已打开: ${r.opened}`
+    else if (r.reordered) text = `已将 "${r.reordered}" 调整到第 ${r.index} 位`
+    else if (r.moved && r.to) text = `已将 "${r.moved}" 移动到 ${r.to}`
+    else if (r.moved !== undefined) text = `标签已移到位置 ${((r.index as number) || 0) + 1}`
+    else if (r.discarded) text = `已休眠 ${r.discarded} 个标签`
+    else if (r.unmuted) text = `已取消静音 ${r.unmuted} 个标签`
+    else if (r.zoom !== undefined) text = `缩放: ${Math.round((r.zoom as number) * 100)}%`
+    else if (r.windowId) text = '新窗口已打开'
+    else if (r.domain && r.deleted !== undefined)
+      text = `已为你清除 ${r.domain} 的 ${r.deleted} 个 Cookie`
+    else if (typeof r.deleted === 'string') text = `已删除文件夹 "${r.deleted}"`
+    else if (r.deleted)
+      text = `已清理 ${r.deleted} 条${r.timeRange ? ` (${r.timeRange})` : ''}历史记录`
+    else if (r.timeRange) text = `已清除${r.timeRange === 'all' ? '全部' : ''}历史记录`
+    else if (r.groupsCreated !== undefined)
+      text =
+        (r.groupsCreated as number) > 0
+          ? `已创建 ${r.groupsCreated} 个分组`
+          : '当前页面暂无需要分组'
+    else if (r.groups)
+      text = `为你找到 ${r.total} 个分组:\n${(r.groups as Array<{ title?: string; count: number; tabs: Array<{ title?: string }> }>).map((g) => `  ${g.title || '未命名'} (${g.count} 个标签)\n    ${g.tabs.map((t) => t.title).join(' · ')}`).join('\n')}`
+    else if (r.renamed && r.to) text = `已将文件夹 "${r.renamed}" 重命名为 "${r.to}"`
+    else if (r.renamed) text = `已重命名分组: ${r.renamed}`
+    else if (r.sortedBookmarks) text = `已整理 "${r.folder}" 中的 ${r.sortedBookmarks} 个书签`
+    else if ((r.folder as { title?: string })?.title)
+      text = `已创建书签文件夹 "${(r.folder as { title: string }).title}"`
+    else if (r.applied) text = (r.message as string) || '设置已生效'
+    else if (r.darkMode !== undefined) text = r.darkMode ? '夜间模式已开启' : '夜间模式已关闭'
+    else if (r.themeMode) {
+      const modeLabel: Record<string, string> = { light: '浅色', dark: '深色', device: '跟随设备' }
+      text = `当前主题模式: ${modeLabel[r.themeMode as string] || r.themeMode}`
+    } else if (r.fontSize && r.fontSizeLabel)
+      text = `当前字号: ${r.fontSizeLabel} (${r.fontSize}px)`
+    else if ((r.fonts as { standard?: string } | undefined)?.standard) {
+      const f = r.fonts as { standard?: string; serif?: string; sansSerif?: string; fixed?: string }
+      text = `当前字体设置:\n标准: ${f.standard || '-'}\n衬线: ${f.serif || '-'}\n无衬线: ${f.sansSerif || '-'}\n等宽: ${f.fixed || '-'}`
+    } else if (r.fontSize) text = `字号: ${r.fontSize}`
+    else if (r.font) text = `字体: ${r.font}`
+    else if (r.recording) text = (r.message as string) || `已开始录制 ${r.recording}`
+    else if (r.saved) text = `录制已保存为 ${r.saved}`
+    else if (r.stopped) text = '录制已停止'
     else if (r.message && typeof r.message === 'string') text = r.message
+    else if (r.action === 'query')
+      text = `找到 ${r.count} 个匹配元素:\n${(r.items as Array<{ index: number; text?: string; html?: string }>).map((it) => `  [${it.index}] ${it.text || it.html || ''}`).join('\n')}`
+    else if (r.action === 'modify') text = `已修改 ${r.changed} 个 "${r.value}" 的 ${r.property}`
+    else if (r.action === 'remove') text = `已删除 ${r.removed} 个元素`
+    else if (r.action === 'add') text = `已添加 <${r.tag}>`
+    else if (r.action === 'style') text = `已修改 ${r.changed} 个元素样式`
+    else if (r.action === 'event') {
+      const evLabels: Record<string, string> = {
+        click: '点击',
+        input: '输入',
+        focus: '聚焦',
+        blur: '失焦',
+        submit: '提交表单',
+        change: '变更',
+        scroll: '滚动',
+        select: '全选',
+        keydown: '按键',
+        keyup: '抬起',
+        dblclick: '双击',
+      }
+      text = `已对 "${r.value}" 触发 ${evLabels[r.eventType as string] || r.eventType} 事件`
+    }
 
     addMessage('ai-chat', text)
   }
@@ -1029,7 +1344,9 @@ export function useAIEngine() {
       get displayMode() {
         return displayMode.value
       },
-      isSettingsOpen,
+      get isSettingsOpen() {
+        return isSettingsOpen.value
+      },
       get activeLoopId() {
         return activeLoopId.value
       },
@@ -1085,5 +1402,8 @@ export function useAIEngine() {
 
     // 命令输入值
     commandInputValue,
+
+    // 确认对话框
+    pendingConfirm,
   }
 }
