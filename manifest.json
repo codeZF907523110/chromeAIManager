@@ -62,7 +62,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["content/*", "offscreen/*", "lib/*", "service-worker.js", "sidepanel.html", "sidepanel.js", "sidepanel.css", "style.js", "style.css", "constants.js"],
+      "resources": ["content/*", "offscreen/*", "lib/*", "sidepanel.html", "sidepanel.js", "sidepanel.css", "style.js", "style.css", "constants.js"],
       "matches": ["<all_urls>"]
     }
   ]

@@ -43,7 +43,7 @@ async function handleMessage(
   }
 
   if (type === MSG_SET_DISPLAY_MODE) {
-    const mode = (message as unknown as { mode: string }).mode
+    const { mode } = message as { type: string; mode: string }
     await chrome.storage.local.set({ displayMode: mode })
     return { success: true }
   }
@@ -73,16 +73,6 @@ async function handleGetBookmarks(
   }
 }
 
-// ──── 安装 / 更新 ────
-
-chrome.runtime.onInstalled.addListener((details) => {
-  if (details.reason === 'install') {
-    console.log('[AI管家] 首次安装')
-  } else if (details.reason === 'update') {
-    console.log('[AI管家] 更新到', chrome.runtime.getManifest().version)
-  }
-})
-
 // ──── 快捷键触发侧边栏 ────
 
 chrome.commands.onCommand.addListener(async (command) => {
@@ -95,6 +85,8 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 // 注意：action.onClicked 只在没有 default_popup 时触发
 chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab?.id) return
+
   const result = await chrome.storage.local.get('displayMode')
   const mode = result.displayMode || 'sidepanel'
 
@@ -115,12 +107,16 @@ chrome.action.onClicked.addListener(async (tab) => {
 // ──── 初始化 sidePanel 行为 ────
 
 // 必须在同步上下文中调用，Chrome 自动在用户点击图标时打开 sidepanel
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
+  // ignore
+})
 
 // ──── 统一打开逻辑 ────
 
 async function openPanelOrOverlay() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (!tab?.id) return
+
   const result = await chrome.storage.local.get('displayMode')
   const mode = result.displayMode || 'sidepanel'
 

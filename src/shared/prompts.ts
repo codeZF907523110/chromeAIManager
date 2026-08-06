@@ -32,7 +32,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     return '- ' + c.intent + ' | 参数: ' + slotNames + ' | ' + c.description
   }).join('\n')
 
-  const tabsMissingWindowId = context.tabs.map((t) => ({
+  const tabsForPrompt = context.tabs.map((t) => ({
     id: t.id,
     title: t.title,
     url: t.url,
@@ -40,15 +40,17 @@ export function buildAgentSystemPrompt(context: Context): string {
     active: t.active,
   }))
 
-  context._truncated
-    ? formatTruncated(
-        tabsMissingWindowId,
-        15,
-        context.activeTab?.id !== undefined
-          ? context.tabs.find((t) => t.id === context.activeTab?.id)?.windowId
-          : undefined
-      )
-    : formatFull(tabsMissingWindowId, 20)
+  const tabsBlock =
+    '\n## 当前标签页列表\n' +
+    (context._truncated
+      ? formatTruncated(
+          tabsForPrompt,
+          15,
+          context.activeTab?.id !== undefined
+            ? context.tabs.find((t) => t.id === context.activeTab?.id)?.windowId
+            : undefined
+        )
+      : formatFull(tabsForPrompt, 20))
 
   const lessonsBlock = context.recentLessons?.length
     ? '\n## 最近经验\n' +
@@ -132,6 +134,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '16. **分组命名**：使用 `tabs_group` 时，如果创建新分组（无 groupId），必须同时传 `title` 参数作为分组名称，不能为空。`title` 和 `groupName` 都会显示给最终用户。\n\n' +
     '## 可用工具\n\n' +
     tools +
+    tabsBlock +
     lessonsBlock +
     pageBlock
   )
@@ -165,7 +168,7 @@ function formatTruncated(tabs: TabInfo[], max: number, currentWinId?: number): s
 
 function formatPageStructure(ps: PageStructure): string {
   if (!ps || !ps.count) return ''
-  const total = ps.totalCount || ps.count
+  const total = ps.totalCount ?? ps.count
   let out =
     '\n## 当前页面 (' +
     (ps.title || ps.url) +

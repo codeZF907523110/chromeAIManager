@@ -71,6 +71,7 @@ export interface AIOptions {
   temperature?: number
   maxTokens?: number
   timeout?: number
+  jsonMode?: boolean
 }
 
 // ──── AI 适配器接口 ────

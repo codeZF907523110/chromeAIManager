@@ -609,7 +609,7 @@ export const COMMANDS: Command[] = [
     intent: 'dom_manipulate',
     description:
       '在当前页面执行自定义 JavaScript 代码。code 是函数体，系统自动包一层 function 执行。必须显式 return 返回值',
-    dangerous: false,
+    dangerous: true,
     slots: {
       code: {
         type: 'string',

@@ -3,139 +3,152 @@
  * 此文档运行在 offscreen context，Web API 可用但 chrome.* 仅限 runtime
  */
 
-let mediaRecorder = null;
-let recordedChunks = [];
+let mediaRecorder = null
+let recordedChunks = []
+let _stopResolve = null
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "START_TAB_RECORDING") {
+  if (message.type === 'START_TAB_RECORDING') {
     startTabRecording(message.streamId, message.tabTitle).then(() =>
-      sendResponse({ success: true }),
-    );
-    return true;
+      sendResponse({ success: true })
+    )
+    return true
   }
-  if (message.type === "START_DESKTOP_RECORDING") {
-    startDesktopRecording(message.streamId).then(() =>
-      sendResponse({ success: true }),
-    );
-    return true;
+  if (message.type === 'START_DESKTOP_RECORDING') {
+    startDesktopRecording(message.streamId).then(() => sendResponse({ success: true }))
+    return true
   }
-  if (message.type === "STOP_RECORDING") {
-    stopRecording(sendResponse);
-    return true;
+  if (message.type === 'STOP_RECORDING') {
+    stopRecording(sendResponse)
+    return true
   }
   // 未知消息静默忽略，避免干扰其他扩展上下文的 sendMessage
-});
+})
 
 async function startTabRecording(streamId, tabTitle) {
-  stopCurrentRecording();
+  if (mediaRecorder?.state === 'recording') return
+  stopCurrentRecording()
 
+  // Tab 录制：audio 约束使用正确的 chromeMediaSource 格式
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
-      mandatory: {
-        chromeMediaSource: "tab",
-        chromeMediaSourceId: streamId,
-      },
+      chromeMediaSource: 'tab',
+      chromeMediaSourceId: streamId,
     },
     video: {
       mandatory: {
-        chromeMediaSource: "tab",
+        chromeMediaSource: 'tab',
         chromeMediaSourceId: streamId,
       },
     },
-  });
+  })
 
-  startMediaRecorder(stream);
+  startMediaRecorder(stream)
 }
 
 async function startDesktopRecording(streamId) {
-  stopCurrentRecording();
+  if (mediaRecorder?.state === 'recording') return
+  stopCurrentRecording()
 
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
       mandatory: {
-        chromeMediaSource: "desktop",
+        chromeMediaSource: 'desktop',
         chromeMediaSourceId: streamId,
       },
     },
-  });
+  })
 
-  startMediaRecorder(stream);
+  startMediaRecorder(stream)
 }
 
 function startMediaRecorder(stream) {
-  recordedChunks = [];
+  recordedChunks = []
 
   // 尝试使用 VP9/webm (Chrome 支持)
-  let mimeType = "video/webm;codecs=vp9";
+  let mimeType = 'video/webm;codecs=vp9'
   if (!MediaRecorder.isTypeSupported(mimeType)) {
-    mimeType = "video/webm;codecs=vp8";
+    mimeType = 'video/webm;codecs=vp8'
     if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = "video/webm";
+      mimeType = 'video/webm'
     }
   }
 
-  mediaRecorder = new MediaRecorder(stream, {
-    mimeType,
-    videoBitsPerSecond: 2500000, // 2.5 Mbps
-  });
+  let recorder
+  try {
+    recorder = new MediaRecorder(stream, {
+      mimeType,
+      videoBitsPerSecond: 2500000, // 2.5 Mbps
+    })
+  } catch (err) {
+    stream.getTracks().forEach((t) => t.stop())
+    throw err
+  }
 
-  mediaRecorder.ondataavailable = (event) => {
+  recorder.ondataavailable = (event) => {
     if (event.data.size > 0) {
-      recordedChunks.push(event.data);
+      recordedChunks.push(event.data)
     }
-  };
+  }
 
-  mediaRecorder.onstop = () => {
+  recorder.onstop = () => {
     // 停止所有轨道
-    stream.getTracks().forEach((t) => t.stop());
-  };
+    stream.getTracks().forEach((t) => t.stop())
 
-  mediaRecorder.start(1000); // 每秒收集一次数据
+    // 如果有等待中的 stopRecording 回调，执行它
+    if (_stopResolve) {
+      _stopResolve()
+      _stopResolve = null
+    }
+  }
+
+  mediaRecorder = recorder
+  mediaRecorder.start(1000) // 每秒收集一次数据
 }
 
 function stopCurrentRecording() {
-  if (mediaRecorder && mediaRecorder.state !== "inactive") {
-    mediaRecorder.stop();
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
   }
-  mediaRecorder = null;
-  recordedChunks = [];
+  mediaRecorder = null
+  recordedChunks = []
 }
 
 async function stopRecording(sendResponse) {
-  if (!mediaRecorder || mediaRecorder.state === "inactive") {
-    sendResponse({ success: false, error: "没有正在进行的录制" });
-    return;
+  if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+    sendResponse({ success: false, error: '没有正在进行的录制' })
+    return
   }
 
   return new Promise((resolve) => {
-    mediaRecorder.onstop = async () => {
+    _stopResolve = async () => {
       try {
-        const blob = new Blob(recordedChunks, { type: "video/webm" });
-        const reader = new FileReader();
+        const blob = new Blob(recordedChunks, { type: 'video/webm' })
+        const reader = new FileReader()
 
         reader.onloadend = () => {
-          const dataUrl = reader.result;
+          const dataUrl = reader.result
           sendResponse({
             success: true,
             dataUrl,
             size: blob.size,
-          });
-          resolve();
-        };
+          })
+          resolve()
+        }
 
         reader.onerror = () => {
-          sendResponse({ success: false, error: "读取录制数据失败" });
-          resolve();
-        };
+          sendResponse({ success: false, error: '读取录制数据失败' })
+          resolve()
+        }
 
-        reader.readAsDataURL(blob);
+        reader.readAsDataURL(blob)
       } catch (err) {
-        sendResponse({ success: false, error: err.message });
-        resolve();
+        sendResponse({ success: false, error: err.message })
+        resolve()
       }
-    };
+    }
 
-    mediaRecorder.stop();
-  });
+    mediaRecorder.stop()
+  })
 }

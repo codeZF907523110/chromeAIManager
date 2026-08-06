@@ -35,10 +35,17 @@ function createParticle(): Particle {
 }
 
 function initCanvas() {
+  if (animationId) {
+    cancelAnimationFrame(animationId)
+    animationId = null
+  }
+
   const canvas = canvasRef.value
   if (!canvas) return
 
   ctx = canvas.getContext('2d')
+  if (!ctx) return
+
   width = canvas.width = canvas.offsetWidth
   height = canvas.height = canvas.offsetHeight
 

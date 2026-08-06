@@ -31,42 +31,70 @@ export class OpenAIAdapter implements AIAdapter {
   }
 
   private async call(messages: ChatMessage[], options: AIOptions = {}): Promise<string> {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), options.timeout || 60000)
+    const timeout = options.timeout || 60000
+    const maxRetries = 1
+    let lastError: Error | null = null
 
-    try {
-      await this.ensurePermission()
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeout)
 
-      const body: Record<string, unknown> = {
-        model: this.model,
-        messages,
-        temperature: options.temperature ?? 0.1,
-        max_tokens: options.maxTokens ?? 4096,
+      try {
+        await this.ensurePermission()
+
+        const body: Record<string, unknown> = {
+          model: this.model,
+          messages,
+          temperature: options.temperature ?? 0.1,
+          max_tokens: options.maxTokens ?? 4096,
+        }
+
+        // 仅在未显式禁用 JSON mode 时启用
+        if (options.jsonMode !== false) {
+          body.response_format = { type: 'json_object' }
+        }
+
+        const resp = await fetch(`${this.endpoint}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+
+        if (!resp.ok) {
+          const text = await resp.text()
+          let friendly = `API 请求失败 (${resp.status})`
+          try {
+            const err = JSON.parse(text)
+            friendly = err.error?.message || err.message || friendly
+          } catch {
+            // plain text fallback
+            friendly = `${friendly}: ${text.slice(0, 100)}`
+          }
+          throw new Error(friendly)
+        }
+
+        const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> }
+        return data.choices?.[0]?.message?.content || ''
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e))
+        // 超时或权限错误不重试
+        if (lastError.name === 'AbortError' || lastError.message.includes('权限')) {
+          throw lastError
+        }
+        // 最后一次尝试不再重试
+        if (attempt >= maxRetries) throw lastError
+        // 短暂延迟后重试
+        await new Promise((r) => setTimeout(r, 1000))
+      } finally {
+        clearTimeout(timer)
       }
-
-      // 启用 JSON mode 确保输出纯 JSON
-      body.response_format = { type: 'json_object' }
-
-      const resp = await fetch(`${this.endpoint}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
-
-      if (!resp.ok) {
-        const text = await resp.text()
-        throw new Error(`API ${resp.status}: ${text.slice(0, 200)}`)
-      }
-
-      const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> }
-      return data.choices?.[0]?.message?.content || ''
-    } finally {
-      clearTimeout(timeout)
     }
+
+    throw lastError || new Error('API 调用失败')
   }
 
   private async ensurePermission(): Promise<void> {

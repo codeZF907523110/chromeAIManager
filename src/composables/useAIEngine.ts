@@ -3,7 +3,7 @@
  * 封装所有 AI 引擎、Agent 循环、命令处理的业务逻辑
  */
 
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import type {
   ChatMessage,
   MessageLog,
@@ -118,6 +118,15 @@ export function useAIEngine() {
     // 尝试恢复未完成的会话
     await recoverContext()
     isInitialized.value = true
+
+    // 监听模型变化，自动同步到 aiEngine（解决删除当前模型后的引用问题）
+    watch(
+      () => settingsComposable.activeModelId.value,
+      (newId) => {
+        const model = settingsComposable.models.value.find((m) => m.id === newId)
+        if (model) aiEngine.setModel(model)
+      }
+    )
   }
 
   /**
@@ -141,13 +150,17 @@ export function useAIEngine() {
           description: '上次的任务还在进行中，是否要继续？',
           items: [
             {
-              primary: savedPlan.stepDescription || '未完成的任务',
+              primary: savedPlan.goal || '未完成的任务',
               secondary: `${Math.round((Date.now() - data.timestamp) / 1000 / 60)} 分钟前`,
             },
           ],
           onConfirm: async () => {
             planTracker.value = savedPlan
             lessons.value = savedLessons
+            // 恢复对话上下文（agentLoop 中检查 conversationMessages 非空则复用）
+            if (data.conversationMessages) {
+              conversationMessages.value = data.conversationMessages as ChatMessage[]
+            }
             addMessage('system', '已恢复上次任务的上下文。请继续告诉我你的需求。')
           },
           onCancel: () => {
@@ -184,8 +197,8 @@ export function useAIEngine() {
       await chrome.storage.local.set({
         [MESSAGE_LOG_KEY]: messageLog.value.slice(-MAX_PERSISTED_MESSAGES),
       })
-    } catch {
-      // ignore
+    } catch (e: unknown) {
+      console.warn('[AI管家] 持久化消息失败:', e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -236,259 +249,272 @@ export function useAIEngine() {
 
     addMessage('system', '思考中...')
 
-    while (stepCount < MAX_AGENT_STEPS) {
-      if (activeLoopId.value !== loopId) return
+    try {
+      while (stepCount < MAX_AGENT_STEPS) {
+        if (activeLoopId.value !== loopId) return
 
-      if (Date.now() - startTime > TOTAL_TASK_TIMEOUT_MS) {
-        addMessage('system', '任务执行超时（120 秒），已停止。')
-        cleanup()
-        return
-      }
-
-      let raw: string
-      try {
-        raw = await aiEngine.chatWithHistory(messages, {
-          temperature: 0.2,
-          maxTokens: 4096,
-        })
-        console.log('[AI Commander] Raw response:', raw?.slice(0, 500))
-      } catch (e: unknown) {
-        const errorMessage = e instanceof Error ? e.message : String(e)
-        addMessage('error', `AI 调用失败: ${errorMessage}`)
-        cleanup()
-        return
-      }
-
-      let json: AIResponse | null
-      try {
-        json = repairJSON(raw)
-      } catch {
-        json = null
-      }
-
-      if (!json?.action) {
-        const jsonMatch = raw.match(/\{[\s\S]*"action"[\s\S]*\}/)
-        if (jsonMatch) {
-          try {
-            json = JSON.parse(jsonMatch[0]) as AIResponse
-          } catch {
-            json = null
-          }
-        }
-      }
-
-      if (!json?.action) {
-        jsonRetryCount++
-        if (jsonRetryCount >= 2) {
-          const rawPreview = raw ? raw.slice(0, 200) + (raw.length > 200 ? '...' : '') : '(空响应)'
-          addMessage(
-            'error',
-            `抱歉，我不太理解您的请求。请尝试用更完整、更具体的方式描述。\n\nAI 返回的内容（前200字符）：${rawPreview}`
-          )
-          console.error('[AI Commander] AI failed to understand:', raw)
+        if (Date.now() - startTime > TOTAL_TASK_TIMEOUT_MS) {
+          addMessage('system', '任务执行超时（120 秒），已停止。')
           cleanup()
           return
         }
-        console.warn('[AI Commander] JSON parse failed, retry', jsonRetryCount)
+
+        let raw: string
+        try {
+          raw = await aiEngine.chatWithHistory(messages, {
+            temperature: 0.2,
+            maxTokens: 4096,
+          })
+          console.log('[AI Commander] Raw response:', raw?.slice(0, 500))
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e)
+          addMessage('error', `AI 调用失败: ${msg}`)
+          cleanup()
+          return
+        }
+
+        let json: AIResponse | null
+        try {
+          json = repairJSON(raw)
+        } catch {
+          json = null
+        }
+
+        if (!json?.action) {
+          const jsonMatch = raw.match(/\{[\s\S]*"action"[\s\S]*\}/)
+          if (jsonMatch) {
+            try {
+              json = JSON.parse(jsonMatch[0]) as AIResponse
+            } catch {
+              json = null
+            }
+          }
+        }
+
+        if (!json?.action) {
+          jsonRetryCount++
+          if (jsonRetryCount >= 2) {
+            const rawPreview = raw
+              ? raw.slice(0, 200) + (raw.length > 200 ? '...' : '')
+              : '(空响应)'
+            addMessage(
+              'error',
+              `抱歉，我不太理解您的请求。请尝试用更完整、更具体的方式描述。\n\nAI 返回的内容（前200字符）：${rawPreview}`
+            )
+            console.error('[AI Commander] AI failed to understand:', raw)
+            cleanup()
+            return
+          }
+          console.warn('[AI Commander] JSON parse failed, retry', jsonRetryCount)
+          messages.push({ role: 'assistant', content: raw })
+          messages.push({
+            role: 'user',
+            content: '请重新输出，严格按照 JSON 格式，只输出 JSON 对象，不要有其他内容。',
+          })
+          continue
+        }
+        jsonRetryCount = 0
+
+        if (json.action === 'done') {
+          emitAIChat(json.reply || json.content || '操作完成', true)
+          return
+        }
+
+        if (json.action === 'ask') {
+          messages.push({ role: 'assistant', content: raw })
+          conversationMessages.value = [...messages]
+          activeLoopId.value = null
+          persistPlanTracker()
+          emitAIChat(json.reply || json.content || '请提供更多信息', false)
+          return
+        }
+
+        if (json.action === 'scan') {
+          const scanResult = await scanCurrentPage(json.toolCall?.args?.scanFilter as string)
+          const scanStr = scanResult
+            ? `页面扫描结果(${scanResult.totalCount || scanResult.count}元素): ${JSON.stringify(scanResult)}`
+            : '扫描失败'
+          messages.push({ role: 'assistant', content: raw })
+          messages.push({ role: 'user', content: scanStr })
+          addMessage('system', '已重新扫描页面')
+          continue
+        }
+
+        if (json.action === 'chat') {
+          const reply = (json.toolCall?.args?.reply as string) || json.reply || ''
+          emitAIChat(reply, false)
+          messages.push({ role: 'assistant', content: raw })
+          conversationMessages.value = [...messages]
+          activeLoopId.value = null
+          persistPlanTracker()
+          return
+        }
+
+        // 处理 execute action（兼容旧格式）
+        if (json.action === 'execute' && json.toolCall) {
+          json.action = 'exec_tool'
+        }
+
+        if (json.action !== 'exec_tool' || !json.toolCall) {
+          addMessage('error', `未知 action: ${json.action}`)
+          cleanup()
+          return
+        }
+
+        const toolCall = json.toolCall
+        const toolName = toolCall.name
+
+        if (toolName === 'chat') {
+          emitAIChat((toolCall.args?.reply as string) || '', true)
+          return
+        }
+
+        const thought = json.thought || ''
+        stepCount++
+        addMessage('system', `执行中... (${stepCount}/${MAX_AGENT_STEPS})`)
+
+        let result: ExecutionResult
+        try {
+          result = await Promise.race([
+            executeCommand(toolName, toolCall.args || {}),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('ACT_TIMEOUT')), STEP_TIMEOUT_MS)
+            ),
+          ])
+        } catch {
+          result = {
+            success: false,
+            code: 'ACT_TIMEOUT',
+            message: '操作执行超时（10 秒未完成）',
+            detail: { reason: '单步操作超过 ' + STEP_TIMEOUT_MS / 1000 + ' 秒' },
+          }
+        }
+
+        if (result.success === false && result.code === 'NEEDS_CONFIRM') {
+          const detail = (result.detail || {}) as Record<string, unknown>
+          const confirmItems =
+            (Array.isArray(detail.children)
+              ? (detail.children as Array<{ title?: string; url?: string }>)
+              : []) || []
+          const nodeId = detail.nodeId as string | undefined
+          const title = detail.title as string | undefined
+          cleanup()
+          pendingConfirm.value = {
+            title: (result.message as string) || '确认操作',
+            description:
+              detail.childCount != null
+                ? `包含 ${detail.childCount} 个子项的文件夹 "${title || ''}"`
+                : undefined,
+            items: confirmItems.map((c) => ({
+              primary: c.title || c.url || '',
+              secondary: c.url || '',
+            })),
+            onConfirm: async () => {
+              try {
+                const confirmResult = await executeCommand(toolName, {
+                  ...toolCall.args,
+                  nodeId,
+                  force: true,
+                })
+                if (confirmResult.success !== false) {
+                  addMessage('system', `✓ 已删除文件夹 "${title || ''}"`)
+                } else {
+                  addMessage('error', confirmResult.error || confirmResult.message || '操作失败')
+                }
+              } catch (e: unknown) {
+                addMessage('error', e instanceof Error ? e.message : String(e))
+              }
+              cleanup()
+            },
+            onCancel: () => {
+              addMessage('system', `已取消删除 "${title || ''}"`)
+              cleanup()
+            },
+          }
+          return
+        }
+
+        if (result.success === false && result.code) {
+          consecutiveErrors++
+        } else if (result.error) {
+          consecutiveErrors++
+        } else {
+          consecutiveErrors = 0
+        }
+
+        updatePlanTracker(userText, json.plan, thought, toolName, result)
+
+        if (json.predict && !result.error && !result.code) {
+          const mismatch = verifyPredict(json.predict, result)
+          if (mismatch) {
+            messages.push({ role: 'system', content: mismatch })
+          }
+        }
+
+        const errMsg = result.code ? `[${result.code}] ${result.message || ''}` : result.error
+        if (errMsg) {
+          addLesson(userText, toolName, errMsg)
+        }
+
         messages.push({ role: 'assistant', content: raw })
+        const sanitized = sanitizeResult(result)
         messages.push({
           role: 'user',
-          content: '请重新输出，严格按照 JSON 格式，只输出 JSON 对象，不要有其他内容。',
+          content: `执行结果(${toolName}): ${JSON.stringify(sanitized)}`,
         })
-        continue
-      }
-      jsonRetryCount = 0
 
-      if (json.action === 'done') {
-        emitAIChat(json.reply || json.content || '操作完成', true)
-        return
-      }
-
-      if (json.action === 'ask') {
-        messages.push({ role: 'assistant', content: raw })
-        conversationMessages.value = [...messages]
-        activeLoopId.value = null
-        persistPlanTracker()
-        emitAIChat(json.reply || json.content || '请提供更多信息', false)
-        return
-      }
-
-      if (json.action === 'scan') {
-        const scanResult = await scanCurrentPage(json.toolCall?.args?.scanFilter as string)
-        const scanStr = scanResult
-          ? `页面扫描结果(${scanResult.totalCount || scanResult.count}元素): ${JSON.stringify(scanResult)}`
-          : '扫描失败'
-        messages.push({ role: 'assistant', content: raw })
-        messages.push({ role: 'user', content: scanStr })
-        addMessage('system', '已重新扫描页面')
-        continue
-      }
-
-      if (json.action === 'chat') {
-        const reply = (json.toolCall?.args?.reply as string) || json.reply || ''
-        emitAIChat(reply, false)
-        messages.push({ role: 'assistant', content: raw })
-        conversationMessages.value = [...messages]
-        activeLoopId.value = null
-        persistPlanTracker()
-        return
-      }
-
-      // 处理 execute action（兼容旧格式）
-      if (json.action === 'execute' && json.toolCall) {
-        json.action = 'exec_tool'
-      }
-
-      if (json.action !== 'exec_tool' || !json.toolCall) {
-        addMessage('error', `未知 action: ${json.action}`)
-        cleanup()
-        return
-      }
-
-      const toolCall = json.toolCall
-      const toolName = toolCall.name
-
-      if (toolName === 'chat') {
-        emitAIChat((toolCall.args?.reply as string) || '', true)
-        return
-      }
-
-      const thought = json.thought || ''
-      stepCount++
-      addMessage('system', `执行中... (${stepCount}/${MAX_AGENT_STEPS})`)
-
-      let result: ExecutionResult
-      try {
-        result = await Promise.race([
-          executeCommand(toolName, toolCall.args || {}),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('ACT_TIMEOUT')), STEP_TIMEOUT_MS)
-          ),
-        ])
-      } catch {
-        result = {
-          success: false,
-          code: 'ACT_TIMEOUT',
-          message: '操作执行超时（10 秒未完成）',
-          detail: { reason: '单步操作超过 ' + STEP_TIMEOUT_MS / 1000 + ' 秒' },
-        }
-      }
-
-      if (result.success === false && result.code === 'NEEDS_CONFIRM') {
-        const detail = (result.detail || {}) as Record<string, unknown>
-        const confirmItems = (detail.children as Array<{ title?: string; url?: string }>) || []
-        const nodeId = detail.nodeId as string | undefined
-        const title = detail.title as string | undefined
-        cleanup() // 取消任何挂起的操作，再显示新的确认卡
-        pendingConfirm.value = {
-          title: (result.message as string) || '确认操作',
-          description: detail.childCount
-            ? `包含 ${detail.childCount} 个子项的文件夹 "${title || ''}"`
-            : undefined,
-          items: confirmItems.map((c) => ({
-            primary: c.title || c.url || '',
-            secondary: c.url || '',
-          })),
-          onConfirm: async () => {
-            try {
-              const confirmResult = await executeCommand(toolName, {
-                ...toolCall.args,
-                nodeId,
-                force: true,
-              })
-              if (confirmResult.success !== false) {
-                addMessage('system', `✓ 已删除文件夹 "${title || ''}"`)
-              } else {
-                addMessage('error', confirmResult.error || confirmResult.message || '操作失败')
-              }
-            } catch (e: unknown) {
-              addMessage('error', e instanceof Error ? e.message : String(e))
-            }
-            cleanup()
-          },
-          onCancel: () => {
-            addMessage('system', `已取消删除 "${title || ''}"`)
-            cleanup()
-          },
-        }
-        return
-      }
-
-      if (result.success === false && result.code) {
-        consecutiveErrors++
-      } else if (result.error) {
-        consecutiveErrors++
-      } else {
-        consecutiveErrors = 0
-      }
-
-      updatePlanTracker(userText, json.plan, thought, toolName, result)
-
-      if (json.predict && !result.error && !result.code) {
-        const mismatch = verifyPredict(json.predict, result)
-        if (mismatch) {
-          messages.push({ role: 'system', content: mismatch })
-        }
-      }
-
-      const errMsg = result.code ? `[${result.code}] ${result.message || ''}` : result.error
-      if (errMsg) {
-        addLesson(userText, toolName, errMsg)
-      }
-
-      messages.push({ role: 'assistant', content: raw })
-      const sanitized = sanitizeResult(result)
-      messages.push({
-        role: 'user',
-        content: `执行结果(${toolName}): ${JSON.stringify(sanitized)}`,
-      })
-
-      if (result.result === undefined) {
-        messages.push({
-          role: 'system',
-          content: '脚本返回 undefined，通常表示脚本里没有写 return。请补上明确的 return 后重试。',
-        })
-      } else if (result.result === null) {
-        messages.push({
-          role: 'system',
-          content: '脚本返回 null，通常表示选择器未命中目标元素，或脚本主动返回了空值。',
-        })
-      }
-
-      if ((result.triggered || result.result !== undefined) && !result.error && !result.code) {
-        const postScan = await scanCurrentPage()
-        if (postScan?.elements?.length) {
+        if (result.result === undefined) {
           messages.push({
             role: 'system',
-            content: `[自动验证] 操作后页面状态(${postScan.totalCount || postScan.count}元素): ${JSON.stringify(postScan)}`,
+            content:
+              '脚本返回 undefined，通常表示脚本里没有写 return。请补上明确的 return 后重试。',
+          })
+        } else if (result.result === null) {
+          messages.push({
+            role: 'system',
+            content: '脚本返回 null，通常表示选择器未命中目标元素，或脚本主动返回了空值。',
           })
         }
+
+        if ((result.triggered || result.result !== undefined) && !result.error && !result.code) {
+          const postScan = await scanCurrentPage()
+          if (postScan?.elements?.length) {
+            messages.push({
+              role: 'system',
+              content: `[自动验证] 操作后页面状态(${postScan.totalCount || postScan.count}元素): ${JSON.stringify(postScan)}`,
+            })
+          }
+        }
+
+        if (toolName === 'screenshot' && result.screenshot) {
+          lastScreenshot.value = result.screenshot as string
+        }
+
+        const stepStatus = !result.error && !result.code ? '✓' : '❌'
+        addMessage(
+          'system',
+          `[${stepCount}] ${stepStatus} 💭 ${thought}\n    ${formatStepSummary(result, toolName)}`
+        )
+
+        if (messages.length > MAX_MESSAGES_COUNT) {
+          compressMessages(messages)
+        }
+
+        if (consecutiveErrors >= MAX_CONSECUTIVE_FAILURES) {
+          addMessage('system', `连续 ${consecutiveErrors} 步执行失败，已停止。`)
+          cleanup()
+          return
+        }
+
+        addMessage('system', '思考中...')
       }
 
-      if (toolName === 'screenshot' && result.screenshot) {
-        lastScreenshot.value = result.screenshot as string
-      }
-
-      const stepStatus = !result.error && !result.code ? '✓' : '❌'
-      addMessage(
-        'system',
-        `[${stepCount}] ${stepStatus} 💭 ${thought}\n    ${formatStepSummary(result, toolName)}`
-      )
-
-      if (messages.length > MAX_MESSAGES_COUNT) {
-        compressMessages(messages)
-      }
-
-      if (consecutiveErrors >= MAX_CONSECUTIVE_FAILURES) {
-        addMessage('system', `连续 ${consecutiveErrors} 步执行失败，已停止。`)
-        cleanup()
-        return
-      }
-
-      addMessage('system', '思考中...')
+      emitAIChat('已达到最大执行步数。任务可能未完成，请继续告诉我下一步。', true)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      addMessage('error', `执行出错: ${msg}`)
+      cleanup()
     }
-
-    emitAIChat('已达到最大执行步数。任务可能未完成，请继续告诉我下一步。', true)
   }
 
   // ──── 命令处理 ────
@@ -572,16 +598,20 @@ export function useAIEngine() {
     const trimmedText = text.trim()
     if (!trimmedText) return
 
-    addMessage('user', trimmedText)
-
-    try {
-      if (trimmedText.startsWith('/')) {
+    if (trimmedText.startsWith('/')) {
+      // slash 命令：原始输入不进入消息列表（与旧版一致）
+      try {
         await handleSlashCommand(trimmedText)
-      } else {
-        await handleNaturalLanguage(trimmedText)
+      } catch (error) {
+        addMessage('error', error instanceof Error ? error.message : String(error))
       }
-    } catch (error) {
-      addMessage('error', error instanceof Error ? error.message : String(error))
+    } else {
+      addMessage('user', trimmedText)
+      try {
+        await handleNaturalLanguage(trimmedText)
+      } catch (error) {
+        addMessage('error', error instanceof Error ? error.message : String(error))
+      }
     }
   }
 
@@ -893,11 +923,23 @@ export function useAIEngine() {
 
   function persistPlanTracker() {
     try {
+      // 压缩对话上下文并保存（供下次恢复）
+      let savedConversation: ChatMessage[] | null = null
+      if (conversationMessages.value) {
+        const compressed: ChatMessage[] = []
+        const sysMsg = conversationMessages.value.find((m) => m.role === 'system')
+        const recent = conversationMessages.value.slice(-20).filter((m) => m.role !== 'system')
+        if (sysMsg) compressed.push(sysMsg)
+        compressed.push({ role: 'system', content: '[已省略中间对话]' })
+        compressed.push(...recent)
+        savedConversation = compressed
+      }
       sessionStorage.setItem(
         SESSION_KEY,
         JSON.stringify({
           planTracker: planTracker.value,
           lessons: lessons.value,
+          conversationMessages: savedConversation,
           timestamp: Date.now(),
         })
       )

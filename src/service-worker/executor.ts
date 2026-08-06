@@ -21,9 +21,18 @@ export async function executeCommand(
 ): Promise<ExecutionResult> {
   // 危险操作二次确认
   if (DANGEROUS_INTENTS.has(intent)) {
-    const confirmed = await checkDangerousConfirm(intent, payload)
-    if (!confirmed) {
-      return { success: false, code: 'NEEDS_CONFIRM', message: '用户拒绝危险操作' }
+    try {
+      await checkDangerousConfirm(intent, payload)
+    } catch (err: any) {
+      if (err?.code === 'NEEDS_CONFIRM') {
+        return {
+          success: false,
+          code: 'NEEDS_CONFIRM',
+          message: err.message || '需要确认',
+          detail: err.detail,
+        }
+      }
+      throw err
     }
   }
 
@@ -47,7 +56,6 @@ export async function executeCommand(
       return await observeGroups()
     case 'tabs_group_by_domain':
       return await groupByDomain()
-
     // ──── BOOKMARKS ────
     case 'bookmarks_observe_tree':
       return await observeBookmarks(payload)
@@ -63,7 +71,6 @@ export async function executeCommand(
       return await removeBookmark(payload)
     case 'bookmarks_add_current_page':
       return await addCurrentPageBookmark(payload)
-
     // ──── WINDOWS ────
     case 'windows_observe':
       return await observeWindows(payload)
@@ -71,31 +78,26 @@ export async function executeCommand(
       return await createWindow(payload)
     case 'windows_update':
       return await updateWindow(payload)
-
     // ──── HISTORY ────
     case 'history_search':
       return await searchHistory(payload)
     case 'history_remove':
       return await removeHistory(payload)
-
     // ──── NAVIGATION ────
     case 'navigate':
       return await navigateTo(payload)
     case 'screenshot':
       return await takeScreenshot(payload)
-
     // ──── PAGE ────
     case 'zoom':
       return await setZoom(payload)
     case 'downloads_open':
       return { success: true, navigated: 'chrome://downloads' }
-
     // ──── THEME ────
     case 'theme_observe':
       return await observeTheme()
     case 'theme_update':
       return await updateTheme(payload)
-
     // ──── FONT ────
     case 'font_size_observe':
       return await observeFontSize()
@@ -105,17 +107,14 @@ export async function executeCommand(
       return await observeFontFamily(payload)
     case 'font_family_update':
       return await updateFontFamily(payload)
-
     // ──── COOKIES ────
     case 'cookies_observe':
       return await observeCookies(payload)
     case 'cookies_remove':
       return await removeCookies(payload)
-
     // ──── TOP_SITES ────
     case 'top_sites_observe':
       return await observeTopSites()
-
     // ──── EXTENSIONS ────
     case 'extensions_observe':
       return await observeExtensions(payload)
@@ -123,13 +122,11 @@ export async function executeCommand(
       return await updateExtension(payload)
     case 'extensions_remove':
       return await removeExtension(payload)
-
     // ──── PERMISSIONS ────
     case 'permissions_observe':
       return await observePermissions(payload)
     case 'permissions_update':
       return await updatePermissions(payload)
-
     // ──── STORAGE ────
     case 'storage_get':
       return await getStorage(payload)
@@ -137,11 +134,9 @@ export async function executeCommand(
       return await setStorage(payload)
     case 'storage_remove':
       return await removeStorage(payload)
-
     // ──── SESSIONS ────
     case 'sessions_restore':
       return await restoreSession(payload)
-
     // ──── RECORDING ────
     case 'recording_start_tab':
       return await startTabRecording(payload)
@@ -149,40 +144,28 @@ export async function executeCommand(
       return await startScreenRecording()
     case 'recording_stop':
       return await stopRecording()
-
     // ──── DOM ────
     case 'dom_manipulate':
       return await domManipulate(payload)
-
     // ──── BATCH ────
     case 'batch':
       return await batchExecute(payload)
-
     default:
       return { success: false, code: 'UNKNOWN_INTENT', message: `未知命令: ${intent}` }
   }
 }
 
 // ──── 危险操作确认 ────
-
+// 注意：Service Worker 中不可用 confirm()，改为返回 NEEDS_CONFIRM 让前端处理
 async function checkDangerousConfirm(
   intent: string,
   payload: Record<string, unknown>
 ): Promise<boolean> {
-  switch (intent) {
-    case 'tabs_remove': {
-      const tabIds = payload.tabIds as number[] | undefined
-      const tabs = tabIds?.length ? await Promise.all(tabIds.map((id) => chrome.tabs.get(id))) : []
-      const titles = tabs.map((t) => t.title).filter(Boolean)
-      return confirm(`确定关闭 ${tabIds?.length || 0} 个标签?\n${titles.slice(0, 3).join('\n')}`)
-    }
-    case 'bookmarks_remove_node':
-    case 'history_remove':
-    case 'cookies_remove':
-    case 'extensions_remove':
-      return confirm(`确定执行 "${intent}" 操作吗？此操作不可撤销。`)
-    default:
-      return true
+  throw {
+    success: false,
+    code: 'NEEDS_CONFIRM',
+    message: `确认执行 "${intent}" 操作？此操作不可撤销。`,
+    detail: { intent, payload },
   }
 }
 
@@ -233,6 +216,7 @@ async function updateTab(payload: Record<string, unknown>): Promise<ExecutionRes
   let tabId = payload.tabId as number | undefined
   if (!tabId) {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
     tabId = active.id
   }
   const updateProps: chrome.tabs.UpdateProperties = {}
@@ -241,26 +225,30 @@ async function updateTab(payload: Record<string, unknown>): Promise<ExecutionRes
   if (payload.muted !== undefined) updateProps.muted = payload.muted as boolean
   if (payload.pinned !== undefined) updateProps.pinned = payload.pinned as boolean
   if (payload.discarded !== undefined) updateProps.discarded = payload.discarded as boolean
-  const tab = await chrome.tabs.update(tabId!, updateProps)
+  const tab = await chrome.tabs.update(tabId, updateProps)
   return { success: true, tab, reloaded: payload.reload ? true : undefined }
 }
 
 async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tabIds = payload.tabIds as number[] | undefined
   const index = payload.index as number
-  const tabs = await chrome.tabs.move(tabIds!, { index })
+  if (!tabIds?.length) {
+    return { success: false, code: 'INVALID_PARAMS', message: '缺少 tabIds 参数' }
+  }
+  const tabs = await chrome.tabs.move(tabIds, { index })
   return { success: true, moved: Array.isArray(tabs) ? tabs.length : 1 }
 }
 
 async function removeTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tabIds = payload.tabIds as number[] | undefined
-  if (!tabIds) {
+  if (!tabIds?.length) {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
-    await chrome.tabs.remove(active.id!)
-  } else {
-    await chrome.tabs.remove(tabIds)
+    if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+    await chrome.tabs.remove(active.id)
+    return { success: true, removed: 1 }
   }
-  return { success: true, removed: tabIds?.length || 1 }
+  await chrome.tabs.remove(tabIds)
+  return { success: true, removed: tabIds.length }
 }
 
 async function groupTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -275,13 +263,14 @@ async function groupTabs(payload: Record<string, unknown>): Promise<ExecutionRes
 
 async function ungroupTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tabIds = payload.tabIds as number[] | undefined
-  if (tabIds) {
+  if (tabIds?.length) {
     await chrome.tabs.ungroup(tabIds)
     return { success: true }
   }
   const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (active?.groupId !== -1) {
-    await chrome.tabs.ungroup(active.id!)
+  if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+  if (active.groupId !== -1) {
+    await chrome.tabs.ungroup([active.id])
   }
   return { success: true }
 }
@@ -306,13 +295,14 @@ async function observeGroups(): Promise<ExecutionResult> {
 
 async function groupByDomain(): Promise<ExecutionResult> {
   const tabs = await chrome.tabs.query({ currentWindow: true })
+  if (!tabs.length) return { success: false, code: 'NO_TABS_FOUND', message: '当前窗口没有标签' }
   const domainMap = new Map<string, number[]>()
   for (const tab of tabs) {
-    if (!tab.url || tab.url.startsWith('chrome://')) continue
+    if (!tab.url || tab.url.startsWith('chrome://') || !tab.id) continue
     try {
       const d = new URL(tab.url).hostname
       if (!domainMap.has(d)) domainMap.set(d, [])
-      domainMap.get(d)!.push(tab.id!)
+      domainMap.get(d)!.push(tab.id)
     } catch {
       /* ignore */
     }
@@ -397,11 +387,12 @@ async function updateBookmark(payload: Record<string, unknown>): Promise<Executi
 
 async function openBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
   const node = await chrome.bookmarks.get(payload.nodeId as string)
-  if (node[0].url) {
-    await chrome.tabs.update(tab.id!, { url: node[0].url })
+  if (node[0]?.url) {
+    await chrome.tabs.update(tab.id, { url: node[0].url })
   }
-  return { success: true, navigated: node[0].url }
+  return { success: true, navigated: node[0]?.url }
 }
 
 async function removeBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -452,17 +443,20 @@ async function searchHistory(payload: Record<string, unknown>): Promise<Executio
   const query = payload.query as string
   const maxResults = (payload.maxResults as number) || 20
   const range = payload.timeRange as string | undefined
-  const endTime = range ? Date.now() : undefined
-  const startTime =
-    range === 'today'
-      ? new Date().setHours(0, 0, 0, 0)
-      : range === 'yesterday'
-        ? new Date().setDate(new Date().getDate() - 1)
-        : range === 'week'
-          ? Date.now() - 7 * 86400000
-          : range === 'month'
-            ? Date.now() - 30 * 86400000
-            : undefined
+  const validRanges = ['today', 'yesterday', 'week', 'month']
+  const endTime = range && validRanges.includes(range) ? Date.now() : undefined
+  let startTime: number | undefined
+  if (range === 'today') {
+    startTime = new Date().setHours(0, 0, 0, 0)
+  } else if (range === 'yesterday') {
+    const d = new Date()
+    d.setDate(d.getDate() - 1)
+    startTime = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  } else if (range === 'week') {
+    startTime = Date.now() - 7 * 86400000
+  } else if (range === 'month') {
+    startTime = Date.now() - 30 * 86400000
+  }
 
   const items = await chrome.history.search({
     text: query,
@@ -516,24 +510,46 @@ async function removeHistory(payload: Record<string, unknown>): Promise<Executio
 
 async function navigateTo(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const url = payload.url as string
-  if (url.startsWith('chrome://') || url.startsWith('chrome-extension://')) {
+  if (!url) return { success: false, code: 'INVALID_PARAMS', message: 'URL 为空' }
+  if (
+    url.startsWith('chrome://') ||
+    url.startsWith('chrome-extension://') ||
+    url.startsWith('javascript:')
+  ) {
     return { success: false, code: 'PAGE_BLOCKED', message: '无法导航到受保护页面' }
   }
+  try {
+    new URL(url)
+  } catch {
+    return { success: false, code: 'INVALID_PARAMS', message: 'URL 格式无效' }
+  }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
   if (payload.newTab) {
     await chrome.tabs.create({ url })
   } else {
-    await chrome.tabs.update(tab.id!, { url })
+    await chrome.tabs.update(tab.id, { url })
   }
   return { success: true, navigated: url }
 }
 
 async function takeScreenshot(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tabId = payload.tabId as number | undefined
-  const targetId = tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id
-  if (!targetId) return { success: false, code: 'ELE_NOT_FOUND', message: '未找到活动标签' }
+  let targetTab: chrome.tabs.Tab | undefined
+  if (tabId) {
+    try {
+      targetTab = await chrome.tabs.get(tabId)
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!targetTab) {
+    ;[targetTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  }
+  if (!targetTab?.windowId)
+    return { success: false, code: 'ELE_NOT_FOUND', message: '未找到活动标签' }
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(targetId.windowId, { format: 'png' })
+    const dataUrl = await chrome.tabs.captureVisibleTab(targetTab.windowId, { format: 'png' })
     return { success: true, screenshot: dataUrl }
   } catch {
     return { success: false, code: 'ACT_BLOCKED', message: '截图被拒绝' }
@@ -544,7 +560,8 @@ async function takeScreenshot(payload: Record<string, unknown>): Promise<Executi
 
 async function setZoom(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  const currentZoom = await chrome.tabs.getZoom(tab.id!)
+  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+  const currentZoom = await chrome.tabs.getZoom(tab.id)
   const direction = payload.direction as string
   let zoomFactor = currentZoom
 
@@ -552,15 +569,19 @@ async function setZoom(payload: Record<string, unknown>): Promise<ExecutionResul
   else if (direction === 'out') zoomFactor = Math.max(currentZoom - 0.25, 0.25)
   else if (direction === 'reset') zoomFactor = 1
 
-  await chrome.tabs.setZoom(tab.id!, zoomFactor)
+  await chrome.tabs.setZoom(tab.id, zoomFactor)
   return { success: true, zoomFactor }
 }
 
 // ──── THEME 实现 ────
 
 async function observeTheme(): Promise<ExecutionResult> {
-  const pref = await chrome.settings.private.get('theme.color_extension')
-  return { success: true, themeMode: 'dark', themeColor: pref?.value }
+  try {
+    const pref = await chrome.settings.private.get('theme.color_extension')
+    return { success: true, themeMode: 'dark', themeColor: pref?.value }
+  } catch {
+    return { success: true, themeMode: 'dark', themeColor: undefined }
+  }
 }
 
 async function updateTheme(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -608,6 +629,9 @@ async function updateFontFamily(payload: Record<string, unknown>): Promise<Execu
 
 async function observeCookies(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const domain = payload.domain as string
+  if (!domain) {
+    return { success: false, code: 'INVALID_PARAMS', message: '域名不能为空' }
+  }
   const cookies = await chrome.cookies.getAll({ domain })
   return { success: true, cookies, found: cookies.length, domain }
 }
@@ -691,24 +715,24 @@ async function restoreSession(payload: Record<string, unknown>): Promise<Executi
 
   if (query) {
     for (const s of sessions) {
-      if (s.tab) {
+      if (s.tab?.sessionId) {
         const match =
           (s.tab.title || '').toLowerCase().includes(query) ||
           (s.tab.url || '').toLowerCase().includes(query)
         if (match) {
-          await chrome.sessions.restore(s.tab.sessionId!)
+          await chrome.sessions.restore(s.tab.sessionId)
           return { success: true, restored: s.tab.title }
         }
       }
     }
   }
 
-  const first = sessions.find((s) => s.tab) || sessions[0]
-  if (first.tab) {
-    await chrome.sessions.restore(first.tab.sessionId!)
+  const first = sessions.find((s) => s.tab?.sessionId) || sessions[0]
+  if (first.tab?.sessionId) {
+    await chrome.sessions.restore(first.tab.sessionId)
     return { success: true, restored: first.tab.title }
   }
-  return { success: false }
+  return { success: false, error: 'NO_RECOVERABLE_TABS' }
 }
 
 // ──── RECORDING 实现 ────

@@ -6,28 +6,35 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, watch } from 'vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { MessageLog } from '../types'
-
-// 配置 marked 选项
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-})
 
 const props = defineProps<{
   msg: MessageLog
 }>()
 
-const processedText = computed(() => {
-  if (props.msg.type === 'ai-chat') {
-    // 使用 marked 渲染 markdown
-    return marked.parse(props.msg.text) as string
-  }
-  // 非 markdown 内容只需要转义 HTML
-  return escapeHtml(props.msg.text)
-})
+const processedText = ref('')
+
+// marked.parse() 在 v5+ 中返回 Promise，需要异步处理
+watch(
+  () => props.msg,
+  async (msg) => {
+    if (msg.type === 'ai-chat') {
+      try {
+        processedText.value = DOMPurify.sanitize(
+          await marked.parse(msg.text, { breaks: true, gfm: true })
+        )
+      } catch {
+        processedText.value = escapeHtml(msg.text)
+      }
+    } else {
+      processedText.value = escapeHtml(msg.text)
+    }
+  },
+  { immediate: true }
+)
 
 function escapeHtml(text: string): string {
   return text

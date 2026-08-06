@@ -38,7 +38,7 @@
     />
 
     <!-- 设置面板 -->
-    <div v-if="isSettingsOpen" class="settings-panel">
+    <div v-if="state.isSettingsOpen" class="settings-panel">
       <!-- 设置首页 -->
       <div v-if="settingsPage === 'home'" class="settings-home">
         <div class="settings-header">
@@ -280,7 +280,6 @@ const {
   renderExecutionResult,
 } = useAIEngine()
 
-const isSettingsOpen = state.isSettingsOpen
 const commandInput = commandInputValue
 const commandInputRef = ref<InstanceType<typeof import('./components/CommandInput.vue').default>>()
 
@@ -355,13 +354,13 @@ const msgListener = (msg: { type?: string; intent?: string; response?: unknown }
 }
 
 // 提交命令
-function handleSubmit() {
+async function handleSubmit() {
   const text = commandInput.value
   if (!text.trim()) return
   // 连续重复命令不重复发送
   if (text.trim() === lastSubmittedText) return
   lastSubmittedText = text.trim()
-  aiHandleSubmit(text)
+  await aiHandleSubmit(text)
   lastSubmittedText = '' // 清零，允许发送相同命令（非连续）
 }
 

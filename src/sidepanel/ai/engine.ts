@@ -24,7 +24,10 @@ export class AIEngine {
    * 检查可用性，返回 { available, backend, offline, reason? }
    */
   async checkAvailability(): Promise<AIStatus> {
-    if (this._checked) return this._checked
+    // 如果已检查且可用，直接返回缓存
+    if (this._checked && this._checked.available) return this._checked
+    // 如果已检查但不可用，且没有新模型配置，也返回缓存
+    if (this._checked && !this._checked.available && !this.currentModel) return this._checked
 
     const config = this.currentModel
     if (!config) {
@@ -69,9 +72,13 @@ export class AIEngine {
     if (backend.chatWithMessages) {
       return backend.chatWithMessages(messages, options)
     }
+    // 降级：取最后一条消息作为 userMessage
+    if (!messages.length) {
+      throw new Error('消息列表为空，无法调用 AI')
+    }
     const last = messages[messages.length - 1]
     const system = messages.find((m) => m.role === 'system')?.content || ''
-    return backend.chat(system, last.content, options)
+    return backend.chat(system, last.content || '', options)
   }
 
   private async getBackend(): Promise<AIAdapter> {
@@ -81,6 +88,7 @@ export class AIEngine {
     if (!status.available) throw new Error('NO_AI_BACKEND')
 
     if (status.backend === 'gemini-nano') {
+      // 使用 checkAvailability 中已检测的能力，避免重复调用
       const cap = await detectAICapability()
       this.backend = new GeminiNanoAdapter(cap)
     } else {

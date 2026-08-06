@@ -44,6 +44,7 @@ export function generateConfirmPreview(
 
     case 'close_tabs_by_domain': {
       const domain = (slots.domain || '').toString().toLowerCase()
+      if (!domain) return null
       const matching = context.tabs.filter((t) => {
         try {
           return new URL(t.url).hostname.includes(domain)
@@ -64,7 +65,7 @@ export function generateConfirmPreview(
     }
 
     case 'close_other_tabs': {
-      const activeTab = context.tabs.find((t) => t.active)
+      const activeTab = context.tabs.find((t) => t.active === true)
       const toClose = context.tabs.filter((t) => !t.pinned && (!activeTab || t.id !== activeTab.id))
       if (toClose.length === 0) return null
       return {
@@ -99,7 +100,9 @@ export function generateConfirmPreview(
       return {
         title: `将删除${label[timeRange] || timeRange}的浏览历史`,
         description: '此操作不可恢复',
-        items: slots.query ? [{ primary: `匹配关键词: ${slots.query}`, secondary: timeRange }] : [],
+        items: slots.query
+          ? [{ primary: `匹配关键词: ${slots.query}`, secondary: label[timeRange] || timeRange }]
+          : [],
       }
     }
 

@@ -42,10 +42,33 @@ export function repairJSON(raw: string): AIResponse {
   // 4. 修复常见问题
   // 4.1 修复尾部逗号
   text = text.replace(/,(\s*[}\]])/g, '$1')
-  // 4.2 单引号转双引号
+  // 4.2 单引号转双引号 — 只替换 key 或 value 边界上的单引号，不破坏字符串内容中的合法单引号
+  // 先提取并保护字符串值内容，避免误伤
+  const protectedStrings: string[] = []
+  text = text.replace(/(["'])(?:(?!\1|\\).|\\.)*\1/g, (match) => {
+    // 如果是双引号括起来的字符串，直接保留
+    if (match.startsWith('"')) return match
+    // 如果是单引号括起来的字符串，将其转成双引号并存入保护列表
+    const inner = match.slice(1, -1).replace(/\\'/g, "'").replace(/"/g, '\\"')
+    protectedStrings.push(inner)
+    return `"__Q24_PLACEHOLDER_${protectedStrings.length - 1}__"`
+  })
+  // 修复剩余的孤立单引号（key 边界上的单引号）
   text = text.replace(/'/g, '"')
-  // 4.3 修复 unquoted keys（可选）
+  // 还原被保护的字符串值
+  text = text.replace(/__Q24_PLACEHOLDER_(\d+)__/g, (_, idx) => {
+    return protectedStrings[parseInt(idx)] ?? '""'
+  })
+  // 4.3 修复 unquoted keys — 先保护字符串值内容，避免误匹配
+  const protectedStringValues: string[] = []
+  text = text.replace(/"([^"\\]*(?:\\.[^"\\]*)*)"/g, (match) => {
+    protectedStringValues.push(match)
+    return `__Q25_PLACEHOLDER_${protectedStringValues.length - 1}__`
+  })
   text = text.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":')
+  text = text.replace(/__Q25_PLACEHOLDER_(\d+)__/g, (_, idx) => {
+    return protectedStringValues[parseInt(idx)] ?? '""'
+  })
 
   try {
     return JSON.parse(text) as AIResponse

@@ -91,6 +91,15 @@ export function useSettings() {
   async function addModel(
     model: Omit<AIModel, 'id' | 'isDefault' | 'createdAt'>
   ): Promise<AIModel> {
+    if (!model.apiKey?.trim()) {
+      throw new Error('请输入 API Key')
+    }
+    if (!model.apiEndpoint?.trim()) {
+      throw new Error('请输入 API 端点')
+    }
+    if (!model.modelName?.trim()) {
+      throw new Error('请输入模型名称')
+    }
     const newModel: AIModel = {
       ...model,
       id: generateId(),

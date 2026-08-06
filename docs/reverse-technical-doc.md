@@ -1,714 +1,891 @@
-# AI Browser Commander — 反向整理技术文档
+# AI 浏览器管家 — 反向技术文档
 
-> **整理日期**: 2026-07-28  
-> **版本**: v0.1.0  
-> **项目类型**: Chrome Extension (Manifest V3)  
-> **核心技术**: Vanilla JS ES Modules + Chrome Extensions API + AI Agent Loop
-
----
-
-## 一、项目概述
-
-### 1.1 定位
-"AI 浏览器管家" — 一个键盘驱动的 AI 浏览器命令中心。用户通过自然语言或斜杠命令管理标签页、书签、浏览历史、页面 DOM、扩展、Cookie、权限、主题字体、录制等。
-
-### 1.2 核心亮点
-- **Agent Loop 自主执行架构**：AI 以「观察→思考→执行→验证」的循环自主完成任务，代码仅做机械执行
-- **双模式交互**：斜杠命令（精确、本地匹配）+ 自然语言（AI Agent Loop）
-- **双 AI 后端**：Gemini Nano（Chrome 内置离线）+ OpenAI 兼容 API（DeepSeek/Ollama/OpenAI 等）
-- **页面 DOM 操控**：通过 Content Script 扫描页面元素，AI 自主选择并操作
-- **屏幕/标签录制**：通过 Offscreen Document + MediaRecorder 实现
+> **项目名称**: AI Browser Commander (AI 浏览器管家)
+> **版本**: 0.1.0
+> **技术栈**: Vue 3 + TypeScript + Chrome Extension Manifest V3 + Element Plus
+> **构建工具**: Vite 5
+> **最后更新**: 2026-08-05
 
 ---
 
-## 二、项目结构
+## 目录
+
+1. [项目概述](#1-项目概述)
+2. [整体架构](#2-整体架构)
+3. [目录结构](#3-目录结构)
+4. [核心模块详解](#4-核心模块详解)
+   - 4.1 [Service Worker 后台](#41-service-worker-后台)
+   - 4.2 [Side Panel 前端](#42-side-panel-前端)
+   - 4.3 [AI 引擎层](#43-ai-引擎层)
+   - 4.4 [命令系统](#44-命令系统)
+   - 4.5 [Content Scripts](#45-content-scripts)
+   - 4.6 [Offscreen 文档](#46-offsreen-文档)
+   - 4.7 [共享模块](#47-共享模块)
+   - 4.8 [类型定义](#48-类型定义)
+5. [数据流与通信](#5-数据流与通信)
+6. [构建与部署](#6-构建与部署)
+7. [关键设计决策](#7-关键设计决策)
+
+---
+
+## 1. 项目概述
+
+AI 浏览器管家是一个**键盘驱动的 AI 浏览器命令中心**，基于 Chrome Extension Manifest V3 构建。用户可以通过自然语言或斜杠命令来管理浏览器中的标签页、书签、历史记录、窗口、扩展、Cookie、主题、字体等，同时支持 DOM 操作、页面截图、录屏等功能。
+
+核心设计理念：**代码纯编排，AI 做全部决策**。系统通过 Agent 循环（Observe → Think → Act → Verify）自主完成用户指令。
+
+### 核心功能
+
+| 功能类别 | 能力 |
+|---------|------|
+| **标签管理** | 创建/关闭/移动/分组/排序/静音/休眠/去重标签 |
+| **书签管理** | 增删改查书签和文件夹 |
+| **窗口管理** | 创建/更新窗口 |
+| **历史管理** | 搜索/删除浏览历史 |
+| **页面操作** | 导航/截图/缩放/DOM 操作 |
+| **主题/字体** | 查看/设置主题模式和字体 |
+| **Cookie 管理** | 查看/清除 Cookie |
+| **扩展管理** | 启用/禁用/卸载扩展 |
+| **权限管理** | 查看/设置网站权限 |
+| **存储管理** | 扩展本地存储读写 |
+| **会话恢复** | 恢复最近关闭的标签 |
+| **录屏** | 标签页/桌面录制 |
+
+### 交互方式
+
+1. **自然语言输入**: 通过 AI 引擎（Gemini Nano 或 OpenAI 兼容 API）解析用户意图，自动执行多步操作
+2. **斜杠命令**: 以 `/` 开头的精确命令，无需 AI 即可执行（如 `/find 关键词`、`/close-duplicates`）
+3. **显示模式**: 支持侧边栏（Side Panel）和弹窗（Overlay/Popup）两种模式
+
+---
+
+## 2. 整体架构
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Chrome Extension (MV3)                            │
+│                                                                             │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                        Service Worker (后台)                          │  │
+│  │  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────────┐  │  │
+│  │  │  context-collector│  │    executor     │  │   tab-matcher (util) │  │  │
+│  │  │  (上下文收集器)   │  │  (命令执行器)    │  │   (标签匹配工具)     │  │  │
+│  │  └─────────────────┘  └─────────────────┘  └──────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                    │  chrome.runtime.sendMessage           │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                     Side Panel (侧边栏 / 弹窗)                       │  │
+│  │  ┌──────────────┐  ┌─────────────────┐  ┌────────────────────────┐  │  │
+│  │  │  Vue 3 UI    │  │   AI Engine     │  │   Agent Loop           │  │  │
+│  │  │  (App.vue)   │  │  (engine.ts)    │  │   (sidepanel/index.js)  │  │  │
+│  │  │  + Element   │  │  ┌───────────┐  │  │   / useAIEngine.ts     │  │  │
+│  │  │  Plus 组件   │  │  │Gemini Nano│  │  └────────────────────────┘  │  │
+│  │  │              │  │  │OpenAI适配 │  │  ┌────────────────────────┐  │  │
+│  │  │              │  │  └───────────┘  │  │  Slash Commands        │  │  │
+│  │  │              │  │  ┌───────────┐  │  │  (斜杠命令解析器)      │  │  │
+│  │  │              │  │  │api-detector│  │  └────────────────────────┘  │  │
+│  │  │              │  │  └───────────┘  │  ┌────────────────────────┐  │  │
+│  │  │              │  │                 │  │  Confirm 确认中间件    │  │  │
+│  │  │              │  │                 │  └────────────────────────┘  │  │
+│  │  └──────────────┘  └─────────────────┘                              │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                     Content Scripts (内容脚本)                        │  │
+│  │  ┌─────────────────────────┐  ┌──────────────────────────────────┐  │  │
+│  │  │  dom-commander.js       │  │  overlay.js                      │  │  │
+│  │  │  (常驻 DOM 扫描器)      │  │  (弹窗注入层)                    │  │  │
+│  │  └─────────────────────────┘  └──────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │  Offscreen Document (离屏录制)                                       │  │
+│  │  ┌────────────────────────────────────────────────────────────────┐  │  │
+│  │  │  recorder.js — MediaRecorder 录制标签/桌面                     │  │  │
+│  │  └────────────────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 架构分层
+
+| 层级 | 职责 | 关键技术 |
+|------|------|---------|
+| **Service Worker** | 后台常驻，消息路由，上下文收集，命令执行 | Chrome Extension SW API |
+| **Side Panel UI** | 用户界面，命令输入/输出，AI 对话 | Vue 3 + Element Plus |
+| **AI 引擎层** | AI 后端选择，API 调用，Agent 循环 | Gemini Nano / OpenAI API |
+| **命令系统** | 命令定义、解析、匹配、执行 | 本地命令注册表 |
+| **Content Scripts** | 页面 DOM 扫描、弹窗注入 | Chrome Content Scripts |
+| **Offscreen** | 音视频录制 | MediaRecorder API |
+
+---
+
+## 3. 目录结构
 
 ```
 chromeAIManager/
-├── manifest.json                         # Chrome 扩展清单
-├── icons/                                # 扩展图标 (16/32/48/128)
-├── docs/
-│   └── architecture.md                   # 架构设计文档（正向）
-└── src/
-    ├── sidepanel/                        # 侧边面板（UI + 核心逻辑）
-    │   ├── index.html                    # 面板 HTML
-    │   ├── index.js                      # 主逻辑（SidePanel 类 + Agent Loop）
-    │   ├── style.css                     # 科幻霓虹风格样式
-    │   ├── ai/                           # AI 引擎模块
-    │   │   ├── api-detector.js           # window.ai API 能力探测
-    │   │   ├── engine.js                 # AI 引擎统一入口
-    │   │   ├── gemini-nano.js            # Gemini Nano 适配器
-    │   │   └── openai-adapter.js         # OpenAI 兼容 API 适配器
-    │   └── command/                      # 命令解析模块
-    │       ├── confirm.js                # 危险操作确认预览
-    │       ├── intent-detector.js        # 意图识别器（已废弃，兼容层）
-    │       └── slash-commands.js         # 斜杠命令注册表 + 匹配
-    ├── service-worker/                   # Service Worker（后台）
-    │   ├── index.js                      # SW 入口（消息路由 + 弹窗注入）
-    │   ├── context-collector.js          # 浏览器上下文收集器
-    │   ├── executor.js                   # 操作执行器（55+ Chrome API 命令）
-    │   └── utils/
-    │       └── tab-matcher.js            # 标签查找/去重工具
-    ├── content/                          # Content Scripts
-    │   ├── dom-commander.js              # DOM 机械手（扫描 + 操作）
-    │   └── overlay.js                    # 全屏覆盖层 + iframe 弹窗注入
-    ├── offscreen/                        # Offscreen Document
-    │   ├── recorder.html                 # 录制文档 HTML
-    │   └── recorder.js                   # MediaRecorder 录制逻辑
-    └── shared/                           # 共享模块
-        ├── commands.js                   # 命令定义注册表（55+ 命令）
-        ├── constants.js                  # 消息类型常量 + 错误码
-        ├── json-repair.js                # 容错 JSON 解析（处理 AI 输出）
-        └── prompts.js                    # Agent 系统提示词生成
+├── public/
+│   └── index.html              # Side Panel HTML 入口
+├── icons/                       # 扩展图标 (16/32/48/128)
+├── src/
+│   ├── main.ts                  # Vue 应用入口
+│   ├── App.vue                  # 根组件
+│   ├── env.d.ts                 # 环境类型声明
+│   │
+│   ├── components/              # Vue 组件
+│   │   ├── CommandInput.vue     # 命令输入框 (含斜杠提示)
+│   │   ├── MessageList.vue      # 消息列表
+│   │   ├── MessageBubble.vue    # 消息气泡 (支持 Markdown)
+│   │   ├── ConfirmCard.vue      # 确认操作卡片
+│   │   └── ParticleCanvas.vue   # 粒子背景动画
+│   │
+│   ├── composables/             # Vue 组合式函数
+│   │   ├── useAIEngine.ts       # 主逻辑 (AI + Agent + 命令处理)
+│   │   ├── useSettings.ts       # 设置管理 (模型 CRUD)
+│   │   ├── useMessageLog.ts     # 消息日志
+│   │   └── useCommandHistory.ts # 命令历史
+│   │
+│   ├── types/                   # TypeScript 类型定义
+│   │   ├── index.ts             # 统一导出
+│   │   ├── ai.ts                # AI 相关类型
+│   │   ├── chrome.ts            # Chrome API 类型
+│   │   ├── command.ts           # 命令类型
+│   │   ├── context.ts           # 上下文类型
+│   │   ├── execution.ts         # 执行结果类型
+│   │   └── ui.ts                # UI 类型
+│   │
+│   ├── shared/                  # 共享模块 (SP + SW 共用)
+│   │   ├── constants.ts         # 消息类型常量、错误码、系统常量
+│   │   ├── commands.ts          # 命令定义注册表 (50+ 命令)
+│   │   ├── prompts.ts           # Agent 系统提示词构建
+│   │   └── json-repair.ts       # 容错 JSON 解析
+│   │
+│   ├── service-worker/          # Service Worker 后台
+│   │   ├── index.ts             # 入口：消息路由 + 生命周期
+│   │   ├── executor.ts          # 命令执行器 (30+ 意图)
+│   │   ├── context-collector.ts # 浏览器上下文收集器
+│   │   └── utils/
+│   │       └── tab-matcher.ts   # 标签匹配工具函数
+│   │
+│   ├── sidepanel/               # Side Panel 逻辑
+│   │   ├── index.js             # 主逻辑类 (旧版 SidePanel)
+│   │   ├── ai/
+│   │   │   ├── engine.ts        # AI 引擎 (自动选择后端)
+│   │   │   ├── api-detector.ts  # AI 能力检测 (Gemini Nano)
+│   │   │   ├── gemini-nano.ts   # Gemini Nano 适配器
+│   │   │   └── openai-adapter.ts# OpenAI 兼容 API 适配器
+│   │   └── command/
+│   │       ├── slash-commands.ts # 斜杠命令注册表 (40+ 命令)
+│   │       └── confirm.ts       # 危险操作确认预览
+│   │
+│   ├── content/                 # Content Scripts
+│   │   ├── dom-commander.js     # 常驻 DOM 扫描器
+│   │   └── overlay.js           # 弹窗覆盖层注入
+│   │
+│   ├── offscreen/               # Offscreen 文档
+│   │   ├── recorder.html
+│   │   └── recorder.js          # 录制器
+│   │
+│   └── lib/
+│       └── testing-library-dom.umd.min.js  # 测试库 (备用)
+│
+├── manifest.json                # Chrome 扩展清单
+├── vite.config.ts               # Vite 构建配置 + 自定义插件
+├── tsconfig.json
+├── tailwind.config.js
+├── postcss.config.js
+├── eslint.config.js
+├── .prettierrc.js
+├── package.json
+└── yarn.lock
 ```
 
 ---
 
-## 三、技术栈
+## 4. 核心模块详解
 
-| 层次 | 技术 |
-|------|------|
-| 平台 | Chrome Extension Manifest V3 |
-| 语言 | ES Modules (原生 JS，无框架) |
-| UI | 原生 DOM 操作 + CSS（科幻霓虹风格） |
-| AI 后端 | Gemini Nano (window.ai) / OpenAI Compatible API |
-| 录制 | MediaRecorder API + Offscreen Documents |
-| 通信 | chrome.runtime.sendMessage (SW ↔ SidePanel ↔ ContentScript) |
-| 存储 | chrome.storage.local（持久）/ chrome.storage.session（会话） |
+### 4.1 Service Worker 后台
+
+**文件**: `src/service-worker/index.ts`
+
+#### 职责
+- 消息路由：接收 Side Panel 的请求，分发给对应处理函数
+- 上下文收集：调用 `collectContext` 收集浏览器当前状态
+- 命令执行：调用 `executeCommand` 执行具体操作
+- 生命周期管理：安装/更新/启动事件处理
+- 显示模式切换：管理 sidepanel/overlay 两种模式
+
+#### 消息类型
+
+| 消息类型 | 方向 | 说明 |
+|---------|------|------|
+| `GET_CONTEXT` | SP → SW | 获取浏览器上下文 (标签/书签等) |
+| `GET_BOOKMARKS` | SP → SW | 搜索书签 |
+| `EXECUTE` | SP → SW | 执行命令 (intent + payload) |
+| `SET_DISPLAY_MODE` | SP → SW | 设置显示模式 |
+| `GET_DISPLAY_MODE` | SP → SW | 获取当前显示模式 |
+
+#### 关键代码流
+
+```
+onMessage → handleMessage
+  ├── GET_CONTEXT → collectContext(options)
+  ├── GET_BOOKMARKS → chrome.bookmarks.search(query)
+  ├── EXECUTE → executeCommand(intent, payload)
+  ├── SET_DISPLAY_MODE → chrome.storage.local.set
+  └── GET_DISPLAY_MODE → chrome.storage.local.get
+```
+
+#### 快捷键与图标点击
+
+- `Ctrl+Shift+U` / `Cmd+Shift+U`: 打开命令面板
+- 点击扩展图标: 根据 `displayMode` 设置打开侧边栏或注入 overlay
+- `chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })`: 自动打开侧边栏
 
 ---
 
-## 四、架构设计
+### 4.2 Side Panel 前端
 
-### 4.1 架构总览
+#### 4.2.1 主逻辑 (旧版)
+
+**文件**: `src/sidepanel/index.js`
+
+`SidePanel` 类是整个前端的主控制器，负责：
+- 初始化：同步模式按钮、恢复会话、绑定事件
+- 命令处理：区分斜杠命令和自然语言
+- Agent 循环：AI 驱动的多步执行
+- 消息渲染：用户消息、AI 回复、系统消息、错误消息
+- 确认对话框：危险操作的二次确认
+- 历史导航：上下键浏览命令历史
+- 斜杠命令面板：`/` 触发命令提示
+
+#### 4.2.2 主逻辑 (Vue Composable)
+
+**文件**: `src/composables/useAIEngine.ts`
+
+这是 Vue 重构后的主逻辑 Composable，封装了与旧版 `SidePanel` 类相同的功能，但采用 Vue 响应式状态管理。核心状态包括：
+
+| 状态 | 类型 | 说明 |
+|------|------|------|
+| `messageLog` | `MessageLog[]` | 消息历史 |
+| `contextCache` | `Context \| null` | 浏览器上下文缓存 (30s TTL) |
+| `activeLoopId` | `string \| null` | 当前 Agent 循环 ID |
+| `conversationMessages` | `ChatMessage[] \| null` | 对话上下文 (用于多轮) |
+| `planTracker` | `PlanTracker \| null` | 计划追踪器 |
+| `lessons` | `Lesson[]` | 历史经验 (最多10条) |
+| `lastScreenshot` | `string \| null` | 最近截图 data URL |
+| `pendingConfirm` | `PendingConfirm \| null` | 待处理的确认对话框 |
+
+#### 4.2.3 Vue 组件树
 
 ```
-┌──────────────────────────────────────────────┐
-│                 AI Agent                      │
-│  观察 → 思考 → 计划 → 执行 → 验证 → 调整      │
-│        (唯一的智能体，全部决策)                │
-└──────────────────────────────────────────────┘
-       │ 命令                     ▲ 原始结果
-       ▼                          │
-┌──────────────────┐    ┌──────────────────────┐
-│  Content Script   │    │   Service Worker     │
-│  (纯机械手)        │    │   (纯管道)            │
-│  只执行，不理解     │    │  只转发，不判断       │
-└──────────────────┘    └──────────────────────┘
+App.vue
+├── ParticleCanvas.vue        # 粒子背景动画
+├── MessageList.vue           # 消息列表
+│   └── MessageBubble.vue     # 消息气泡 (×N)
+├── ConfirmCard.vue           # 确认操作卡片 (条件渲染)
+├── [设置面板]                # 条件渲染
+│   ├── 模型管理页面
+│   ├── 主题设置页面
+│   └── 关于页面
+├── [添加模型弹窗]            # 条件渲染
+├── [编辑模型弹窗]            # 条件渲染
+└── CommandInput.vue          # 命令输入区
+    ├── textarea 输入框
+    ├── 斜杠命令提示面板
+    ├── 模型选择下拉
+    ├── 麦克风按钮
+    └── 发送按钮
 ```
 
-### 4.2 数据流
+#### 4.2.4 模型管理
 
-```
-用户输入 (自然语言/斜杠命令)
-  │
-  ▼
-┌──────────────────────────────────────────────────┐
-│  Side Panel (src/sidepanel/index.js)              │
-│                                                   │
-│  SidePanel.handleSubmit()                         │
-│    ├─ 斜杠命令 → matchSlashCommand() → dispatchToSW()
-│    └─ 自然语言 → agentLoop()                       │
-│         ├─ 扫描页面 (PAGE_SCAN → elements[])       │
-│         ├─ 构建 messages[system + lessons + ...]  │
-│         └─ 循环 (max 12 steps):                   │
-│              ├─ AI.chat() → {thought,action,...}  │
-│              ├─ exec → _executeCommand() → SW     │
-│              ├─ scan → 重扫页面                   │
-│              ├─ done → 展示结果，清理             │
-│              └─ ask  → 暂停，保留上下文           │
-└──────────────────────────────────────────────────┘
-         │ MSG_EXECUTE               ▲ 结果
-         ▼                           │
-┌──────────────┐    ┌──────────────────────────────┐
-│ Service Worker│    │  Content Script               │
-│ (index.js)   │    │  (dom-commander.js)           │
-│              │    │                               │
-│ executeCmd() │    │  PAGE_SCAN({filter}) →        │
-│  → 路由handler│    │    elements[]                 │
-│  → 返回原始结果│    │                               │
-│              │    │  DOM_COMMAND → 执行+返回原始结果 │
-└──────────────┘    └──────────────────────────────┘
-```
+**文件**: `src/composables/useSettings.ts`
 
-### 4.3 核心设计原则
-
-| 原则 | 说明 |
-|------|------|
-| **零硬编码** | 代码不允许出现任何对具体业务场景的假设（如匹配"登录"、"modal"等） |
-| **AI 唯一决策者** | 所有智能判断由 AI 完成，代码只做机械执行和结果转发 |
-| **动态规划** | 每步执行后重新评估，而非一次性输出所有步骤 |
-| **深度上下文** | 维护完整对话历史、Plan Tracker、Lessons 经验库 |
-| **预测性** | 每步执行前 AI 预测结果，执行后系统自动对比验证 |
-| **容错机制** | 连续 3 次失败中断、超时保护、消息压缩 |
+- 支持多模型管理：添加、编辑、删除、设为默认
+- 模型数据持久化到 `chrome.storage.local`
+- 默认模型：DeepSeek V3 (`https://api.deepseek.com`, `deepseek-chat`)
+- 模型字段：`id`, `name`, `provider`, `apiKey`, `apiEndpoint`, `modelName`, `isDefault`, `createdAt`
 
 ---
 
-## 五、模块详解
+### 4.3 AI 引擎层
 
-### 5.1 Side Panel — 主控制面板
+#### 4.3.1 AI 引擎
 
-**文件**: [src/sidepanel/index.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/index.js)
+**文件**: `src/sidepanel/ai/engine.ts`
 
-核心类 `SidePanel`，负责：
-- **UI 管理**：消息渲染、命令面板、设置面板、历史导航
-- **命令路由**：区分斜杠命令和自然语言，分发处理
-- **Agent Loop**：AI 自主执行循环的核心编排
-- **Plan Tracker**：记录任务目标、当前计划、已完成步骤
-- **Lessons 经验库**：session 级别错误经验记录
-- **消息持久化**：通过 `chrome.storage.session` 保存/恢复聊天记录
+`AIEngine` 类负责自动选择 AI 后端：
 
-**Agent Loop 关键流程**：
-1. 收集上下文（标签、书签）+ 扫描当前页面
-2. 构建 messages 数组（system prompt + 历史 + elements[] + user input）
-3. 循环调用 AI，解析 JSON 响应，执行 action
-4. 支持 `exec`（执行命令）、`scan`（重扫页面）、`done`（完成）、`ask`（暂停等待用户）
-5. 每步执行后更新 Plan Tracker、验证预测、记录经验
-6. 容错：max 12 步、连续 3 次失败中断、消息超 30 条压缩
+```
+setModel(config) → reset()
+checkAvailability()
+  ├── detectAICapability()
+  ├── Gemini Nano 可用 → backend = gemini-nano (离线)
+  └── 有 API Key → backend = openai (在线)
+prompt(system, user, options) → getBackend().chat()
+chatWithHistory(messages, options) → getBackend().chatWithMessages()
+```
 
-### 5.2 Service Worker — 后台服务
+**后端选择优先级**:
+1. `provider === 'gemini-nano'` 且 Chrome 内置 AI 可用 → Gemini Nano
+2. `provider === 'openai'` 且有 API Key → OpenAI 兼容 API
+3. `provider === 'auto'` → 自动检测，优先 Gemini Nano，降级 OpenAI
 
-**入口**: [src/service-worker/index.js](file:///d:/vue+node/chromeAIManager/src/service-worker/index.js)
+#### 4.3.2 AI 能力检测
 
-职责：
-- **消息路由**：处理 `GET_CONTEXT`、`GET_BOOKMARKS`、`EXECUTE` 三类消息
-- **弹窗注入**：点击扩展图标时注入 `overlay.js` 到当前页面
-- **录制消息**：`START_*` / `STOP_RECORDING` 类型的消息由 offscreen 文档处理，SW 忽略
+**文件**: `src/sidepanel/ai/api-detector.ts`
 
-**上下文收集器**: [src/service-worker/context-collector.js](file:///d:/vue+node/chromeAIManager/src/service-worker/context-collector.js)
-- 支持 `summary`（摘要）和 `detailed`（详情）两种模式
-- 摘要模式：返回标签数量分布、书签文件夹、分组数
-- 详情模式：返回所有标签信息（截断上限 120 个），支持 query 过滤
+检测 Chrome 内置 AI 的三种形态：
 
-**操作执行器**: [src/service-worker/executor.js](file:///d:/vue+node/chromeAIManager/src/service-worker/executor.js)
-- 包含 55+ Chrome API 操作的处理函数，覆盖所有命令
+| 检测方式 | 检测对象 | 说明 |
+|---------|---------|------|
+| `window.ai.languageModel` | Chrome 内置 Prompt API | 最稳定，Chrome 125+ |
+| `window.ai.assistant` | 未来 API 形态 | 预留 |
+| `chrome.aiOriginTrial` | Origin Trial 实验性 API | 开发者试用 |
 
-#### 5.2.1 执行器命令清单
+#### 4.3.3 Gemini Nano 适配器
 
-**标签操作 (11 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `close_tabs` | handleCloseTabs | 关闭指定标签 |
-| `focus_tab` | handleFocusTab | 查找并聚焦标签 |
-| `mute_tabs` | handleMuteTabs | 静音标签 |
-| `unmute_tabs` | handleUnmuteTabs | 取消静音 |
-| `sort_tabs` | handleSortTabs | 按域名/标题排序 |
-| `pin_tab` | handlePinTab | 固定/取消固定 |
-| `reload_tabs` | handleReloadTabs | 刷新标签 |
-| `close_other_tabs` | handleCloseOtherTabs | 关闭其他标签 |
-| `duplicate_tab` | handleDuplicateTab | 复制标签 |
-| `move_tab` | handleMoveTab | 移动标签位置 |
-| `discard_tabs` | handleDiscardTabs | 休眠释放内存 |
+**文件**: `src/sidepanel/ai/gemini-nano.ts`
 
-**分组操作 (4 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `group_tabs` | handleGroupTabs | 创建标签组 |
-| `ungroup_tabs` | handleUngroupTabs | 取消分组 |
-| `auto_group_by_domain` | handleAutoGroupByDomain | 按域名自动分组 |
-| `list_groups` | handleListGroups | 列出所有分组 |
-| `rename_group` | handleRenameGroup | 重命名分组 |
+- 适配 Chrome 内置 AI 的三种 API 形态
+- 自动管理 session 生命周期
+- session 过期自动重建
 
-**书签操作 (12 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `add_bookmark` | handleAddBookmark | 添加书签 |
-| `open_bookmark` | handleOpenBookmark | 搜索并打开书签 |
-| `list_bookmarks` | handleListBookmarks | 列出书签 |
-| `remove_bookmark` | handleRemoveBookmark | 删除书签 |
-| `add_bookmark_to_folder` | handleAddBookmarkToFolder | 添加到文件夹 |
-| `create_bookmark_folder` | handleCreateBookmarkFolder | 创建文件夹 |
-| `delete_bookmarks_in_folder` | handleDeleteBookmarksInFolder | 清空文件夹 |
-| `sort_bookmarks_in_folder` | handleSortBookmarksInFolder | 排序书签 |
-| `move_bookmark_to_folder` | handleMoveBookmarkToFolder | 移动书签到文件夹 |
-| `reorder_bookmark` | handleReorderBookmark | 调整书签位置 |
-| `rename_bookmark_folder` | handleRenameBookmarkFolder | 重命名文件夹 |
-| `delete_bookmark_folder` | handleDeleteBookmarkFolder | 删除文件夹 |
-| `move_bookmark_folder` | handleMoveBookmarkFolder | 移动文件夹 |
+#### 4.3.4 OpenAI 适配器
 
-**历史操作 (3 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `reopen_tab` | handleReopenTab | 恢复已关闭标签 |
-| `search_history` | handleSearchHistory | 搜索历史 |
-| `delete_history` | handleDeleteHistory | 删除历史 |
+**文件**: `src/sidepanel/ai/openai-adapter.ts`
 
-**导航 & 窗口 (3 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `navigate` | handleNavigate | 导航到 URL |
-| `new_window` | handleNewWindow | 新窗口 |
-| `open_downloads` | handleOpenDownloads | 打开下载页 |
+- 兼容 OpenAI / DeepSeek / Ollama / LM Studio / OpenRouter 等所有 `/v1/chat/completions` 服务
+- 支持 `chat` 和 `chatWithMessages` 两种调用方式
+- 自动请求 `chrome.permissions` 获取 API 端点跨域权限
+- 超时控制 (默认 60s)
+- 默认启用 JSON mode (`response_format: { type: 'json_object' }`)
+- 错误处理：解析 API 返回的错误信息
 
-**页面控制 (2 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `screenshot` | handleScreenshot | 截图可见区域 |
-| `zoom_tab` | handleZoomTab | 缩放页面 |
+---
 
-**外观设置 (6 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `get_theme` | handleGetThemeSettings | 查看主题 |
-| `set_theme` | handleSetThemeSettings | 设置主题 (light/dark/color) |
-| `get_font_size` | handleGetFontSize | 查看字号 |
-| `set_font_size` | handleSetFontSize | 设置字号 |
-| `get_font_family` | handleGetFontFamily | 查看字体 |
-| `set_font_family` | handleSetFontFamily | 设置字体 |
+### 4.4 命令系统
 
-**Cookie (2 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `get_cookies` | handleGetCookies | 查看 Cookie |
-| `clear_cookies` | handleClearCookies | 清除 Cookie |
+#### 4.4.1 命令定义注册表
 
-**扩展管理 (4 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `list_extensions` | handleListExtensions | 列出扩展 |
-| `enable_extension` | handleEnableExtension | 启用扩展 |
-| `disable_extension` | handleDisableExtension | 禁用扩展 |
-| `uninstall_extension` | handleUninstallExtension | 卸载扩展 |
+**文件**: `src/shared/commands.ts`
 
-**网站权限 (2 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `get_site_permissions` | handleGetSitePermissions | 查看权限 |
-| `set_site_permission` | handleSetSitePermission | 设置权限 |
+定义了 50+ 命令，每个命令包含：
 
-**存储 (3 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `storage_get` | handleStorageGet | 读存储 |
-| `storage_set` | handleStorageSet | 写存储 |
-| `storage_remove` | handleStorageRemove | 删存储 |
-
-**录制 (3 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `record_tab` | handleRecordTab | 录制标签页 |
-| `record_screen` | handleRecordScreen | 录制桌面 |
-| `stop_record` | handleStopRecord | 停止录制 |
-
-**DOM 操作 (1 个)**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `dom_manipulate` | handleDOMManipulate | 对当前页面 DOM 增删改查和事件 |
-
-**其他**：
-| 命令 | 函数 | 说明 |
-|------|------|------|
-| `get_top_sites` | handleGetTopSites | 常用网站 |
-
-### 5.3 Content Scripts
-
-#### 5.3.1 DOM Commander（常驻）
-
-**文件**: [src/content/dom-commander.js](file:///d:/vue+node/chromeAIManager/src/content/dom-commander.js)
-
-注入到所有页面 (`<all_urls>`, `run_at: document_idle`)，运行在 isolated world。
-
-**核心功能**：
-
-| 功能 | 说明 |
-|------|------|
-| `scanPage(filter)` | 扫描页面可交互元素，返回扁平 `elements[]` 列表（上限 80）。支持 AI 指定的 filter（tag/type/text/name/id/disabled/checked/hidden） |
-| `fuzzyTextSearch(text)` | 按文本模糊匹配元素 |
-| `simulateClick(el)` | 模拟真实点击（mousedown + mouseup + click） |
-| `simulateInput(el, val)` | 原生 setter 设值 + 完整事件链（input/change/compositionstart/update/end/keydown/keyup） |
-| `simulateSubmit(el)` | 表单提交 |
-| `isHidden(el)` | offsetParent + computedStyle 判断可见性 |
-
-**DOM 操作类型**：
-- `query` — 查询元素（支持 text/html/attr:* 等 property）
-- `modify` — 修改元素内容/属性/样式
-- `remove` — 删除元素
-- `add` — 创建并添加子元素
-- `style` — 批量设置样式
-- `event` — 触发事件（click/dblclick/input/change/focus/blur/submit/scroll/select/keydown/keyup/mouseenter/mouseleave）
-
-**扁平元素模型 (`elements[]`)**：
-```json
-{
-  "url": "...",
-  "title": "...",
-  "count": 4,
-  "truncated": false,
-  "elements": [
-    {
-      "tag": "input",
-      "text": null,
-      "hidden": false,
-      "attrs": {
-        "type": "text",
-        "placeholder": "...",
-        "name": "q",
-        "id": "search",
-        "_props": { "value": "", "disabled": false }
-      }
-    }
-  ]
+```typescript
+interface Command {
+  intent: string           // 唯一意图 ID
+  description: string      // 描述
+  dangerous: boolean       // 是否危险操作
+  slots: Record<string, CommandSlot>  // 参数定义
+  swIntent: string | null  // 对应的 SW 执行器命令名
+  aiHidden?: boolean       // 是否对 AI 隐藏 (仅用于斜杠命令)
+  requiresPrecompute?: boolean  // 是否需要预计算
 }
 ```
 
-关键设计：`attrs` 包含元素全部 DOM 属性（不含 class/style），`_props` 补充 JS 属性（value/checked/disabled/readonly/href）。
+命令分类：
 
-#### 5.3.2 Overlay（弹窗注入）
+| 类别 | 命令数 | 示例 |
+|------|--------|------|
+| Tabs | 9 | `tabs_observe`, `tabs_create`, `tabs_remove`, `tabs_group` |
+| Bookmarks | 7 | `bookmarks_observe_tree`, `bookmarks_create_node` |
+| Windows | 3 | `windows_observe`, `windows_create` |
+| History | 2 | `history_search`, `history_remove` |
+| Navigation | 2 | `navigate`, `screenshot` |
+| Page | 2 | `zoom`, `downloads_open` |
+| Theme | 2 | `theme_observe`, `theme_update` |
+| Font | 4 | `font_size_observe/update`, `font_family_observe/update` |
+| Cookies | 2 | `cookies_observe`, `cookies_remove` |
+| Top Sites | 1 | `top_sites_observe` |
+| Extensions | 3 | `extensions_observe`, `extensions_update`, `extensions_remove` |
+| Permissions | 2 | `permissions_observe`, `permissions_update` |
+| Storage | 3 | `storage_get/set/remove` |
+| Sessions | 1 | `sessions_restore` |
+| Recording | 3 | `recording_start_tab/screen/stop` |
+| DOM | 1 | `dom_manipulate` |
+| Batch | 1 | `batch` |
+| 向后兼容 | 30+ | `find_tab`, `close_duplicate_tabs`, `sort_tabs` 等 |
+| 内置 | 3 | `show_help`, `unknown`, `chat` |
 
-**文件**: [src/content/overlay.js](file:///d:/vue+node/chromeAIManager/src/content/overlay.js)
+#### 4.4.2 命令执行器
 
-点击扩展图标时注入，创建一个全屏半透明覆盖层 + 居中 iframe 弹窗（860x600px）加载 Side Panel。
-- 支持点击遮罩关闭、按 Escape 关闭
-- 支持动画（fade in/out + scale）
-- 通过 `postMessage` 支持截图复制到剪贴板
-- 使用 MutationObserver 兜底清理标记
+**文件**: `src/service-worker/executor.ts`
 
-### 5.4 Offscreen Document — 录制引擎
+`executeCommand(intent, payload)` 是实际的命令执行入口，通过 `switch` 分发到各实现函数。
 
-**文件**: [src/offscreen/recorder.js](file:///d:/vue+node/chromeAIManager/src/offscreen/recorder.js)
+**危险操作保护**:
+- 定义 `DANGEROUS_INTENTS` 集合: `tabs_remove`, `bookmarks_remove_node`, `history_remove`, `cookies_remove`, `extensions_remove`
+- 执行前通过 `checkDangerousConfirm()` 调用 `confirm()` 弹窗二次确认
 
-通过 Chrome Offscreen Documents API 创建隐藏文档，使用 `navigator.mediaDevices.getUserMedia` + `MediaRecorder` 实现：
-- **标签录制**：通过 `chrome.tabCapture.getMediaStreamId` 获取流 ID
-- **桌面录制**：通过 `chrome.desktopCapture.chooseDesktopMedia` 弹出选择器
-- 录制格式：VP9/webm → VP8/webm → webm 降级
-- 码率：2.5 Mbps，每秒收集一次数据
-- 停止时通过 FileReader 转 base64 dataUrl 返回，自动触发下载
+**执行器能力矩阵**:
 
-### 5.5 AI Engine — 多后端支持
+| 功能 | 函数 | Chrome API |
+|------|------|-----------|
+| 查询标签 | `observeTabs` | `chrome.tabs.query` |
+| 创建标签 | `createTab` | `chrome.tabs.create` |
+| 更新标签 | `updateTab` | `chrome.tabs.update` |
+| 移动标签 | `moveTabs` | `chrome.tabs.move` |
+| 关闭标签 | `removeTabs` | `chrome.tabs.remove` |
+| 分组标签 | `groupTabs` | `chrome.tabs.group` |
+| 取消分组 | `ungroupTabs` | `chrome.tabs.ungroup` |
+| 按域名分组 | `groupByDomain` | `chrome.tabs.group` |
+| 查询书签树 | `observeBookmarks` | `chrome.bookmarks.getTree` |
+| 移动书签 | `moveBookmark` | `chrome.bookmarks.move` |
+| 创建书签 | `createBookmark` | `chrome.bookmarks.create` |
+| 更新书签 | `updateBookmark` | `chrome.bookmarks.update` |
+| 打开书签 | `openBookmark` | `chrome.tabs.update` |
+| 删除书签 | `removeBookmark` | `chrome.bookmarks.remove` |
+| 添加当前页 | `addCurrentPageBookmark` | `chrome.bookmarks.create` |
+| 查询窗口 | `observeWindows` | `chrome.windows.getAll` |
+| 创建窗口 | `createWindow` | `chrome.windows.create` |
+| 更新窗口 | `updateWindow` | `chrome.windows.update` |
+| 搜索历史 | `searchHistory` | `chrome.history.search` |
+| 删除历史 | `removeHistory` | `chrome.history.deleteRange/deleteAll` |
+| 导航 | `navigateTo` | `chrome.tabs.update/create` |
+| 截图 | `takeScreenshot` | `chrome.tabs.captureVisibleTab` |
+| 缩放 | `setZoom` | `chrome.tabs.getZoom/setZoom` |
+| 主题 | `observeTheme/updateTheme` | `chrome.settings.private` |
+| 字号 | `observeFontSize/updateFontSize` | `chrome.fontSettings` |
+| 字体 | `observeFontFamily/updateFontFamily` | `chrome.fontSettings` |
+| Cookie | `observeCookies/removeCookies` | `chrome.cookies.getAll/remove` |
+| 常用网站 | `observeTopSites` | `chrome.topSites.get` |
+| 扩展 | `observeExtensions/updateExtension/removeExtension` | `chrome.management` |
+| 存储 | `getStorage/setStorage/removeStorage` | `chrome.storage.local` |
+| 恢复会话 | `restoreSession` | `chrome.sessions.getRecentlyClosed/restore` |
+| 录制 | `startTabRecording/startScreenRecording/stopRecording` | `chrome.tabCapture` |
+| DOM 操作 | `domManipulate` | `chrome.scripting.executeScript` |
+| 批量执行 | `batchExecute` | 递归调用 `executeCommand` |
 
-**文件**: [src/sidepanel/ai/engine.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/ai/engine.js)
+#### 4.4.3 斜杠命令注册表
 
-统一 AI 入口，自动选择后端：
+**文件**: `src/sidepanel/command/slash-commands.ts`
 
-| 后端 | 条件 | 说明 |
-|------|------|------|
-| Gemini Nano | `window.ai` 可用 + 配置为 auto/gemini-nano | Chrome 内置，离线推理 |
-| OpenAI 兼容 | API Key 已配置 + 配置为 auto/openai | 支持 OpenAI/DeepSeek/Ollama/LM Studio 等 |
+定义 40+ 斜杠命令，每个命令包含：
 
-**API 探测器** ([api-detector.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/ai/api-detector.js))：
-- 探测 3 种形态：`window.ai.languageModel`、`window.ai.assistant`、`chrome.aiOriginTrial.languageModel`
-
-**OpenAI 适配器** ([openai-adapter.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/ai/openai-adapter.js))：
-- 支持完整的 messages 数组（Agent Loop 专属）
-- 自动请求 `host_permissions`
-- 对 OpenAI/DeepSeek/Groq 自动启用 `response_format: json_object`
-- 60s 超时 + AbortController
-
-**Gemini Nano 适配器** ([gemini-nano.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/ai/gemini-nano.js))：
-- 支持 session 自动恢复（过期重创建）
-
-### 5.6 Shared Modules — 共享模块
-
-#### 5.6.1 命令注册表 ([commands.js](file:///d:/vue+node/chromeAIManager/src/shared/commands.js))
-
-定义 `COMMANDS[]` 数组，每个命令包含：
-- `intent` — 用户意图名
-- `description` — 描述
-- `dangerous` — 是否需要确认
-- `slots` — 参数定义（类型、是否可选、描述）
-- `swIntent` — 对应的 SW executor 命令名
-- `requiresPrecompute` — 是否需要在 Side Panel 预计算（如根据域名筛选 tabIds）
-
-导出 `COMMAND_MAP`（intent → command 的 Map 结构）。
-
-**特殊命令**：
-- `show_help` (swIntent: null) — 纯 UI 操作，显示帮助
-- `chat` (swIntent: null) — 纯 AI 回复，无 Chrome API 操作
-- `unknown` — 容错兜底
-
-#### 5.6.2 消息常量 ([constants.js](file:///d:/vue+node/chromeAIManager/src/shared/constants.js))
-
-```javascript
-// Side Panel → Service Worker
-MSG_GET_CONTEXT   = 'GET_CONTEXT'     // 获取浏览器上下文
-MSG_GET_BOOKMARKS = 'GET_BOOKMARKS'   // 获取书签
-MSG_EXECUTE       = 'EXECUTE'         // 执行命令
-
-// Service Worker → Side Panel
-MSG_EXECUTE_RESULT = 'EXECUTE_RESULT' // 执行结果
-
-// 错误码
-ERRORS = {
-  UNKNOWN_TYPE, EMPTY_INPUT, NO_AI_BACKEND, AI_PARSE_FAILED,
-  UNKNOWN_INTENT, UNKNOWN_SLASH, EXECUTION_FAILED,
-  NO_TABS_FOUND, HOST_PERMISSION_DENIED
+```typescript
+interface SlashCommand {
+  slash: string         // 命令名 (如 "close-duplicates")
+  intent: string        // 对应 intent
+  description: string   // 描述
+  aliases?: string[]    // 别名 (如 ["cd", "dedup", "去重"])
+  hasArg?: boolean      // 是否需要参数
+  placeholder?: string  // 参数占位符
 }
 ```
 
-#### 5.6.3 JSON 修复器 ([json-repair.js](file:///d:/vue+node/chromeAIManager/src/shared/json-repair.js))
-
-容错解析 AI 输出的 JSON：
-1. 移除 markdown 代码块标记 (```json ... ```)
-2. 直接解析 JSON
-3. 提取 `{...}` 花括号内容
-4. 修复尾部逗号、单引号转双引号
-
-#### 5.6.4 Prompt 生成器 ([prompts.js](file:///d:/vue+node/chromeAIManager/src/shared/prompts.js))
-
-`buildAgentSystemPrompt(context)` — 生成 Agent 系统提示词，包含：
-- AI 角色定义（自主执行代理）
-- 输出格式定义（JSON 结构：thought/action/plan/predict/command/reply）
-- action 类型说明（exec/scan/done/ask）
-- scanFilter 机制说明
-- 可用命令列表（从 COMMANDS 动态生成）
-- 通用原则（12 条，确保 AI 行为可控）
-- 上下文注入（标签列表、lessons 经验、页面元素 elements[]）
-
-### 5.7 Command Module — 命令模块
-
-#### 5.7.1 斜杠命令 ([slash-commands.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/command/slash-commands.js))
-
-定义 `SLASH_COMMANDS[]`，每个包含：
-- `slash` — 命令名
-- `intent` — 对应 intent
-- `description` — 描述
-- `aliases` — 中文/英文别名
-- `hasArg` / `placeholder` — 参数提示
-
-`matchSlashCommand(input)` — 解析斜杠命令：
-1. 精确匹配 slash 名
-2. 别名匹配
+**匹配逻辑** (`matchSlashCommand`):
+1. 精确匹配 `slash` 名称
+2. 别名匹配 `aliases`
 3. 前缀模糊匹配
-4. 返回 `{intent, slots}` 或错误
+4. 参数解析按 intent 类型分发到不同解析逻辑
 
-#### 5.7.2 确认中间件 ([confirm.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/command/confirm.js))
+#### 4.4.4 确认中间件
 
-`generateConfirmPreview(intent, slots, context)` — 为危险操作生成确认卡片，包含：
-- 操作标题和描述
-- 影响的标签/书签列表
-- 确认/取消按钮
+**文件**: `src/sidepanel/command/confirm.ts`
 
-支持的危险操作：close_duplicate_tabs, close_tabs_by_domain, close_other_tabs, remove_bookmark, delete_history, delete_bookmarks_in_folder, delete_bookmark_folder, clear_cookies, uninstall_extension, storage_remove。
+为危险操作生成预览信息，支持的操作类型：
 
-#### 5.7.3 意图识别器 (已废弃) ([intent-detector.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/command/intent-detector.js))
-
-已被 Agent Loop 替代，保留作为兼容层。原用于将用户的自然语言通过 AI 转为确定性命令。
-
----
-
-## 六、通信协议
-
-### 6.1 消息通道
-
-所有通信通过 `chrome.runtime.sendMessage` 进行：
-
-```
-Side Panel  ←→  Service Worker  ←→  Content Script
-   (iframe)      (background)         (injected)
-
-Offscreen Document
-   (recorder)  ←→  Service Worker
-```
-
-### 6.2 消息类型
-
-| 方向 | 类型 | 说明 |
-|------|------|------|
-| SP → SW | `GET_CONTEXT` | 获取浏览器上下文（标签/书签） |
-| SP → SW | `GET_BOOKMARKS` | 获取书签 |
-| SP → SW | `EXECUTE` | 执行 Chrome API 命令 |
-| SW → CS | `PAGE_SCAN` | 扫描当前页面元素（支持 filter） |
-| SW → CS | `DOM_COMMAND` | 执行 DOM 操作 |
-| SW → CS | `CLOSE_OVERLAY` | 关闭弹窗 |
-| SW → Offscreen | `START_TAB_RECORDING` | 开始标签录制 |
-| SW → Offscreen | `START_DESKTOP_RECORDING` | 开始桌面录制 |
-| SW → Offscreen | `STOP_RECORDING` | 停止录制 |
-
-### 6.3 Content Script 内部消息
-
-- `PAGE_SCAN` — 扫描页面，返回 `elements[]`
-- `DOM_COMMAND` — 执行 6 类 DOM 操作，按 `params.action` 分发
-
-### 6.4 iframe → 父页面通信
-
-- 通过 `window.parent.postMessage` 传递 `COPY_SCREENSHOT` 消息（截图 dataUrl），由 overlay.js 的 `window.addEventListener("message")` 处理，将 base64 图片写入剪贴板。
+| 操作 | 预览内容 |
+|------|---------|
+| `close_duplicate_tabs` | 显示重复 URL 组和数量 |
+| `close_tabs_by_domain` | 显示匹配域名下的标签列表 |
+| `close_other_tabs` | 显示将要关闭的标签列表 |
+| `remove_bookmark` | 显示匹配关键词 |
+| `delete_history` | 显示时间范围和关键词 |
+| `clear_cookies` | 显示域名 |
+| `uninstall_extension` | 显示扩展名 |
+| `storage_remove` | 显示存储键名 |
 
 ---
 
-## 七、Agent Loop 详细机制
+### 4.5 Content Scripts
 
-### 7.1 输出规范
+#### 4.5.1 DOM Commander
 
-AI 每轮输出 JSON：
+**文件**: `src/content/dom-commander.js`
 
-```json
-{
-  "thought": "推理：看到了什么，为什么做这一步",
-  "action": "exec|done|ask|scan",
-  "plan": "剩余计划简述（可选）",
-  "predict": "预期执行结果（可选，系统自动验证）",
-  "command": { "intent": "...", "slots": {...} },
-  "reply": "给用户的最终文本（done/ask 时用）"
-}
-```
+常驻 content script，通过 `PAGE_SCAN` 消息响应页面扫描请求。
 
-### 7.2 Plan Tracker
-
+**扫描输出**:
 ```javascript
 {
-  goal: "用户表达的目标",
-  currentPlan: "AI声明的剩余步骤计划",
-  steps: [
-    { step: 1, thought: "推理", intent: "dom_manipulate", result: {...}, status: "ok" },
-  ]
-}
-```
-
-### 7.3 Lessons 经验库
-
-```javascript
-[
-  { domain: "example.com", error: "未找到匹配元素", intent: "dom_manipulate", timestamp: ... },
-]
-```
-- Session 级别，最多保留 10 条
-- 失败时自动记录
-- 注入到后续 prompt 中作为经验
-
-### 7.4 Predict 验证
-
-系统自动对比 AI 预测与执行结果：
-```javascript
-_verifyPredict(predict, result) {
-  // 将预测拆分为关键词，检查是否出现在结果 JSON 中
-  // 不匹配 → 追加 system message: "⚠ 预测不匹配..."
-}
-```
-
-### 7.5 容错机制
-
-| 机制 | 参数 |
-|------|------|
-| 最大步数 | 12 steps |
-| 连续失败中断 | 3 次 |
-| 消息压缩 | 超过 30 条：保留 system + lessons + 最近 28 轮 |
-| 超时保护 | 60s（OpenAI adapter 级别） |
-
----
-
-## 八、UI 设计
-
-### 8.1 布局结构
-
-```
-┌─────────────────────────────┐
-│  Header (标题 + 设置按钮)    │
-├─────────────────────────────┤
-│                             │
-│  Messages (消息展示区)       │
-│  - 用户消息 (右对齐气泡)     │
-│  - AI 回复 (左对齐气泡)      │
-│  - 系统消息 (居中灰色)       │
-│  - 错误消息 (红色左边界)     │
-│  - 确认卡片 (黄色边框)       │
-│  - 截图 (图片渲染)           │
-│                             │
-├─────────────────────────────┤
-│  Command Input (命令输入区)  │
-│  [✦] [_____________] [▶]    │
-│  装饰粒子线                  │
-└─────────────────────────────┘
-```
-
-### 8.2 设计风格
-- **科幻霓虹风格**：深色背景（#060812）+ 青色主题色（#00e5ff）
-- 玻璃拟态（backdrop-filter: blur）+ 发光边框动画
-- 扫描线覆盖效果（opacity: 0.03）
-- 输入框聚焦发光扫过动画（glowSweep）
-- 装饰粒子线呼吸动画（dotBlink）
-
-### 8.3 交互功能
-- **命令面板**：输入 `/` 弹出命令建议（实时过滤、键盘导航、点击选择）
-- **命令历史**：上/下箭头键浏览历史输入
-- **设置面板**：AI Provider / API Key / Endpoint / Model 配置
-- **确认卡片**：危险操作二次确认，显示影响的标签/书签列表
-
----
-
-## 九、权限清单
-
-```json
-{
-  "permissions": [
-    "tabs", "bookmarks", "sessions", "history", "storage",
-    "tabGroups", "scripting", "activeTab", "browsingData",
-    "fontSettings", "cookies", "topSites", "management",
-    "contentSettings", "privacy", "tabCapture", "desktopCapture",
-    "notifications", "downloads", "offscreen"
+  url: string,           // 当前页面 URL
+  title: string,         // 页面标题
+  count: number,         // 实际返回元素数
+  totalCount: number,    // 页面总元素数
+  truncated: boolean,    // 是否截断 (超过 300 个)
+  elements: [            // 元素数组
+    { tag: string, text: string|null, attrs: object|null }
   ],
-  "host_permissions": ["<all_urls>"]
+  iframes: [             // iframe 列表
+    { src: string, id: string|null, name: string|null }
+  ] | null
 }
 ```
 
----
+**设计原则**: 纯数据收集，零业务判断。AI 通过 `dom_manipulate` 工具写自定义脚本做精确操作。
 
-## 十、配置项
+#### 4.5.2 Overlay 弹窗
 
-通过 `chrome.storage.local` 持久化存储：
+**文件**: `src/content/overlay.js`
 
-| 键 | 默认值 | 说明 |
-|------|------|------|
-| `aiProvider` | `"auto"` | AI 后端：auto / gemini-nano / openai |
-| `apiKey` | `""` | OpenAI 兼容 API Key |
-| `apiEndpoint` | `"https://api.deepseek.com"` | API 端点（默认 DeepSeek） |
-| `modelName` | `"deepseek-chat"` | 模型名称 |
-| `themeMode` | `"device"` | 主题模式：light / dark / device |
-| `themeColor` | `"#00e5ff"` | 主题色 |
-| `recordingState` | `"idle"` | 录制状态：idle / starting / recording / stopping |
+注入全屏覆盖层 + 居中 iframe 弹窗，用于 Popup 模式。
 
-通过 `chrome.storage.session` 存储：
-- `lastInput` — 上次输入内容
-- `messageLog` — 最近 50 条消息（恢复用）
+**特性**:
+- 点击遮罩层关闭
+- Escape 键关闭
+- 动画效果 (fade in/out, dialog in/out)
+- 监听 `CLOSE_OVERLAY` 消息
+- 截图自动复制到剪贴板
+- MutationObserver 兜底清理标记
 
 ---
 
-## 十一、构建与部署
+### 4.6 Offscreen 文档
 
-### 11.1 无需构建
-项目使用原生 ES Modules，无构建工具依赖。直接加载为 Chrome 扩展即可。
+**文件**: `src/offscreen/recorder.js`
 
-### 11.2 安装步骤
-1. 打开 Chrome → `chrome://extensions/`
-2. 开启「开发者模式」
-3. 点击「加载已解压的扩展程序」
-4. 选择项目根目录
+使用 MediaRecorder 录制标签页或桌面画面。
 
-### 11.3 快捷键
-- `Ctrl+Shift+U` (Windows) / `Command+Shift+U` (Mac) — 打开 AI 命令面板
+**消息类型**:
+- `START_TAB_RECORDING`: 开始录制标签页 (需要 streamId)
+- `START_DESKTOP_RECORDING`: 开始录制桌面
+- `STOP_RECORDING`: 停止录制，返回 data URL
 
-### 11.4 最低要求
-- Chrome >= 125（Manifest V3 + ES Modules in Service Worker）
+**编码**: VP9/WebM → VP8/WebM 降级，2.5 Mbps 码率，每秒收集数据
 
 ---
 
-## 十二、关键文件索引
+### 4.7 共享模块
 
-| 文件 | 行数 | 核心职责 |
-|------|------|------|
-| [manifest.json](file:///d:/vue+node/chromeAIManager/manifest.json) | 70 | 扩展清单配置 |
-| [src/sidepanel/index.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/index.js) | 1077 | 主逻辑：Agent Loop + UI 渲染 |
-| [src/sidepanel/index.html](file:///d:/vue+node/chromeAIManager/src/sidepanel/index.html) | 91 | 面板 HTML 结构 |
-| [src/sidepanel/style.css](file:///d:/vue+node/chromeAIManager/src/sidepanel/style.css) | 521 | 科幻霓虹风格样式 |
-| [src/service-worker/index.js](file:///d:/vue+node/chromeAIManager/src/service-worker/index.js) | 60 | SW 入口 + 消息路由 |
-| [src/service-worker/executor.js](file:///d:/vue+node/chromeAIManager/src/service-worker/executor.js) | 1754 | 55+ Chrome API 命令实现 |
-| [src/service-worker/context-collector.js](file:///d:/vue+node/chromeAIManager/src/service-worker/context-collector.js) | 134 | 浏览器上下文收集 |
-| [src/content/dom-commander.js](file:///d:/vue+node/chromeAIManager/src/content/dom-commander.js) | 533 | DOM 扫描 + 操作执行 |
-| [src/content/overlay.js](file:///d:/vue+node/chromeAIManager/src/content/overlay.js) | 137 | 弹窗注入 + 截图复制 |
-| [src/offscreen/recorder.js](file:///d:/vue+node/chromeAIManager/src/offscreen/recorder.js) | 142 | MediaRecorder 录制引擎 |
-| [src/shared/commands.js](file:///d:/vue+node/chromeAIManager/src/shared/commands.js) | 661 | 55+ 命令定义注册表 |
-| [src/shared/prompts.js](file:///d:/vue+node/chromeAIManager/src/shared/prompts.js) | 163 | Agent 系统提示词生成 |
-| [src/shared/constants.js](file:///d:/vue+node/chromeAIManager/src/shared/constants.js) | 22 | 消息类型 + 错误码 |
-| [src/shared/json-repair.js](file:///d:/vue+node/chromeAIManager/src/shared/json-repair.js) | 22 | JSON 容错解析 |
-| [src/sidepanel/ai/engine.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/ai/engine.js) | 73 | AI 引擎统一入口 |
-| [src/sidepanel/ai/api-detector.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/ai/api-detector.js) | 42 | window.ai 能力探测 |
-| [src/sidepanel/ai/openai-adapter.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/ai/openai-adapter.js) | 69 | OpenAI 兼容 API 适配器 |
-| [src/sidepanel/ai/gemini-nano.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/ai/gemini-nano.js) | 44 | Gemini Nano 适配器 |
-| [src/sidepanel/command/slash-commands.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/command/slash-commands.js) | 688 | 斜杠命令注册 + 匹配 |
-| [src/sidepanel/command/confirm.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/command/confirm.js) | 160 | 危险操作确认预览 |
-| [src/sidepanel/command/intent-detector.js](file:///d:/vue+node/chromeAIManager/src/sidepanel/command/intent-detector.js) | 85 | 意图识别器（已废弃） |
-| [src/service-worker/utils/tab-matcher.js](file:///d:/vue+node/chromeAIManager/src/service-worker/utils/tab-matcher.js) | 52 | 标签去重/搜索工具 |
-| [docs/architecture.md](file:///d:/vue+node/chromeAIManager/docs/architecture.md) | 457 | 架构设计文档（正向） |
+#### 4.7.1 常量定义
+
+**文件**: `src/shared/constants.ts`
+
+- 消息类型常量 (5 个)
+- 错误码类型 (15+ 个)
+- 系统常量:
+  - `MAX_ELEMENTS_COUNT = 80` (DOM 扫描最大元素数)
+  - `MAX_AGENT_STEPS = 12` (Agent 最大步数)
+  - `STEP_TIMEOUT_MS = 10000` (单步超时)
+  - `TOTAL_TASK_TIMEOUT_MS = 120000` (总任务超时)
+  - `MAX_CONSECUTIVE_FAILURES = 3` (最大连续失败)
+  - `MAX_MESSAGES_COUNT = 30` (对话上下文上限)
+- 受保护页面配置: `chrome://`, `chrome-extension://`, `chrome.google.com`
+
+#### 4.7.2 Agent 系统提示词
+
+**文件**: `src/shared/prompts.ts`
+
+`buildAgentSystemPrompt(context)` 构建 Agent 的 system prompt，包含：
+
+1. **当前环境信息**: 当前标签页标题和 URL
+2. **核心能力说明**: 观察→思考→执行→验证循环
+3. **操作模式判断**: 浏览器操作 vs 纯对话
+4. **输出格式**: 严格的 JSON 格式要求
+5. **action 类型**: `exec_tool`, `scan`, `done`, `ask`
+6. **DOM 操作指南**: API 列表、写法示例
+7. **错误码参考**: 各类错误码含义
+8. **通用原则**: 16 条 Agent 行为准则
+9. **可用工具**: 过滤后的命令列表
+10. **历史经验**: 最近 3 条失败经验
+11. **页面结构**: 当前页面元素列表
+
+#### 4.7.3 容错 JSON 解析
+
+**文件**: `src/shared/json-repair.ts`
+
+`repairJSON(raw)` 修复 AI 输出的常见 JSON 格式问题：
+
+1. 移除 Markdown 代码块标记
+2. 提取花括号内容
+3. 修复尾部逗号
+4. 单引号转双引号
+5. 修复未引号的 key
 
 ---
 
-> **总代码量**: ~4500 行 JavaScript + ~600 行 CSS + ~100 行 HTML + ~70 行 JSON
+### 4.8 类型定义
+
+**文件**: `src/types/*.ts`
+
+| 文件 | 核心类型 |
+|------|---------|
+| `ai.ts` | `ChatMessage`, `MessageLog`, `AIResponse`, `ToolCall`, `AIProvider`, `AIModel`, `AIConfig`, `AIStatus`, `AIOptions`, `AIAdapter` |
+| `chrome.ts` | `TabInfo`, `ActiveTab`, `BookmarkNode`, `WindowInfo` |
+| `command.ts` | `CommandSlot`, `Command`, `SlashCommand`, `SlashCommandMatch` |
+| `context.ts` | `PageElement`, `Iframe`, `PageStructure`, `Lesson`, `PlanStep`, `PlanTracker`, `SessionData`, `Context` |
+| `execution.ts` | `ExecutionResult`, `ExecuteCommandPayload` |
+| `ui.ts` | `DisplayMode`, `MessageLog`, `ChatMessage`, `Lesson`, `PlanTracker`, `AgentState`, `Settings` |
+
+---
+
+## 5. 数据流与通信
+
+### 5.1 整体通信架构
+
+```
+User Input (自然语言)
+    │
+    ▼
+Side Panel (Vue UI)
+    │
+    ├── 斜杠命令 ──→ matchSlashCommand() ──→ COMMAND_MAP ──→ chrome.runtime.sendMessage(EXECUTE) ──→ Service Worker executor
+    │                                                                                                         │
+    │                                                                                                         ▼
+    │                                                                                                    Chrome API 调用
+    │                                                                                                         │
+    │                                                                                                         ▼
+    │                                                                                                    ExecutionResult
+    │                                                                                                         │
+    └── 自然语言 ──→ AIEngine.checkAvailability() ──→ AIEngine.chatWithHistory()
+                            │
+                            ├── Gemini Nano (离线) ←── api-detector
+                            │
+                            └── OpenAI API (在线) ──→ /v1/chat/completions
+                                    │
+                                    ▼
+                            AIResponse (JSON: action + toolCall)
+                                    │
+                                    ▼
+                            Agent Loop (while < MAX_STEPS)
+                                    │
+                                    ├── exec_tool → executeCommand() → SW → Chrome API
+                                    ├── scan → chrome.tabs.sendMessage(PAGE_SCAN) → DOM Commander
+                                    ├── ask → 等待用户输入
+                                    └── done → 完成
+```
+
+### 5.2 Agent 循环流程
+
+```
+用户输入
+    │
+    ▼
+checkAvailability() ──→ AI 不可用 → 显示斜杠命令列表
+    │
+    ▼ (AI 可用)
+buildAgentSystemPrompt(context) → 构建 system prompt
+    │
+    ▼
+while (stepCount < MAX_AGENT_STEPS = 12):
+    │
+    ├── AI 返回 JSON { thought, action, plan, predict, toolCall }
+    │
+    ├── action === "done" → 显示 AI 回复，结束
+    ├── action === "ask" → 保存对话上下文，等待用户输入
+    ├── action === "scan" → scanCurrentPage() → 继续循环
+    ├── action === "chat" → 显示 AI 回复，等待用户输入
+    └── action === "exec_tool" → executeCommand() → 分析结果 → 继续循环
+            │
+            ├── NEEDS_CONFIRM → 显示确认对话框，暂停
+            ├── 连续失败 3 次 → 停止
+            ├── 超时 120s → 停止
+            └── 正常 → 结果注入消息，继续
+```
+
+### 5.3 消息持久化
+
+- **消息日志**: `sessionStorage('ai_message_log')` + `chrome.storage.local` 双重持久化
+- **会话恢复**: `sessionStorage('ai_commander_session')` 保存 planTracker + lessons + conversationMessages，5 分钟过期
+- **输入草稿**: `sessionStorage('lastInput')` 保存最后输入内容
+
+---
+
+## 6. 构建与部署
+
+### 6.1 构建配置
+
+**文件**: `vite.config.ts`
+
+使用 Vite 5 构建，自定义 `chromeExtensionPlugin` 插件处理 Chrome 扩展的特殊构建需求：
+
+1. **清理**: 构建前删除 `dist/` 目录
+2. **多入口**: Side Panel HTML + Service Worker
+3. **路径修复**: 修复 Vite 输出的相对路径
+4. **资源复制**: 
+   - `manifest.json` → `dist/`
+   - `icons/` → `dist/icons/`
+   - `src/content/*.js` → `dist/content/`
+   - `src/offscreen/*` → `dist/offscreen/`
+   - `src/lib/*.js` → `dist/lib/`
+
+### 6.2 构建产物
+
+```
+dist/
+├── manifest.json
+├── sidepanel.html           # Side Panel 入口
+├── sidepanel.js             # Vue 应用打包
+├── sidepanel.css            # 样式
+├── service-worker.js        # Service Worker 打包
+├── icons/                   # 扩展图标
+│   ├── icon-16.png
+│   ├── icon-32.png
+│   ├── icon-48.png
+│   └── icon-128.png
+├── content/
+│   ├── dom-commander.js     # 内容脚本
+│   └── overlay.js
+├── offscreen/
+│   ├── recorder.html
+│   └── recorder.js
+└── lib/
+    └── testing-library-dom.umd.min.js
+```
+
+### 6.3 构建命令
+
+```bash
+yarn dev      # 开发模式
+yarn build    # 生产构建
+yarn preview  # 预览
+```
+
+### 6.4 Manifest 权限
+
+| 权限 | 用途 |
+|------|------|
+| `tabs` | 标签页 CRUD、查询、分组 |
+| `bookmarks` | 书签增删改查 |
+| `sessions` | 恢复最近关闭标签 |
+| `history` | 搜索/删除浏览历史 |
+| `storage` | 扩展本地存储 |
+| `tabGroups` | 标签分组管理 |
+| `scripting` | 注入脚本执行 DOM 操作 |
+| `activeTab` | 当前标签交互 |
+| `browsingData` | 浏览数据清理 |
+| `fontSettings` | 字体设置读写 |
+| `cookies` | Cookie 查看/清除 |
+| `topSites` | 常用网站查询 |
+| `management` | 扩展管理 |
+| `contentSettings` | 内容权限设置 |
+| `privacy` | 隐私设置 |
+| `tabCapture` | 标签页录制 |
+| `desktopCapture` | 桌面录制 |
+| `notifications` | 通知 |
+| `downloads` | 下载管理 |
+| `offscreen` | 离屏文档 |
+| `sidePanel` | 侧边栏 |
+| `<all_urls>` | 所有网站主机权限 |
+
+---
+
+## 7. 关键设计决策
+
+### 7.1 为什么选择 Agent 循环而非一次性调用？
+
+AI 模型在单次调用中难以准确完成复杂的多步操作。Agent 循环通过"观察→思考→执行→验证"的迭代方式，让 AI 每次只做一件事，看到结果后再决定下一步，大幅提高了复杂任务的完成率。
+
+### 7.2 为什么同时支持 Gemini Nano 和 OpenAI？
+
+- **Gemini Nano**: Chrome 内置，离线可用，无需 API Key，零成本，但模型能力有限
+- **OpenAI 兼容 API**: 支持 DeepSeek、OpenAI、Ollama 等，模型能力更强，但需要网络和 API Key
+- **自动模式**: 优先使用 Gemini Nano，不可用时自动降级到 OpenAI
+
+### 7.3 为什么斜杠命令和 AI 自然语言并存？
+
+- **斜杠命令**: 精确、快速、无需 AI，适合常见操作（如 `/close-duplicates`）
+- **自然语言**: 灵活、强大，适合复杂场景（如"帮我整理所有标签页，按域名分组，然后关闭重复的"）
+- 两者互补：AI 不可用时，斜杠命令作为降级方案
+
+### 7.4 为什么需要预计算 (Precompute)？
+
+某些命令需要先查询浏览器状态才能确定参数，例如：
+- `close_duplicate_tabs`: 需要先扫描所有标签找出重复的
+- `group_tabs`: 需要先按域名过滤标签获取 ID 列表
+- `sort_tabs`: 需要先排序再获取新的 tab 顺序
+
+预计算在 Side Panel 中执行，利用缓存的 context 做本地计算，减少与 Service Worker 的通信次数。
+
+### 7.5 为什么有两种 UI 实现 (旧版 JS + Vue Composable)？
+
+项目正在从纯 JavaScript 向 Vue 3 + TypeScript 迁移。`src/sidepanel/index.js` 是旧版实现，`src/composables/useAIEngine.ts` 是 Vue 重构版，两者功能相同。当前 `App.vue` 使用新版 Composable。
+
+### 7.6 错误处理策略
+
+- **结构化错误码**: 15+ 个预定义错误码，覆盖元素、操作、页面、通信、限制五类
+- **连续失败保护**: 连续 3 次失败自动停止
+- **超时保护**: 单步 10s，总任务 120s
+- **JSON 解析容错**: 修复 AI 输出的常见格式问题，最多重试 2 次
+- **危险操作确认**: 5 类危险操作需要用户二次确认
+- **上下文压缩**: 对话超过 30 条时自动压缩，保留最近 20 条
+- **结果安全处理**: 截断大字符串、过滤 data URL、检测循环引用
+
+---
+
+## 附录 A: 斜杠命令速查表
+
+| 命令 | 别名 | 参数 | 说明 |
+|------|------|------|------|
+| `/close-duplicates` | cd, dedup, 去重 | - | 关闭所有重复标签页 |
+| `/find` | f, search, 搜索 | 关键词 | 查找标签页 |
+| `/close-domain` | cdd | 域名 | 关闭指定域名的所有标签 |
+| `/bookmark` | bm, 收藏 | - | 添加当前页为书签 |
+| `/group` | g, 分组 | 组名 [域名/关键词] | 创建标签分组 |
+| `/ungroup` | ug, 解组 | - | 取消所有标签分组 |
+| `/reopen` | undo, 恢复 | - | 恢复最近关闭的标签 |
+| `/sort` | s | domain \| title | 排序标签页 |
+| `/mute` | m | 域名 | 静音指定域名标签 |
+| `/history` | hi | 关键词 | 搜索浏览历史 |
+| `/pin` | 固定, p | - | 固定/取消固定当前标签 |
+| `/reload` | r, 刷新 | all(可选) | 刷新当前标签 |
+| `/close-other` | co, 保留当前 | - | 关闭其他标签 |
+| `/duplicate` | dup, 复制 | - | 复制当前标签页 |
+| `/remove-bookmark` | rb, 删书签 | 关键词 | 删除匹配的书签 |
+| `/move` | mv, 移动 | 位置序号 | 移动当前标签 |
+| `/discard` | dc, 休眠 | 域名(或all) | 休眠标签页释放内存 |
+| `/unmute` | um, 取消静音 | 域名 | 取消静音 |
+| `/screenshot` | shot, 截图 | 标签关键词(可选) | 截取页面截图 |
+| `/zoom` | z, 缩放 | in/out/reset | 缩放当前页面 |
+| `/downloads` | dl, 下载 | - | 打开下载管理页面 |
+| `/new-window` | nw, 新窗口 | URL(可选) | 在新窗口打开 URL |
+| `/group-by-domain` | gbd, 域名分组 | - | 按域名分组 |
+| `/list-groups` | lg, 分组列表 | - | 列出所有标签分组 |
+| `/rename-group` | rg, 重命名组 | 新名称 | 重命名标签分组 |
+| `/theme` | 主题 | 模式或颜色 | 查看/设置主题 |
+| `/font-size` | fs, 字号 | 字号(可选) | 查看/设置字号 |
+| `/font` | 字体 | 字体名(可选) | 查看/设置字体 |
+| `/clear-history` | ch, 清历史 | today/week/month/all | 删除浏览历史 |
+| `/cookies` | ck, Cookie | 域名 | 查看 Cookie |
+| `/clear-cookies` | cc, 清Cookie | 域名 | 清除 Cookie |
+| `/top-sites` | ts, 常用网站 | - | 查看最常访问网站 |
+| `/extensions` | ext, 扩展 | - | 查看所有扩展 |
+| `/enable-extension` | ee, 启用扩展 | 名称或ID | 启用扩展 |
+| `/disable-extension` | de, 禁用扩展 | 名称或ID | 禁用扩展 |
+| `/uninstall-extension` | ue, 卸载扩展 | 名称或ID | 卸载扩展 |
+| `/site-perms` | sp, 网站权限 | 域名 | 查看网站权限 |
+| `/set-site-perm` | ssp, 设权限 | 域名 类型 值 | 设置网站权限 |
+| `/storage-get` | sg, 读存储 | key | 读取扩展存储 |
+| `/storage-set` | ss, 写存储 | key value | 写入扩展存储 |
+| `/storage-remove` | srm, 删存储 | key | 删除扩展存储 |
+| `/record-tab` | rt, 录标签 | - | 录制当前标签页 |
+| `/record-screen` | rs, 录屏 | - | 录制桌面/窗口 |
+| `/stop-record` | sto, 停录 | - | 停止录制 |
+| `/dom` | 页面操作 | query/modify/remove/add/style | DOM 操作 |
+| `/help` | h, ?, 帮助 | - | 显示所有命令 |
+
+## 附录 B: 错误码参考
+
+| 错误码 | 类别 | 说明 |
+|--------|------|------|
+| `ELE_NOT_FOUND` | 元素 | 未找到目标元素 |
+| `ELE_NOT_VISIBLE` | 元素 | 元素不可见 |
+| `ELE_DISABLED` | 元素 | 元素被禁用 |
+| `ELE_STALE` | 元素 | 元素已从 DOM 中移除 |
+| `ELE_OBSCURED` | 元素 | 元素被遮挡 |
+| `ACT_TIMEOUT` | 操作 | 操作执行超时 (10s) |
+| `ACT_BLOCKED` | 操作 | 操作被浏览器拦截 |
+| `ACT_NO_EFFECT` | 操作 | 操作无效果 |
+| `ACT_PARTIAL` | 操作 | 操作部分成功 |
+| `PAGE_BLOCKED` | 页面 | 受保护页面 (chrome://) |
+| `PAGE_LOADING` | 页面 | 页面正在加载 |
+| `PAGE_CRASHED` | 页面 | 页面崩溃 |
+| `PAGE_REDIRECT` | 页面 | 页面发生重定向 |
+| `COM_DISCONNECTED` | 通信 | Service Worker 连接断开 |
+| `COM_TIMEOUT` | 通信 | 通信超时 |
+| `LIM_TOO_MANY_ELEMENTS` | 限制 | 页面元素过多 |
+| `LIM_STEP_MAX` | 限制 | 达到最大执行步数 |
+| `LIM_CONTEXT_OVERFLOW` | 限制 | 上下文溢出 |

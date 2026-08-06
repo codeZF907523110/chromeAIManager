@@ -425,8 +425,14 @@ function buildSlots(
       ;(slots as Record<string, string>).domain = args
       break
     case 'delete_history':
+      ;(slots as Record<string, string>).timeRange = args
+      break
     case 'sort_tabs':
+      ;(slots as Record<string, string>).order = args
+      break
     case 'zoom_tab':
+      ;(slots as Record<string, string>).direction = args
+      break
     case 'rename_group':
       ;(slots as Record<string, string>).name = args
       break
