@@ -35,13 +35,14 @@ export class OpenAIAdapter implements AIAdapter {
     const maxRetries = 1
     let lastError: Error | null = null
 
+    // 权限检查只在首次调用时执行（后续调用不再重复弹窗）
+    await this.ensurePermission()
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeout)
+      const timer = setTimeout(() => controller.abort(new Error('请求超时')), timeout)
 
       try {
-        await this.ensurePermission()
-
         const body: Record<string, unknown> = {
           model: this.model,
           messages,
@@ -82,7 +83,8 @@ export class OpenAIAdapter implements AIAdapter {
       } catch (e) {
         lastError = e instanceof Error ? e : new Error(String(e))
         // 超时或权限错误不重试
-        if (lastError.name === 'AbortError' || lastError.message.includes('权限')) {
+        const isAbort = e instanceof DOMException && e.name === 'AbortError'
+        if (isAbort || lastError.message.includes('权限')) {
           throw lastError
         }
         // 最后一次尝试不再重试

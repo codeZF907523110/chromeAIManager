@@ -161,6 +161,8 @@ async function checkDangerousConfirm(
   intent: string,
   payload: Record<string, unknown>
 ): Promise<boolean> {
+  // force=true 表示用户已在前端确认，跳过二次确认
+  if (payload.force === true) return true
   throw {
     success: false,
     code: 'NEEDS_CONFIRM',
@@ -386,6 +388,9 @@ async function updateBookmark(payload: Record<string, unknown>): Promise<Executi
 }
 
 async function openBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  if (!payload.nodeId) {
+    return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId' }
+  }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
   const node = await chrome.bookmarks.get(payload.nodeId as string)
@@ -396,6 +401,9 @@ async function openBookmark(payload: Record<string, unknown>): Promise<Execution
 }
 
 async function removeBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  if (!payload.nodeId) {
+    return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId' }
+  }
   await chrome.bookmarks.remove(payload.nodeId as string)
   return { success: true }
 }
@@ -604,10 +612,12 @@ async function updateFontSize(payload: Record<string, unknown>): Promise<Executi
     very_large: 24,
   }
   const size = payload.size as string
-  if (sizeMap[size] !== undefined) {
-    await chrome.fontSettings.setFontSize({ pixelSize: sizeMap[size] })
+  const pixelSize = sizeMap[size]
+  if (pixelSize === undefined) {
+    return { success: false, code: 'INVALID_PARAMS', message: `未知的字号: ${size}` }
   }
-  return { success: true, fontSize: sizeMap[size] || size }
+  await chrome.fontSettings.setFontSize({ pixelSize })
+  return { success: true, fontSize: pixelSize, fontSizeLabel: size }
 }
 
 async function observeFontFamily(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -618,11 +628,15 @@ async function observeFontFamily(payload: Record<string, unknown>): Promise<Exec
 
 async function updateFontFamily(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const generic = (payload.genericFamily as chrome.fontSettings.GenericFamily) || 'standard'
+  const family = payload.family as string
+  if (!family) {
+    return { success: false, code: 'INVALID_PARAMS', message: '字体族不能为空' }
+  }
   await chrome.fontSettings.setFontFamily({
-    fontId: payload.family as string,
+    fontId: family,
     genericFamily: generic,
   })
-  return { success: true, font: payload.family }
+  return { success: true, font: family }
 }
 
 // ──── COOKIES 实现 ────
@@ -638,12 +652,13 @@ async function observeCookies(payload: Record<string, unknown>): Promise<Executi
 
 async function removeCookies(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const domain = payload.domain as string
+  if (!domain) {
+    return { success: false, code: 'INVALID_PARAMS', message: '域名不能为空' }
+  }
   const cookies = await chrome.cookies.getAll({ domain })
   for (const c of cookies) {
-    await chrome.cookies.remove({
-      url: `${c.secure ? 'https' : 'http'}://${c.domain}${c.path}`,
-      name: c.name,
-    })
+    const url = `${c.secure ? 'https' : 'http'}://${c.domain}${c.path.startsWith('/') ? '' : '/'}${c.path}`
+    await chrome.cookies.remove({ url, name: c.name })
   }
   return { success: true, removed: cookies.length, domain }
 }
@@ -738,16 +753,56 @@ async function restoreSession(payload: Record<string, unknown>): Promise<Executi
 // ──── RECORDING 实现 ────
 
 async function startTabRecording(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const tabId = payload.tabId as number | undefined
-  return { success: true, recording: tabId || 'current' }
+  const tabId = (payload.tabId as number) || (await getCurrentTabId())
+  if (!tabId) {
+    return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+  }
+  await createOffscreenDocument()
+  await chrome.runtime.sendMessage({
+    type: 'START_TAB_RECORDING',
+    tabId,
+  })
+  return { success: true, recording: 'tab', tabId }
 }
 
 async function startScreenRecording(): Promise<ExecutionResult> {
+  await createOffscreenDocument()
+  await chrome.runtime.sendMessage({ type: 'START_DESKTOP_RECORDING' })
   return { success: true, recording: 'screen' }
 }
 
 async function stopRecording(): Promise<ExecutionResult> {
-  return { success: true, stopped: true }
+  await createOffscreenDocument()
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'STOP_RECORDING' })
+    if (result?.success && result?.dataUrl) {
+      return { success: true, stopped: true, dataUrl: result.dataUrl, size: result.size }
+    }
+    return { success: true, stopped: true }
+  } catch (e: unknown) {
+    return { success: false, code: 'ACT_BLOCKED', message: (e as Error).message }
+  }
+}
+
+async function getCurrentTabId(): Promise<number | undefined> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  return tab?.id
+}
+
+let _offscreenReady = false
+async function createOffscreenDocument(): Promise<void> {
+  if (_offscreenReady) return
+  try {
+    await chrome.offscreen.createDocument({
+      url: chrome.runtime.getURL('offscreen/recorder.html'),
+      reasons: [chrome.offscreen.Reason.MEDIA_CAPTURE],
+      justifications: ['需要录制屏幕和音频'],
+    })
+    _offscreenReady = true
+  } catch {
+    // 可能已存在，忽略
+    _offscreenReady = true
+  }
 }
 
 // ──── DOM 实现 ────
@@ -757,23 +812,184 @@ async function domManipulate(payload: Record<string, unknown>): Promise<Executio
   if (!tab?.id || tab.url?.startsWith('chrome://')) {
     return { success: false, code: 'PAGE_BLOCKED', message: '无法在特殊页面执行脚本' }
   }
+
+  const code = payload.code as string
+
+  // 第一次尝试：MAIN world（完整页面 API，performance 等可用）
   try {
-    const results = await chrome.scripting.executeScript({
+    await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: (code) => {
+      world: 'MAIN' as chrome.scripting.ExecutionWorld,
+      func: () => {
+        if (!('trustedTypes' in window) || !window.trustedTypes!.createPolicy) return
         try {
-          const fn = new Function(code)
-          return fn()
-        } catch (e) {
-          return { _scriptError: (e as Error).message }
+          window.trustedTypes!.createPolicy('ai-commander-default', {
+            createScript: (code: string) => code,
+            createScriptURL: (url: string) => url,
+          })
+        } catch {
+          // policy 已存在则忽略
         }
       },
-      args: [payload.code as string],
     })
-    return { success: true, result: results[0]?.result, triggered: true }
+
+    const mainResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'MAIN' as chrome.scripting.ExecutionWorld,
+      func: (code: string) => {
+        try {
+          const fn = new Function(`"use strict"; ${code}`)
+          return serializeScriptResult(fn())
+        } catch (e: unknown) {
+          const err = e as Error
+          const msg = err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err.message
+          if (
+            err.name === 'SecurityError' ||
+            err.name === 'ReferenceError' ||
+            msg.toLowerCase().includes('csp') ||
+            msg.toLowerCase().includes('content security')
+          ) {
+            return { _cspBlocked: true, _error: msg, _world: 'MAIN' }
+          }
+          return { _scriptError: msg, _errorType: err.name, _world: 'MAIN' }
+        }
+      },
+      args: [code],
+    })
+    const mainResult = mainResults[0]?.result
+
+    // MAIN world 成功（即使是 CSP 被拦截但有 fallback 结果）
+    if (mainResult && !('_cspBlocked' in mainResult)) {
+      return { success: true, result: mainResult, triggered: true }
+    }
+    // MAIN world 被 CSP 拦截，尝试 ISOLATED world fallback
+    if (mainResult && '_cspBlocked' in mainResult) {
+      // 继续 fallback
+    } else if (mainResult) {
+      return { success: true, result: mainResult, triggered: true }
+    }
+  } catch {
+    // MAIN world 失败，继续 ISOLATED world fallback
+  }
+
+  // 第二次尝试：ISOLATED world（content script 上下文，不受 CSP 限制）
+  try {
+    const shimResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED' as chrome.scripting.ExecutionWorld,
+      // 先检查 __aiPerformance 是否可用
+      func: () => {
+        return typeof window.__aiPerformance === 'function' ? 'ready' : 'missing'
+      },
+    })
+    const shimStatus = shimResults[0]?.result
+
+    // __aiPerformance shim 不可用时，直接在 ISOLATED 中执行用户代码
+    if (shimStatus !== 'ready') {
+      const contentResults = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'ISOLATED' as chrome.scripting.ExecutionWorld,
+        func: (code: string) => {
+          try {
+            const fn = new Function(`"use strict"; ${code}`)
+            return serializeScriptResult(fn())
+          } catch (e: unknown) {
+            const err = e as Error
+            const msg = err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err.message
+            return { _scriptError: msg, _errorType: err.name, _world: 'ISOLATED' }
+          }
+        },
+        args: [code],
+      })
+      const contentResult = contentResults[0]?.result
+      if (contentResult && '_scriptError' in contentResult) {
+        return {
+          success: false,
+          code: 'ACT_ERROR',
+          message: '脚本执行出错',
+          detail: { error: (contentResult as Record<string, unknown>)._scriptError as string },
+        }
+      }
+      return { success: true, result: contentResult, triggered: true }
+    }
+
+    // __aiPerformance shim 可用，自动调用获取性能数据
+    const perfResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED' as chrome.scripting.ExecutionWorld,
+      func: () => {
+        try {
+          const data = (window as unknown as { __aiPerformance: () => unknown }).__aiPerformance()
+          return data
+        } catch (e: unknown) {
+          return { _scriptError: (e as Error).message, _world: 'ISOLATED' }
+        }
+      },
+    })
+    const perfResult = perfResults[0]?.result
+    if (perfResult && '_scriptError' in perfResult) {
+      return {
+        success: false,
+        code: 'ACT_ERROR',
+        message: '性能数据获取出错',
+        detail: { error: (perfResult as Record<string, unknown>)._scriptError as string },
+      }
+    }
+    return { success: true, result: perfResult, triggered: true }
   } catch (e: unknown) {
     return { success: false, code: 'ACT_BLOCKED', message: (e as Error).message }
   }
+}
+
+/**
+ * 将脚本返回值安全序列化为 AI 可读的格式
+ */
+function serializeScriptResult(val: unknown): unknown {
+  if (val === null || val === undefined) return val
+  if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') return val
+
+  // DOM 元素 → 提取关键属性
+  if (val instanceof Element) {
+    const el = val as Element
+    return {
+      _type: 'element',
+      tag: el.tagName.toLowerCase(),
+      id: el.id || null,
+      className: el.className || null,
+      textContent: el.textContent?.trim().slice(0, 200) || null,
+      attributes: Object.fromEntries(Array.from(el.attributes).map((a) => [a.name, a.value])),
+    }
+  }
+
+  // NodeList / HTMLCollection / 数组 → 展开
+  if (val instanceof NodeList || Array.isArray(val)) {
+    const items = Array.from(val as unknown[])
+    return {
+      _type: 'collection',
+      length: items.length,
+      items: items.map(serializeScriptResult).slice(0, 20), // 最多返回 20 项
+    }
+  }
+
+  // 普通对象 → JSON 序列化（防循环）
+  if (typeof val === 'object') {
+    const seen = new WeakSet()
+    try {
+      return JSON.parse(
+        JSON.stringify(val, (_k, v) => {
+          if (typeof v === 'object' && v !== null) {
+            if (seen.has(v)) return '[Circular]'
+            seen.add(v)
+          }
+          return v
+        })
+      )
+    } catch {
+      return { _error: 'serialization failed', _keys: Object.keys(val as object) }
+    }
+  }
+
+  return val
 }
 
 // ──── BATCH 实现 ────

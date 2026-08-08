@@ -13,6 +13,7 @@ export interface MessageLog {
   type: 'user' | 'system' | 'ai' | 'ai-chat' | 'error'
   text: string
   image?: string // base64 data URL for screenshots
+  video?: string // base64 data URL for recordings
 }
 
 // ──── AI 响应类型 ────

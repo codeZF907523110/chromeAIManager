@@ -11,6 +11,8 @@ export type DisplayMode = 'sidepanel' | 'popup'
 export interface MessageLog {
   type: 'user' | 'system' | 'ai' | 'ai-chat' | 'error'
   text: string
+  image?: string // base64 data URL for screenshots
+  video?: string // base64 data URL for recordings
 }
 
 // ──── 聊天消息类型 ────

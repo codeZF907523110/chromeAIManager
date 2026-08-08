@@ -2,6 +2,10 @@
   <div class="bubble" :class="`bubble-${msg.type}`">
     <div v-html="processedText"></div>
     <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
+    <div v-if="msg.video" class="recording-container">
+      <video :src="msg.video" controls class="recording-video"></video>
+      <a :href="msg.video" download="recording.webm" class="download-btn">⬇ 下载视频</a>
+    </div>
   </div>
 </template>
 
@@ -212,5 +216,36 @@ function escapeHtml(text: string): string {
   border-radius: 8px;
   margin-top: 8px;
   display: block;
+}
+
+.recording-container {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recording-video {
+  max-width: 100%;
+  border-radius: 8px;
+  background: #000;
+}
+
+.download-btn {
+  display: inline-block;
+  padding: 6px 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  color: #aaa;
+  text-decoration: none;
+  font-size: 13px;
+  align-self: flex-start;
+  transition: background 0.2s;
+}
+
+.download-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
 }
 </style>

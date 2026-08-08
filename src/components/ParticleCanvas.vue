@@ -11,6 +11,7 @@ let ctx: CanvasRenderingContext2D | null = null
 let particles: Particle[] = []
 let width = 0
 let height = 0
+let resizeObserver: ResizeObserver | null = null
 
 interface Particle {
   x: number
@@ -46,8 +47,11 @@ function initCanvas() {
   ctx = canvas.getContext('2d')
   if (!ctx) return
 
-  width = canvas.width = canvas.offsetWidth
-  height = canvas.height = canvas.offsetHeight
+  // fixed 定位下 offsetWidth 可能为 0（side panel 刚打开时），用 window 尺寸兜底
+  const w = canvas.offsetWidth || window.innerWidth
+  const h = canvas.offsetHeight || window.innerHeight
+  width = canvas.width = w
+  height = canvas.height = h
 
   particles = []
   const count = Math.floor((width * height) / 15000)
@@ -106,16 +110,34 @@ function draw() {
 
 function handleResize() {
   initCanvas()
+  // initCanvas 取消了 animationId，需要重新启动 draw
+  if (!animationId) draw()
 }
 
 onMounted(() => {
-  initCanvas()
-  draw()
+  // 延迟一帧确保 side panel 布局完成
+  requestAnimationFrame(() => {
+    initCanvas()
+    draw()
+  })
+
+  // 用 ResizeObserver 监听 canvas 尺寸变化（比 window resize 更可靠）
+  if (canvasRef.value && 'ResizeObserver' in window) {
+    resizeObserver = new ResizeObserver(() => {
+      handleResize()
+    })
+    resizeObserver.observe(canvasRef.value)
+  }
+
   window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
   if (animationId) cancelAnimationFrame(animationId)
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
   window.removeEventListener('resize', handleResize)
 })
 </script>

@@ -6,16 +6,15 @@
 let mediaRecorder = null
 let recordedChunks = []
 let _stopResolve = null
+let _currentStream = null
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'START_TAB_RECORDING') {
-    startTabRecording(message.streamId, message.tabTitle).then(() =>
-      sendResponse({ success: true })
-    )
+    startTabRecording(message.tabId, message.tabTitle).then(() => sendResponse({ success: true }))
     return true
   }
   if (message.type === 'START_DESKTOP_RECORDING') {
-    startDesktopRecording(message.streamId).then(() => sendResponse({ success: true }))
+    startDesktopRecording().then(() => sendResponse({ success: true }))
     return true
   }
   if (message.type === 'STOP_RECORDING') {
@@ -25,45 +24,74 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 未知消息静默忽略，避免干扰其他扩展上下文的 sendMessage
 })
 
-async function startTabRecording(streamId, tabTitle) {
-  if (mediaRecorder?.state === 'recording') return
-  stopCurrentRecording()
+async function startTabRecording(tabId, tabTitle) {
+  if (mediaRecorder?.state === 'recording') {
+    stopCurrentRecording()
+  }
 
-  // Tab 录制：audio 约束使用正确的 chromeMediaSource 格式
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      chromeMediaSource: 'tab',
-      chromeMediaSourceId: streamId,
-    },
-    video: {
+  // 获取标签页的 media stream（含音频）
+  let stream
+  try {
+    // 先尝试捕获标签页（含音频）
+    stream = await chrome.tabCapture.capture({
+      audio: true,
+      video: true,
       mandatory: {
         chromeMediaSource: 'tab',
-        chromeMediaSourceId: streamId,
+        chromeMediaSourceId: String(tabId),
       },
-    },
-  })
+    })
+  } catch (err) {
+    // 如果 tabCapture 失败，尝试 useMediaDevices
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: String(tabId),
+        },
+        video: {
+          mandatory: {
+            chromeMediaSource: 'tab',
+            chromeMediaSourceId: String(tabId),
+          },
+        },
+      })
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  }
 
-  startMediaRecorder(stream)
+  _currentStream = stream
+  startMediaRecorder(stream, 'tab')
+  return { success: true, recording: 'tab', tabId }
 }
 
-async function startDesktopRecording(streamId) {
-  if (mediaRecorder?.state === 'recording') return
-  stopCurrentRecording()
+async function startDesktopRecording() {
+  if (mediaRecorder?.state === 'recording') {
+    stopCurrentRecording()
+  }
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: streamId,
+  // 弹出桌面共享选择器（含音频）
+  let stream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+        },
       },
-    },
-  })
+    })
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
 
-  startMediaRecorder(stream)
+  _currentStream = stream
+  startMediaRecorder(stream, 'desktop')
+  return { success: true, recording: 'desktop' }
 }
 
-function startMediaRecorder(stream) {
+function startMediaRecorder(stream, source) {
   recordedChunks = []
 
   // 尝试使用 VP9/webm (Chrome 支持)
@@ -79,7 +107,8 @@ function startMediaRecorder(stream) {
   try {
     recorder = new MediaRecorder(stream, {
       mimeType,
-      videoBitsPerSecond: 2500000, // 2.5 Mbps
+      videoBitsPerSecond: 2500000,
+      audioBitsPerSecond: 128000,
     })
   } catch (err) {
     stream.getTracks().forEach((t) => t.stop())
@@ -95,6 +124,7 @@ function startMediaRecorder(stream) {
   recorder.onstop = () => {
     // 停止所有轨道
     stream.getTracks().forEach((t) => t.stop())
+    _currentStream = null
 
     // 如果有等待中的 stopRecording 回调，执行它
     if (_stopResolve) {

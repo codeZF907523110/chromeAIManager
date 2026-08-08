@@ -4,6 +4,7 @@
 
 import type { Command, Context, Lesson, PageStructure } from '../types'
 import { COMMANDS } from './commands'
+import { getCatSystemIntro } from './personality'
 
 // 过滤 AI 可用的命令
 const AI_VISIBLE_COMMANDS = COMMANDS.filter(
@@ -63,6 +64,8 @@ export function buildAgentSystemPrompt(context: Context): string {
   const pageBlock = context.pageStructure ? formatPageStructure(context.pageStructure) : ''
 
   return (
+    getCatSystemIntro() +
+    '\n\n' +
     '## 当前环境信息\n' +
     '当前标签页标题: ' +
     (context.activeTab?.title || '无标题') +
@@ -93,7 +96,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '- **ask**: 需要用户输入或确认。reply 说清楚需要什么。上下文会保留。\n\n' +
     '## dom_manipulate 工具\n\n' +
     '执行自定义 JavaScript 操作页面元素。\n{"name":"dom_manipulate","args":{"code":"..."}}\n\n' +
-    'code 是 JavaScript 函数体，在页面主世界(MAIN world)执行。系统会自动包一层 function 再运行。\n' +
+    'code 是 JavaScript 函数体，系统在 MAIN world 执行，CSP 阻止时自动降级到 ISOLATED world。\n' +
     '必须显式写 return 返回结果。返回值会经过安全转换：\n' +
     '- DOM 元素 → 自动提取为 {tag, id, className, value, textContent}\n' +
     '- NodeList / HTMLCollection → 自动展开为 {length, items: [...]}\n' +
@@ -107,10 +110,20 @@ export function buildAgentSystemPrompt(context: Context): string {
     '- 原型: HTMLInputElement.prototype, HTMLTextAreaElement.prototype\n' +
     "- 元素方法: el.click(), el.focus(), el.blur(), el.select(), el.scrollIntoView({behavior:'smooth',block:'center'}), el.dispatchEvent(ev), el.closest(sel), el.remove(), el.setAttribute(name,value), el.getAttribute(name), el.requestSubmit(), el.submit()\n" +
     '- 元素属性: el.value, el.textContent, el.innerHTML, el.checked, el.disabled, el.offsetParent, el.tagName, el.id, el.name, el.className, el.isContentEditable, el.attributes\n' +
-    '- JS 内置: Object.getOwnPropertyDescriptor, Array.from, JSON.stringify, CSS.escape\n\n' +
+    '- JS 内置: Object.getOwnPropertyDescriptor, Array.from, JSON.stringify, CSS.escape\n' +
+    '- **性能数据**: 如果页面有 CSP 限制，系统会自动调用内置 `__aiPerformance()` 获取导航时序、资源加载、内存数据，返回 {navigation: {...}, resources: [...], jsHeap: {...}, maxTime}\n\n' +
+    '## 录制功能\n\n' +
+    '- `recording_start_tab` (tabId 可选): 开始录制标签页（含音频）\n' +
+    '- `recording_start_screen` (tabId 可选): 开始录制桌面/浏览器（含音频）\n' +
+    '- `recording_stop`: 停止录制，返回 base64 视频数据\n' +
+    '录制视频格式为 webm，可播放。音频和音视频同时支持。\n\n' +
     'PAGE_SCAN 返回页面前 300 个元素的原始属性（tag、text、attrs）及页面 iframe 列表。如需精确查找，写脚本用 querySelector 等 API 自己扫描。\n\n' +
     '## 错误码参考\n\n' +
-    '操作失败时系统返回结构化错误：ELE_NOT_FOUND（未找到元素）、ELE_NOT_VISIBLE（不可见）、ELE_DISABLED（被禁用）、ELE_STALE（元素已移除）、ACT_TIMEOUT（超时）、ACT_BLOCKED（被拦截）、PAGE_BLOCKED（受保护页面）、COM_DISCONNECTED（连接断开）。根据错误码决定下一步。\n\n' +
+    '操作失败时系统返回结构化错误：ELE_NOT_FOUND（未找到元素）、ELE_NOT_VISIBLE（不可见）、ELE_DISABLED（被禁用）、ELE_STALE（元素已移除）、ACT_TIMEOUT（超时）、ACT_BLOCKED（被拦截，含 CSP 策略限制）、PAGE_BLOCKED（受保护页面）、COM_DISCONNECTED（连接断开）。根据错误码决定下一步。\n\n' +
+    '## 页面限制说明\n\n' +
+    '某些页面（银行、政府网站）有严格 CSP 策略。系统自动先尝试 MAIN world 执行脚本，失败后自动降级到 ISOLATED world。\n' +
+    '⚠️ 关键：如果 MAIN world 因 CSP 阻止脚本执行，系统会在 ISOLATED world 中自动调用内置的 `__aiPerformance()` 获取性能数据。这意味着性能分析不需要你手动编写脚本，系统会透明处理。\n' +
+    '遇到 ACT_ERROR 时不要反复重试 dom_manipulate，直接说明情况即可。\n\n' +
     '## 通用原则\n\n' +
     '1. 每次只输出一个 action。看到结果再决定下一步。\n' +
     '2. thought 写清推理。"我看到 X，所以做 Y，预期发生 Z"。\n' +

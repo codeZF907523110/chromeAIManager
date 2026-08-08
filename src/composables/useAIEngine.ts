@@ -29,6 +29,7 @@ import { generateConfirmPreview } from '../sidepanel/command/confirm'
 import { AIEngine } from '../sidepanel/ai/engine'
 import { buildAgentSystemPrompt } from '../shared/prompts'
 import { repairJSON } from '../shared/json-repair'
+import { wrapCatReply } from '../shared/personality'
 import { useSettings } from './useSettings'
 
 const SESSION_KEY = 'ai_commander_session'
@@ -417,7 +418,7 @@ export function useAIEngine() {
                   force: true,
                 })
                 if (confirmResult.success !== false) {
-                  addMessage('system', `✓ 已删除文件夹 "${title || ''}"`)
+                  renderExecutionResult(toolName, confirmResult)
                 } else {
                   addMessage('error', confirmResult.error || confirmResult.message || '操作失败')
                 }
@@ -561,7 +562,7 @@ export function useAIEngine() {
           description: preview.description,
           items: preview.items,
           onConfirm: async () => {
-            await dispatchToSW(resolvedIntent, slotsAny)
+            await dispatchToSW(resolvedIntent, { ...slotsAny, force: true })
             pendingConfirm.value = null // 执行完毕关闭确认卡
           },
           onCancel: () => {
@@ -882,8 +883,13 @@ export function useAIEngine() {
 
   // ──── 辅助函数 ────
 
-  function addMessage(type: MessageLog['type'], text: string, image?: string): void {
-    messageLog.value.push({ type, text, image })
+  function addMessage(
+    type: MessageLog['type'],
+    text: string,
+    image?: string,
+    video?: string
+  ): void {
+    messageLog.value.push({ type, text, image, video })
     if (isInitialized.value) {
       persistMessages()
     }
@@ -1109,7 +1115,10 @@ export function useAIEngine() {
     // Recording
     if (r.recording) return `开始录制 ${r.recording}`
     if (r.saved) return `录制已保存为 ${r.saved}`
-    if (r.stopped) return '录制已停止'
+    if (r.stopped) {
+      const size = r.size as number | undefined
+      return size ? `录制已停止 (${(size / 1024 / 1024).toFixed(1)}MB)` : '录制已停止'
+    }
     // Sessions
     if (r.restored) return `恢复标签 ${r.restored}`
     // Batch
@@ -1178,6 +1187,14 @@ export function useAIEngine() {
     // 截图：显示图片并自动复制到剪贴板
     if (r.screenshot && typeof r.screenshot === 'string') {
       showScreenshot(r.screenshot, r.tabTitle as string | undefined)
+      return
+    }
+    // 录制：显示视频并生成下载链接
+    if (r.stopped && r.dataUrl) {
+      const size = r.size as number | undefined
+      const sizeText = size ? ` (${(size / 1024 / 1024).toFixed(1)}MB)` : ''
+      addMessage('ai-chat', `录制已停止${sizeText}，以下是录制的视频 🎬`)
+      addVideoMessage(r.dataUrl as string)
       return
     }
     // 截图摘要（agent loop 步骤中显示）
@@ -1323,15 +1340,22 @@ export function useAIEngine() {
       text = `已对 "${r.value}" 触发 ${evLabels[r.eventType as string] || r.eventType} 事件`
     }
 
-    addMessage('ai-chat', text)
+    addMessage('ai-chat', wrapCatReply(text))
   }
 
   /**
    * 显示截图并复制到剪贴板（供 slash command 路径使用）
    */
   function showScreenshot(dataUrl: string, tabTitle?: string) {
-    addMessage('ai-chat', `[截图: ${tabTitle || '页面'}]`, dataUrl)
+    addMessage('ai-chat', wrapCatReply(`[截图: ${tabTitle || '页面'}]`), dataUrl)
     copyScreenshotToClipboard(dataUrl)
+  }
+
+  /**
+   * 显示录制视频和下载链接
+   */
+  function addVideoMessage(dataUrl: string) {
+    addMessage('ai-chat', '', undefined, dataUrl)
   }
 
   /**
@@ -1344,7 +1368,7 @@ export function useAIEngine() {
       copyScreenshotToClipboard(image)
       lastScreenshot.value = null
     }
-    addMessage('ai-chat', text, image || undefined)
+    addMessage('ai-chat', wrapCatReply(text), image || undefined)
     if (doCleanup) cleanup()
   }
 
