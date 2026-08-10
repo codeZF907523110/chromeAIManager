@@ -20,7 +20,6 @@
     "management",
     "contentSettings",
     "privacy",
-    "tabCapture",
     "desktopCapture",
     "notifications",
     "downloads",
@@ -28,9 +27,7 @@
     "sidePanel"
   ],
   "host_permissions": ["<all_urls>"],
-  "action": {
-    "default_title": "AI 浏览器管家 — Ctrl+Shift+U"
-  },
+  "action": {},
   "side_panel": {
     "default_path": "sidepanel.html"
   },

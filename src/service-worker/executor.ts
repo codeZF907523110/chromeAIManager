@@ -23,8 +23,9 @@ export async function executeCommand(
   if (DANGEROUS_INTENTS.has(intent)) {
     try {
       await checkDangerousConfirm(intent, payload)
-    } catch (err: any) {
-      if (err?.code === 'NEEDS_CONFIRM') {
+    } catch (err: unknown) {
+      const e = err as { code?: string; message?: string }
+      if (e?.code === 'NEEDS_CONFIRM') {
         return {
           success: false,
           code: 'NEEDS_CONFIRM',
@@ -137,13 +138,6 @@ export async function executeCommand(
     // ──── SESSIONS ────
     case 'sessions_restore':
       return await restoreSession(payload)
-    // ──── RECORDING ────
-    case 'recording_start_tab':
-      return await startTabRecording(payload)
-    case 'recording_start_screen':
-      return await startScreenRecording()
-    case 'recording_stop':
-      return await stopRecording()
     // ──── DOM ────
     case 'dom_manipulate':
       return await domManipulate(payload)
@@ -750,60 +744,8 @@ async function restoreSession(payload: Record<string, unknown>): Promise<Executi
   return { success: false, error: 'NO_RECOVERABLE_TABS' }
 }
 
-// ──── RECORDING 实现 ────
-
-async function startTabRecording(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const tabId = (payload.tabId as number) || (await getCurrentTabId())
-  if (!tabId) {
-    return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
-  }
-  await createOffscreenDocument()
-  await chrome.runtime.sendMessage({
-    type: 'START_TAB_RECORDING',
-    tabId,
-  })
-  return { success: true, recording: 'tab', tabId }
-}
-
-async function startScreenRecording(): Promise<ExecutionResult> {
-  await createOffscreenDocument()
-  await chrome.runtime.sendMessage({ type: 'START_DESKTOP_RECORDING' })
-  return { success: true, recording: 'screen' }
-}
-
-async function stopRecording(): Promise<ExecutionResult> {
-  await createOffscreenDocument()
-  try {
-    const result = await chrome.runtime.sendMessage({ type: 'STOP_RECORDING' })
-    if (result?.success && result?.dataUrl) {
-      return { success: true, stopped: true, dataUrl: result.dataUrl, size: result.size }
-    }
-    return { success: true, stopped: true }
-  } catch (e: unknown) {
-    return { success: false, code: 'ACT_BLOCKED', message: (e as Error).message }
-  }
-}
-
-async function getCurrentTabId(): Promise<number | undefined> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  return tab?.id
-}
-
-let _offscreenReady = false
-async function createOffscreenDocument(): Promise<void> {
-  if (_offscreenReady) return
-  try {
-    await chrome.offscreen.createDocument({
-      url: chrome.runtime.getURL('offscreen/recorder.html'),
-      reasons: [chrome.offscreen.Reason.MEDIA_CAPTURE],
-      justifications: ['需要录制屏幕和音频'],
-    })
-    _offscreenReady = true
-  } catch {
-    // 可能已存在，忽略
-    _offscreenReady = true
-  }
-}
+// ──── RECORDING 实现（已废弃：录制由前端 MediaRecorder 处理） ────
+// 保留占位，避免遗留调用导致 ReferenceError
 
 // ──── DOM 实现 ────
 

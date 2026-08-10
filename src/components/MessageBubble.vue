@@ -2,9 +2,22 @@
   <div class="bubble" :class="`bubble-${msg.type}`">
     <div v-html="processedText"></div>
     <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
-    <div v-if="msg.video" class="recording-container">
-      <video :src="msg.video" controls class="recording-video"></video>
-      <a :href="msg.video" download="recording.webm" class="download-btn">⬇ 下载视频</a>
+    <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
+    <div v-if="msg.recordingFile" class="recording-file-card">
+      <video
+        v-if="msg.recordingFile.preview"
+        :src="msg.recordingFile.preview"
+        controls
+        class="recording-video"
+      />
+      <span class="recording-file-name">{{ msg.recordingFile.name }}</span>
+      <a
+        :href="msg.recordingFile.url"
+        :download="msg.recordingFile.name"
+        class="recording-download-btn"
+      >
+        ⬇ 下载
+      </a>
     </div>
   </div>
 </template>
@@ -218,33 +231,57 @@ function escapeHtml(text: string): string {
   display: block;
 }
 
-.recording-container {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
 .recording-video {
   max-width: 100%;
   border-radius: 8px;
+  margin-top: 8px;
   background: #000;
+  display: block;
 }
 
-.download-btn {
+.recording-file-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+
+.recording-file-card .recording-video {
+  width: 100%;
+  margin-top: 0;
+}
+
+.recording-file-card .recording-file-name {
+  flex: 1;
+  font-size: 12px;
+  color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recording-download-btn {
+  flex-shrink: 0;
   display: inline-block;
-  padding: 6px 16px;
+  padding: 4px 12px;
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 6px;
-  color: #aaa;
+  color: #ccc;
   text-decoration: none;
   font-size: 13px;
-  align-self: flex-start;
-  transition: background 0.2s;
+  transition:
+    background 0.2s,
+    color 0.2s;
+  white-space: nowrap;
 }
 
-.download-btn:hover {
+.recording-download-btn:hover {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
 }

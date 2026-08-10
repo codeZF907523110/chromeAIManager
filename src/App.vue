@@ -278,6 +278,7 @@ const {
   commandInputValue,
   pendingConfirm,
   renderExecutionResult,
+  persistMessages,
 } = useAIEngine()
 
 const commandInput = commandInputValue
@@ -390,6 +391,8 @@ onBeforeUnmount(() => {
 function saveSession() {
   try {
     sessionStorage.setItem('lastInput', commandInput.value)
+    // 强制同步保存消息日志，防止浏览器关闭时消息丢失
+    persistMessages()
   } catch {
     /* empty */
   }

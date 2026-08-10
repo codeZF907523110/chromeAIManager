@@ -575,33 +575,24 @@ export const COMMANDS: Command[] = [
     swIntent: 'sessions_restore',
   },
 
-  // ==================== RECORDING (3) ====================
+  // ==================== RECORDING (2) ====================
+  // 这二个 intent 在 sidepanel 端处理，由 recordingExecutor 接管
+  // swIntent: null + clientIntent 非空 = 客户端路由
   {
-    intent: 'recording_start_tab',
-    description: '开始录制标签页画面',
-    dangerous: false,
-    slots: {
-      tabId: {
-        type: 'number',
-        optional: true,
-        description: '目标标签 ID，不传则录当前标签',
-      },
-    },
-    swIntent: 'recording_start_tab',
-  },
-  {
-    intent: 'recording_start_screen',
-    description: '开始录制桌面',
+    intent: 'record_screen',
+    description: '开始录制屏幕/窗口/标签页画面（含系统音频）',
     dangerous: false,
     slots: {},
-    swIntent: 'recording_start_screen',
+    swIntent: null,
+    clientIntent: 'record_screen',
   },
   {
-    intent: 'recording_stop',
-    description: '停止录制',
+    intent: 'stop_recording',
+    description: '停止当前录制并保存视频',
     dangerous: false,
     slots: {},
-    swIntent: 'recording_stop',
+    swIntent: null,
+    clientIntent: 'stop_recording',
   },
 
   // ==================== DOM (1) ====================
@@ -1074,36 +1065,6 @@ export const COMMANDS: Command[] = [
       query: { type: 'string', description: '书签关键词' },
     },
     swIntent: 'bookmarks_remove_node',
-  },
-  {
-    intent: 'record_tab',
-    description: '开始录制当前标签页音视频',
-    dangerous: false,
-    aiHidden: true,
-    slots: {
-      tabId: {
-        type: 'number',
-        optional: true,
-        description: '目标标签ID，不传则录当前标签',
-      },
-    },
-    swIntent: 'recording_start_tab',
-  },
-  {
-    intent: 'record_screen',
-    description: '录制桌面或窗口（会弹出媒体选择器）',
-    dangerous: false,
-    aiHidden: true,
-    slots: {},
-    swIntent: 'recording_start_screen',
-  },
-  {
-    intent: 'stop_record',
-    description: '停止录制并自动保存',
-    dangerous: false,
-    aiHidden: true,
-    slots: {},
-    swIntent: 'recording_stop',
   },
 
   // ==================== 内置命令 ====================

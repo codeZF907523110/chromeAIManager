@@ -12,8 +12,11 @@ export interface MessageLog {
   type: 'user' | 'system' | 'ai' | 'ai-chat' | 'error'
   text: string
   image?: string // base64 data URL for screenshots
-  video?: string // base64 data URL for recordings
+  video?: string // base64 data URL for video preview
+  recordingFile?: { url: string; name: string; size?: number; preview?: string } // recording download card
 }
+
+// 注意：MessageLog 的权威定义在 types/ai.ts，此文件仅为备份，请以 ai.ts 为准
 
 // ──── 聊天消息类型 ────
 

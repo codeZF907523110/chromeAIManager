@@ -315,22 +315,16 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     placeholder: 'key',
   },
   {
-    slash: 'record-tab',
-    intent: 'recording_start_tab',
-    description: '录制当前标签页视频',
-    aliases: ['rt', '录标签'],
-  },
-  {
     slash: 'record-screen',
-    intent: 'recording_start_screen',
-    description: '录制桌面/窗口（弹出选择器）',
+    intent: 'record_screen',
+    description: '录制屏幕/窗口/标签页画面',
     aliases: ['rs', '录屏'],
   },
   {
-    slash: 'stop-record',
-    intent: 'recording_stop',
+    slash: 'stop-recording',
+    intent: 'stop_recording',
     description: '停止录制并保存',
-    aliases: ['sto', '停录'],
+    aliases: ['sr', '停录'],
   },
   {
     slash: 'dom',

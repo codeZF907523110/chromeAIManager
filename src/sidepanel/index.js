@@ -107,7 +107,7 @@ class SidePanel {
     this.settingsBtn.addEventListener('click', () => this.toggleSettings())
     this.modeSidepanelBtn.addEventListener('click', () => this._switchMode('sidepanel'))
     this.modePopupBtn.addEventListener('click', () => this._switchMode('popup'))
-    chrome.runtime.onMessage.addListener((msg) => {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === 'EXECUTE_RESULT') this.renderExecutionResult(msg)
     })
     window.addEventListener('beforeunload', () => this.saveSession())
@@ -1100,34 +1100,26 @@ class SidePanel {
 
   async saveSession() {
     try {
-      await chrome.storage.session.set({
-        lastInput: this.commandInput.value,
-        messageLog: this.messageLog.slice(-50),
-        timestamp: Date.now(),
+      await chrome.storage.local.set({
+        ai_message_log: this.messageLog.slice(-50),
+        ai_last_input: this.commandInput.value,
       })
     } catch (_) {}
   }
   async restoreSession() {
     try {
-      var raw = sessionStorage.getItem('ai_message_log')
-      if (raw) {
-        this.messageLog = JSON.parse(raw)
+      const data = await chrome.storage.local.get(['ai_message_log', 'ai_last_input'])
+      if (data.ai_message_log && Array.isArray(data.ai_message_log)) {
+        this.messageLog = data.ai_message_log
         this._replayMessages()
       }
-      const data = await chrome.storage.session.get(['lastInput'])
-      if (data.lastInput) this.commandInput.value = data.lastInput
+      if (data.ai_last_input) this.commandInput.value = data.ai_last_input
     } catch (_) {}
   }
 
   _addMessage(type, data) {
     this.messageLog.push({ type, ...data })
     if (this.messageLog.length > 100) this.messageLog.shift()
-    try {
-      sessionStorage.setItem('ai_message_log', JSON.stringify(this.messageLog.slice(-50)))
-    } catch (_) {}
-  }
-  async _persistMessages() {
-    // 不再需要异步写 chrome.storage，sessionStorage 已在 _addMessage 中同步写入
   }
   _replayMessages() {
     for (const msg of this.messageLog) {
@@ -1345,7 +1337,7 @@ class SidePanel {
     else if (result.recording) text = result.message || `已开始录制 ${result.recording}`
     else if (result.saved) text = `录制已保存为 ${result.saved}`
     else if (result.stopped) text = '录制已停止'
-    else if (result.message) text = result.message
+    else if (result.message && typeof result.message === 'string') text = result.message
     else if (result.action === 'query')
       text = `找到 ${result.count} 个匹配元素:\n${result.items.map((it) => `  [${it.index}] ${it.text || it.html || ''}`).join('\n')}`
     else if (result.action === 'modify')

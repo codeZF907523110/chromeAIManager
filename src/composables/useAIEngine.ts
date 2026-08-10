@@ -3,7 +3,7 @@
  * 封装所有 AI 引擎、Agent 循环、命令处理的业务逻辑
  */
 
-import { ref, watch } from 'vue'
+import { ref, watch, onScopeDispose } from 'vue'
 import type {
   ChatMessage,
   MessageLog,
@@ -31,6 +31,7 @@ import { buildAgentSystemPrompt } from '../shared/prompts'
 import { repairJSON } from '../shared/json-repair'
 import { wrapCatReply } from '../shared/personality'
 import { useSettings } from './useSettings'
+import { createRecordingExecutor } from '../recording/executor'
 
 const SESSION_KEY = 'ai_commander_session'
 const MESSAGE_LOG_KEY = 'ai_message_log'
@@ -623,7 +624,20 @@ export function useAIEngine() {
     slots: Record<string, unknown>
   ): Promise<ExecutionResult> {
     const cmd = getCommand(intent)
-    if (!cmd || cmd.swIntent === null) return { error: `未知命令: ${intent}` }
+    if (!cmd) return { error: `未知命令: ${intent}` }
+
+    // 客户端命令（录制等）：本地处理
+    if (cmd.clientIntent) {
+      if (cmd.clientIntent === 'record_screen') return await recordingExecutor.start('screen')
+      if (cmd.clientIntent === 'stop_recording') return await recordingExecutor.stop()
+      return {
+        success: false,
+        code: 'UNKNOWN_CLIENT_INTENT',
+        message: `未知客户端命令: ${cmd.clientIntent}`,
+      }
+    }
+
+    if (cmd.swIntent === null) return { error: `该命令不可执行: ${intent}` }
 
     try {
       let payload = slots
@@ -650,7 +664,14 @@ export function useAIEngine() {
     slots: Record<string, unknown>
   ): Promise<ExecutionResult | null> {
     const cmd = getCommand(userIntent)
-    if (!cmd || cmd.swIntent === null) return null
+    if (!cmd) return null
+
+    // 客户端命令：本地处理（与 executeCommand 共享同一路径）
+    if (cmd.clientIntent) {
+      return await executeCommand(userIntent, slots)
+    }
+
+    if (cmd.swIntent === null) return null
 
     let payload = slots
     if (cmd.requiresPrecompute) {
@@ -887,9 +908,10 @@ export function useAIEngine() {
     type: MessageLog['type'],
     text: string,
     image?: string,
-    video?: string
+    video?: string,
+    recordingFile?: MessageLog['recordingFile']
   ): void {
-    messageLog.value.push({ type, text, image, video })
+    messageLog.value.push({ type, text, image, video, recordingFile })
     if (isInitialized.value) {
       persistMessages()
     }
@@ -1087,7 +1109,7 @@ export function useAIEngine() {
     if (r.deleted !== undefined) return `删除 ${r.deleted} 条记录`
     // Navigation
     if (r.navigated) return `导航至 ${r.navigated}`
-    if (r.dataUrl) return '截图已捕获'
+    if (r.dataUrl && !r.stopped && !r.pendingRecording) return '截图已捕获'
     // Page
     if (r.zoomFactor !== undefined) return `缩放至 ${Math.round((r.zoomFactor as number) * 100)}%`
     if (r.opened) return '打开下载页面'
@@ -1113,6 +1135,7 @@ export function useAIEngine() {
       return `存储 *${r.key}* = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
     if (r.storageRemoved) return `删除存储 *${r.storageRemoved}*`
     // Recording
+    if (r.recording === 'screen') return `开始录制屏幕`
     if (r.recording) return `开始录制 ${r.recording}`
     if (r.saved) return `录制已保存为 ${r.saved}`
     if (r.stopped) {
@@ -1189,12 +1212,8 @@ export function useAIEngine() {
       showScreenshot(r.screenshot, r.tabTitle as string | undefined)
       return
     }
-    // 录制：显示视频并生成下载链接
-    if (r.stopped && r.dataUrl) {
-      const size = r.size as number | undefined
-      const sizeText = size ? ` (${(size / 1024 / 1024).toFixed(1)}MB)` : ''
-      addMessage('ai-chat', `录制已停止${sizeText}，以下是录制的视频 🎬`)
-      addVideoMessage(r.dataUrl as string)
+    // 录制停止请求已发出，文件由 recordingExecutor 直接渲染下载卡
+    if (r.stopped) {
       return
     }
     // 截图摘要（agent loop 步骤中显示）
@@ -1313,9 +1332,9 @@ export function useAIEngine() {
       text = `当前字体设置:\n标准: ${f.standard || '-'}\n衬线: ${f.serif || '-'}\n无衬线: ${f.sansSerif || '-'}\n等宽: ${f.fixed || '-'}`
     } else if (r.fontSize) text = `字号: ${r.fontSize}`
     else if (r.font) text = `字体: ${r.font}`
+    else if (r.recording === 'screen') text = '已开始录制屏幕'
     else if (r.recording) text = (r.message as string) || `已开始录制 ${r.recording}`
     else if (r.saved) text = `录制已保存为 ${r.saved}`
-    else if (r.stopped) text = '录制已停止'
     else if (r.message && typeof r.message === 'string') text = r.message
     else if (r.action === 'query')
       text = `找到 ${r.count} 个匹配元素:\n${(r.items as Array<{ index: number; text?: string; html?: string }>).map((it) => `  [${it.index}] ${it.text || it.html || ''}`).join('\n')}`
@@ -1343,19 +1362,33 @@ export function useAIEngine() {
     addMessage('ai-chat', wrapCatReply(text))
   }
 
+  // ──── 录制执行器（由独立模块管理，避免本文件状态膨胀） ────
+  // 所有录制逻辑（状态机、资源管理、cleanup）都在 recordingExecutor 内部完成
+  // 此处仅作为依赖注入入口
+  const recordingExecutor = createRecordingExecutor({
+    addSystemMessage: (text) => addMessage('system', text),
+    addAIChat: (text, recordingFile) => {
+      if (recordingFile) {
+        addMessage('ai-chat', '', undefined, undefined, recordingFile)
+      } else if (text) {
+        addMessage('ai-chat', text)
+      }
+    },
+    addErrorMessage: (text) => addMessage('error', text),
+  })
+
+  // 重要：sidepanel 卸载/HMR 时强制清理所有录制资源，避免僵尸 stream 占用视频通道
+  onScopeDispose(() => {
+    console.log('[useAIEngine] onScopeDispose → recordingExecutor.dispose')
+    recordingExecutor.dispose()
+  })
+
   /**
    * 显示截图并复制到剪贴板（供 slash command 路径使用）
    */
   function showScreenshot(dataUrl: string, tabTitle?: string) {
     addMessage('ai-chat', wrapCatReply(`[截图: ${tabTitle || '页面'}]`), dataUrl)
     copyScreenshotToClipboard(dataUrl)
-  }
-
-  /**
-   * 显示录制视频和下载链接
-   */
-  function addVideoMessage(dataUrl: string) {
-    addMessage('ai-chat', '', undefined, dataUrl)
   }
 
   /**
@@ -1449,6 +1482,7 @@ export function useAIEngine() {
     dispatchToSW,
     getContext,
     scanCurrentPage,
+    persistMessages,
     switchMode,
     cleanup,
     mdToHtml,

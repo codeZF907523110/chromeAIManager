@@ -1,6 +1,6 @@
 /**
  * Service Worker — AI 浏览器管家后台入口
- * 管理消息路由、上下文收集、命令执行
+ * 管理消息路由、上下文收集、命令执行、录制协调
  */
 // @ts-nocheck
 
@@ -10,9 +10,14 @@ import {
   MSG_EXECUTE,
   MSG_SET_DISPLAY_MODE,
   MSG_GET_DISPLAY_MODE,
+  MSG_RECORDING_START,
+  MSG_RECORDING_STOP,
+  MSG_RECORDING_RESULT,
 } from '../shared/constants'
 import { collectContext } from './context-collector'
 import { executeCommand } from './executor'
+
+const OFFSCREEN_URL = 'offscreen/recorder.html'
 
 // ──── 消息路由 ────
 
@@ -53,7 +58,54 @@ async function handleMessage(
     return result.displayMode || 'sidepanel'
   }
 
+  // ──── 录制协调 ────
+  if (type === MSG_RECORDING_START) {
+    return await handleRecordingStart()
+  }
+  if (type === MSG_RECORDING_STOP) {
+    return await handleRecordingStop()
+  }
+  if (type === MSG_RECORDING_RESULT) {
+    // RECORDING_RESULT 由 offscreen 直接发给所有 extension pages（包括 Vue popup 的 recordingExecutor）
+    // SW 不需要转发，否则 native side panel 也会收到导致重复渲染
+    return { received: true }
+  }
+
   return { error: `Unknown message type: ${type}` }
+}
+
+// ──── Offscreen Document 管理 ────
+
+async function ensureOffscreenDocument() {
+  const existing = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
+    documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
+  })
+  if (existing.length > 0) return
+  await chrome.offscreen.createDocument({
+    url: OFFSCREEN_URL,
+    reasons: ['DISPLAY_MEDIA'],
+    justification: 'Recording via getDisplayMedia/MediaRecorder',
+  })
+}
+
+async function handleRecordingStart() {
+  try {
+    await ensureOffscreenDocument()
+    const result = await chrome.runtime.sendMessage({ type: 'START_RECORDING' })
+    return result
+  } catch (e) {
+    return { success: false, code: 'RECORDING_SW_ERROR', message: e?.message || String(e) }
+  }
+}
+
+async function handleRecordingStop() {
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'STOP_RECORDING' })
+    return result
+  } catch (e) {
+    return { success: false, code: 'RECORDING_SW_ERROR', message: e?.message || String(e) }
+  }
 }
 
 // ──── 书签搜索 ────
@@ -83,15 +135,21 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 // ──── 点击图标触发 ────
 
-// 注意：action.onClicked 只在没有 default_popup 时触发
+// action: {} 在 manifest 中声明，无 popup
+// 点击图标触发 onClicked → 授予 activeTab 权限给当前标签页
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab?.id) return
+
+  try {
+    await chrome.sidePanel.open({ tabId: tab.id })
+  } catch {
+    // ignore
+  }
 
   const result = await chrome.storage.local.get('displayMode')
   const mode = result.displayMode || 'sidepanel'
 
   if (mode === 'overlay') {
-    // popup 模式：注入 overlay 打开弹窗
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
@@ -101,15 +159,13 @@ chrome.action.onClicked.addListener(async (tab) => {
       // ignore
     }
   }
-  // sidepanel 模式：Chrome 会通过 setPanelBehavior 自动打开
 })
 
 // ──── 初始化 sidePanel 行为 ────
 
-// 必须在同步上下文中调用，Chrome 自动在用户点击图标时打开 sidepanel
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
-  // ignore
-})
+// 不使用 setPanelBehavior({ openPanelOnActionClick: true })。
+// 该配置会让 Chrome 直接打开 side panel，跳过 onClicked，
+// 导致权限上下文不完整。当前通过 onClicked + sidePanel.open() 的方式正常工作。
 
 // ──── 统一打开逻辑 ────
 

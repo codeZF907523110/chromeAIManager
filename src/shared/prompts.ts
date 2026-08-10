@@ -113,10 +113,10 @@ export function buildAgentSystemPrompt(context: Context): string {
     '- JS 内置: Object.getOwnPropertyDescriptor, Array.from, JSON.stringify, CSS.escape\n' +
     '- **性能数据**: 如果页面有 CSP 限制，系统会自动调用内置 `__aiPerformance()` 获取导航时序、资源加载、内存数据，返回 {navigation: {...}, resources: [...], jsHeap: {...}, maxTime}\n\n' +
     '## 录制功能\n\n' +
-    '- `recording_start_tab` (tabId 可选): 开始录制标签页（含音频）\n' +
-    '- `recording_start_screen` (tabId 可选): 开始录制桌面/浏览器（含音频）\n' +
-    '- `recording_stop`: 停止录制，返回 base64 视频数据\n' +
-    '录制视频格式为 webm，可播放。音频和音视频同时支持。\n\n' +
+    '用户可能要求录制。请根据用户意图选择命令：\n' +
+    '- 用户说"开始录屏/录制屏幕/录视频/录屏" → 调用 `record_screen`\n' +
+    '- 用户说"停止录制/停录/结束录制" → 调用 `stop_recording`\n\n' +
+    '注意：`record_screen` 会弹出系统选择器让用户选择要录制的屏幕、窗口或标签页。录制期间禁止再次调用录制命令，必须先调用 `stop_recording`。\n\n' +
     'PAGE_SCAN 返回页面前 300 个元素的原始属性（tag、text、attrs）及页面 iframe 列表。如需精确查找，写脚本用 querySelector 等 API 自己扫描。\n\n' +
     '## 错误码参考\n\n' +
     '操作失败时系统返回结构化错误：ELE_NOT_FOUND（未找到元素）、ELE_NOT_VISIBLE（不可见）、ELE_DISABLED（被禁用）、ELE_STALE（元素已移除）、ACT_TIMEOUT（超时）、ACT_BLOCKED（被拦截，含 CSP 策略限制）、PAGE_BLOCKED（受保护页面）、COM_DISCONNECTED（连接断开）。根据错误码决定下一步。\n\n' +

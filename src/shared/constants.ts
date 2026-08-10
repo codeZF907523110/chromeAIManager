@@ -12,6 +12,11 @@ export const MSG_GET_DISPLAY_MODE = 'GET_DISPLAY_MODE'
 // Service Worker → Side Panel
 export const MSG_EXECUTE_RESULT = 'EXECUTE_RESULT'
 
+// Recording (Side Panel ↔ Service Worker ↔ Offscreen)
+export const MSG_RECORDING_START = 'RECORDING_START'
+export const MSG_RECORDING_STOP = 'RECORDING_STOP'
+export const MSG_RECORDING_RESULT = 'RECORDING_RESULT'
+
 // ──── 错误码类型 ────
 
 export type ErrorCode =
