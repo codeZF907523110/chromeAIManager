@@ -24,4 +24,4 @@ export type { Lesson, PlanStep, PlanTracker, SessionData, Context } from './cont
 export type { ExecutionResult, ExecuteCommandPayload } from './execution'
 
 // UI 相关类型
-export type { DisplayMode, AgentState, Settings } from './ui'
+export type { AgentState, Settings } from './ui'

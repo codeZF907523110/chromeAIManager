@@ -2,28 +2,7 @@
  * UI 相关类型定义
  */
 
-// ──── 显示模式类型 ────
-
-export type DisplayMode = 'sidepanel' | 'popup'
-
-// ──── 消息类型 ────
-
-export interface MessageLog {
-  type: 'user' | 'system' | 'ai' | 'ai-chat' | 'error'
-  text: string
-  image?: string // base64 data URL for screenshots
-  video?: string // base64 data URL for video preview
-  recordingFile?: { url: string; name: string; size?: number; preview?: string } // recording download card
-}
-
 // 注意：MessageLog 的权威定义在 types/ai.ts，此文件仅为备份，请以 ai.ts 为准
-
-// ──── 聊天消息类型 ────
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
 
 // ──── 历史记录类型 ────
 
@@ -61,7 +40,6 @@ export interface AgentState {
   planTracker: PlanTracker | null
   lessons: Lesson[]
   lastScreenshot: string | null
-  displayMode: DisplayMode
   commandInputValue: string
 }
 
@@ -76,3 +54,4 @@ export interface Settings {
 
 // 导入 Context 类型
 import type { Context } from './context'
+import type { MessageLog, ChatMessage } from './ai'

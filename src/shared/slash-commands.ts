@@ -4,7 +4,7 @@
  * 所有命令以 / 开头，支持别名和前缀模糊匹配。
  */
 
-import type { SlashCommand } from '../../types'
+import type { SlashCommand } from '../types'
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {

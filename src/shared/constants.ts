@@ -6,8 +6,6 @@
 export const MSG_GET_CONTEXT = 'GET_CONTEXT'
 export const MSG_GET_BOOKMARKS = 'GET_BOOKMARKS'
 export const MSG_EXECUTE = 'EXECUTE'
-export const MSG_SET_DISPLAY_MODE = 'SET_DISPLAY_MODE'
-export const MSG_GET_DISPLAY_MODE = 'GET_DISPLAY_MODE'
 
 // Service Worker → Side Panel
 export const MSG_EXECUTE_RESULT = 'EXECUTE_RESULT'

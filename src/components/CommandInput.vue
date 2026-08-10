@@ -72,7 +72,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Mic, ArrowUp } from 'lucide-vue-next'
 import { useAIEngine } from '../composables/useAIEngine'
 import { useCommandHistory } from '../composables/useCommandHistory'
-import { SLASH_COMMANDS } from '../sidepanel/command/slash-commands'
+import { SLASH_COMMANDS } from '../shared/slash-commands'
 import type { SlashCommand } from '../types'
 
 const props = defineProps<{

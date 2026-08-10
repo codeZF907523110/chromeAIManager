@@ -13,14 +13,6 @@
         <el-button text @click="toggleSettings">
           <Settings :size="16" />
         </el-button>
-
-        <el-button text @click="switchMode('sidepanel')" title="侧边栏模式">
-          <LayoutPanelLeft :size="16" />
-        </el-button>
-
-        <el-button text @click="switchMode('popup')" title="弹窗模式">
-          <PanelRight :size="16" />
-        </el-button>
       </div>
     </header>
 
@@ -246,15 +238,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import {
-  Settings,
-  LayoutPanelLeft,
-  PanelRight,
-  ChevronRight,
-  ChevronLeft,
-  Plus,
-  X,
-} from 'lucide-vue-next'
+import { Settings, ChevronRight, ChevronLeft, Plus, X } from 'lucide-vue-next'
 import ParticleCanvas from './components/ParticleCanvas.vue'
 import MessageList from './components/MessageList.vue'
 import CommandInput from './components/CommandInput.vue'
@@ -268,7 +252,6 @@ const {
   state,
   handleSubmit: aiHandleSubmit,
   toggleSettings,
-  switchMode,
   initEngine,
   models,
   addModel,

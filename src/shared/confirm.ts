@@ -3,8 +3,8 @@
  * 在 Side Panel 中运行，利用 contextCache 的标签数据做本地计算
  */
 
-import { findDuplicateGroups } from '../../service-worker/utils/tab-matcher'
-import type { Context } from '../../types'
+import { findDuplicateGroups } from '../service-worker/utils/tab-matcher'
+import type { Context } from '../types'
 
 export interface ConfirmPreview {
   title: string

@@ -4,19 +4,11 @@
  */
 
 import { ref, watch, onScopeDispose } from 'vue'
-import type {
-  ChatMessage,
-  MessageLog,
-  AIResponse,
-  Context,
-  ExecutionResult,
-  DisplayMode,
-} from '../types'
+import type { ChatMessage, MessageLog, AIResponse, Context, ExecutionResult } from '../types'
 import {
   MSG_GET_CONTEXT,
   MSG_GET_BOOKMARKS,
   MSG_EXECUTE,
-  MSG_SET_DISPLAY_MODE,
   MAX_AGENT_STEPS,
   STEP_TIMEOUT_MS,
   TOTAL_TASK_TIMEOUT_MS,
@@ -24,9 +16,9 @@ import {
   MAX_MESSAGES_COUNT,
 } from '../shared/constants'
 import { getCommand } from '../shared/commands'
-import { SLASH_COMMANDS, matchSlashCommand } from '../sidepanel/command/slash-commands'
-import { generateConfirmPreview } from '../sidepanel/command/confirm'
-import { AIEngine } from '../sidepanel/ai/engine'
+import { SLASH_COMMANDS, matchSlashCommand } from '../shared/slash-commands'
+import { generateConfirmPreview } from '../shared/confirm'
+import { AIEngine } from '../shared/ai/engine'
 import { buildAgentSystemPrompt } from '../shared/prompts'
 import { repairJSON } from '../shared/json-repair'
 import { wrapCatReply } from '../shared/personality'
@@ -48,7 +40,7 @@ export interface AgentState {
   planTracker: PlanTracker | null
   lessons: Lesson[]
   lastScreenshot: string | null
-  displayMode: DisplayMode
+  displayMode: 'sidepanel'
   commandInputValue: string
 }
 
@@ -101,7 +93,6 @@ export function useAIEngine() {
   const planTracker = ref<PlanTracker | null>(null)
   const lessons = ref<Lesson[]>([])
   const lastScreenshot = ref<string | null>(null)
-  const displayMode = ref<DisplayMode>('sidepanel')
   const commandInputValue = ref('')
   const isSettingsOpen = ref(false)
   const isInitialized = ref(false)
@@ -876,32 +867,6 @@ export function useAIEngine() {
     }
   }
 
-  async function switchMode(mode: DisplayMode) {
-    displayMode.value = mode
-    await chrome.storage.local.set({ displayMode: mode })
-
-    if (mode === 'sidepanel') {
-      if (window.parent !== window) {
-        window.parent.postMessage({ type: 'CLOSE_OVERLAY' }, '*')
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-        await chrome.sidePanel.open({ windowId: tab.windowId })
-      }
-      await chrome.runtime.sendMessage({ type: MSG_SET_DISPLAY_MODE, mode })
-    } else {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content/overlay.js'],
-        })
-      } catch {
-        // ignore
-      }
-      window.close()
-      await chrome.runtime.sendMessage({ type: MSG_SET_DISPLAY_MODE, mode })
-    }
-  }
-
   // ──── 辅助函数 ────
 
   function addMessage(
@@ -1441,7 +1406,7 @@ export function useAIEngine() {
         return messageLog.value
       },
       get displayMode() {
-        return displayMode.value
+        return 'sidepanel'
       },
       get isSettingsOpen() {
         return isSettingsOpen.value
@@ -1483,7 +1448,6 @@ export function useAIEngine() {
     getContext,
     scanCurrentPage,
     persistMessages,
-    switchMode,
     cleanup,
     mdToHtml,
     renderExecutionResult,

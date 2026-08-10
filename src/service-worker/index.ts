@@ -8,8 +8,6 @@ import {
   MSG_GET_CONTEXT,
   MSG_GET_BOOKMARKS,
   MSG_EXECUTE,
-  MSG_SET_DISPLAY_MODE,
-  MSG_GET_DISPLAY_MODE,
   MSG_RECORDING_START,
   MSG_RECORDING_STOP,
   MSG_RECORDING_RESULT,
@@ -21,17 +19,18 @@ const OFFSCREEN_URL = 'offscreen/recorder.html'
 
 // ──── 消息路由 ────
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  handleMessage(message, sender)
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  handleMessage(message)
     .then(sendResponse)
     .catch((err) => sendResponse({ error: err.message }))
   return true // 异步响应
 })
 
-async function handleMessage(
-  message: { type: string; command?: { intent: string; payload: unknown }; options?: unknown },
-  _sender: chrome.runtime.MessageSender
-): Promise<unknown> {
+async function handleMessage(message: {
+  type: string
+  command?: { intent: string; payload: unknown }
+  options?: unknown
+}): Promise<unknown> {
   const { type } = message
 
   if (type === MSG_GET_CONTEXT) {
@@ -47,17 +46,6 @@ async function handleMessage(
     return await executeCommand(intent, payload as Record<string, unknown>)
   }
 
-  if (type === MSG_SET_DISPLAY_MODE) {
-    const { mode } = message as { type: string; mode: string }
-    await chrome.storage.local.set({ displayMode: mode })
-    return { success: true }
-  }
-
-  if (type === MSG_GET_DISPLAY_MODE) {
-    const result = await chrome.storage.local.get('displayMode')
-    return result.displayMode || 'sidepanel'
-  }
-
   // ──── 录制协调 ────
   if (type === MSG_RECORDING_START) {
     return await handleRecordingStart()
@@ -66,8 +54,7 @@ async function handleMessage(
     return await handleRecordingStop()
   }
   if (type === MSG_RECORDING_RESULT) {
-    // RECORDING_RESULT 由 offscreen 直接发给所有 extension pages（包括 Vue popup 的 recordingExecutor）
-    // SW 不需要转发，否则 native side panel 也会收到导致重复渲染
+    // RECORDING_RESULT 由 offscreen 直接发给 extension pages
     return { received: true }
   }
 
@@ -129,7 +116,7 @@ async function handleGetBookmarks(
 
 chrome.commands.onCommand.addListener(async (command) => {
   if (command === '_execute_action') {
-    await openPanelOrOverlay()
+    await openSidePanel()
   }
 })
 
@@ -145,73 +132,24 @@ chrome.action.onClicked.addListener(async (tab) => {
   } catch {
     // ignore
   }
-
-  const result = await chrome.storage.local.get('displayMode')
-  const mode = result.displayMode || 'sidepanel'
-
-  if (mode === 'overlay') {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['content/overlay.js'],
-      })
-    } catch {
-      // ignore
-    }
-  }
 })
 
-// ──── 初始化 sidePanel 行为 ────
+// ──── 打开侧边栏 ────
 
-// 不使用 setPanelBehavior({ openPanelOnActionClick: true })。
-// 该配置会让 Chrome 直接打开 side panel，跳过 onClicked，
-// 导致权限上下文不完整。当前通过 onClicked + sidePanel.open() 的方式正常工作。
-
-// ──── 统一打开逻辑 ────
-
-async function openPanelOrOverlay() {
+async function openSidePanel() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) return
 
-  const result = await chrome.storage.local.get('displayMode')
-  const mode = result.displayMode || 'sidepanel'
-
-  if (mode === 'sidepanel') {
-    if (tab?.windowId !== undefined) {
-      await chrome.sidePanel.open({ windowId: tab.windowId })
-    }
-  } else {
-    // popup 模式：注入 overlay 打开弹窗
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['content/overlay.js'],
-      })
-    } catch {
-      // ignore
-    }
+  try {
+    await chrome.sidePanel.open({ windowId: tab.windowId })
+  } catch {
+    // ignore
   }
 }
 
-// ──── 初始化 displayMode ────
+// ──── 安装时日志 ────
 
-async function ensureDisplayMode() {
-  const result = await chrome.storage.local.get('displayMode')
-  if (!result.displayMode) {
-    await chrome.storage.local.set({ displayMode: 'sidepanel' })
-  }
-}
-
-// ──── 开机时同步 displayMode ────
-
-chrome.runtime.onStartup.addListener(async () => {
-  await ensureDisplayMode()
-})
-
-// ──── 安装时同步 displayMode ────
-
-chrome.runtime.onInstalled.addListener(async (details) => {
-  await ensureDisplayMode()
+chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('[AI管家] 首次安装')
   } else if (details.reason === 'update') {
