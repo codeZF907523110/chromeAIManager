@@ -37,191 +37,159 @@
       @cancel="pendingConfirm.onCancel"
     />
 
-    <!-- 设置面板 -->
-    <div v-if="state.isSettingsOpen" class="settings-panel">
-      <!-- 设置首页 -->
-      <div v-if="settingsPage === 'home'" class="settings-home">
-        <div class="settings-header">
-          <span class="settings-title">设置</span>
-        </div>
-        <div class="settings-cells">
-          <div class="settings-cell" @click="settingsPage = 'models'">
-            <div class="cell-content">
-              <span class="cell-title">模型管理</span>
-              <span class="cell-desc">添加、编辑、删除 AI 模型</span>
-            </div>
-            <ChevronRight :size="16" class="cell-arrow" />
-          </div>
-          <div class="settings-cell" @click="settingsPage = 'about'">
-            <div class="cell-content">
-              <span class="cell-title">关于</span>
-              <span class="cell-desc">版本信息和帮助</span>
-            </div>
-            <ChevronRight :size="16" class="cell-arrow" />
-          </div>
-        </div>
-        <el-button class="close-btn" @click="toggleSettings">关闭</el-button>
-      </div>
-
-      <!-- 模型管理页面 -->
-      <div v-if="settingsPage === 'models'" class="settings-page">
-        <div class="settings-header">
-          <div class="back-btn" @click="settingsPage = 'home'">
-            <ChevronLeft :size="16" />
+    <!-- 设置抽屉 -->
+    <el-drawer
+      v-model="state.isSettingsOpen"
+      direction="btt"
+      size="40%"
+      :before-close="toggleSettings"
+      class="settings-drawer"
+    >
+      <template #header>
+        <div class="drawer-nav">
+          <div v-if="settingsPage !== 'home'" class="back-btn" @click="settingsPage = 'home'">
+            <ChevronLeft :size="14" />
             <span>返回</span>
           </div>
-          <span class="settings-title">模型管理</span>
-          <el-button text @click="showAddDialog = true">
+          <span class="drawer-nav-title">
+            {{ settingsPage === 'home' ? '设置' : settingsPage === 'models' ? '模型管理' : '关于' }}
+          </span>
+          <el-button
+            v-if="settingsPage === 'models'"
+            text
+            @click="showAddDialog = true"
+            class="add-btn"
+          >
             <Plus :size="16" />
           </el-button>
         </div>
+      </template>
 
-        <!-- 模型列表 -->
-        <div class="model-list">
-          <div v-for="model in models" :key="model.id" class="model-item">
-            <div class="model-info">
-              <div class="model-name-row">
-                <span class="model-name">{{ model.name }}</span>
-                <el-tag v-if="model.isDefault" size="small">默认</el-tag>
-              </div>
-              <span class="model-provider">{{ getProviderLabel(model.provider) }}</span>
+      <!-- 首页 -->
+      <div v-if="settingsPage === 'home'">
+        <div class="settings-cell" @click="settingsPage = 'models'">
+          <div class="cell-content">
+            <span class="cell-title">模型管理</span>
+            <span class="cell-desc">添加、编辑、删除 AI 模型</span>
+          </div>
+          <ChevronRight :size="16" class="cell-arrow" />
+        </div>
+        <div class="settings-cell" @click="settingsPage = 'about'">
+          <div class="cell-content">
+            <span class="cell-title">关于</span>
+            <span class="cell-desc">版本信息和帮助</span>
+          </div>
+          <ChevronRight :size="16" class="cell-arrow" />
+        </div>
+      </div>
+
+      <!-- 模型管理页 -->
+      <div v-else-if="settingsPage === 'models'" class="model-list">
+        <div v-for="model in models" :key="model.id" class="model-item">
+          <div class="model-info">
+            <div class="model-name-row">
+              <span class="model-name">{{ model.name }}</span>
+              <el-tag v-if="model.isDefault" size="small">默认</el-tag>
             </div>
-            <div class="model-actions">
-              <el-button
-                v-if="!model.isDefault"
-                size="small"
-                text
-                @click="handleSetDefault(model.id)"
-              >
-                设为默认
-              </el-button>
-              <el-button size="small" text @click="startEditModel(model)">编辑</el-button>
-              <el-button
-                v-if="models.length > 1"
-                size="small"
-                text
-                type="danger"
-                @click="handleDeleteModel(model.id)"
-              >
-                删除
-              </el-button>
-            </div>
+            <span class="model-provider">{{ getProviderLabel(model.provider) }}</span>
+          </div>
+          <div class="model-actions">
+            <el-button
+              v-if="!model.isDefault"
+              size="small"
+              text
+              @click="handleSetDefault(model.id)"
+            >
+              设为默认
+            </el-button>
+            <el-button size="small" text @click="startEditModel(model)">编辑</el-button>
+            <el-button
+              v-if="models.length > 1"
+              size="small"
+              text
+              type="danger"
+              @click="handleDeleteModel(model.id)"
+            >
+              删除
+            </el-button>
           </div>
         </div>
       </div>
 
-      <!-- 主题设置页面（已移除，切换在右上角图标按钮） -->
-      <div v-if="false" class="settings-page"></div>
-
-      <!-- 关于页面 -->
-      <div v-if="settingsPage === 'about'" class="settings-page">
-        <div class="settings-header">
-          <div class="back-btn" @click="settingsPage = 'home'">
-            <ChevronLeft :size="16" />
-            <span>返回</span>
-          </div>
-          <span class="settings-title">关于</span>
-        </div>
-        <div class="about-content">
-          <h3>AI 浏览器管家</h3>
-          <p class="version">版本 0.1.0</p>
-          <p class="desc">一个基于 AI 的浏览器命令中心</p>
-        </div>
+      <!-- 关于页 -->
+      <div v-else-if="settingsPage === 'about'" class="about-content">
+        <h3>AI 浏览器管家</h3>
+        <p class="version">版本 0.1.0</p>
+        <p class="desc">一个基于 AI 的浏览器命令中心</p>
       </div>
-    </div>
+    </el-drawer>
 
     <!-- 添加模型弹窗 -->
-    <div v-if="showAddDialog" class="modal-overlay" @click.self="showAddDialog = false">
-      <div class="modal-content">
-        <div class="modal-header">
-          <span>添加模型</span>
-          <div class="modal-close" @click="showAddDialog = false">
-            <X :size="16" />
-          </div>
-        </div>
-        <div class="modal-body">
-          <div class="form-item">
-            <label>模型名称</label>
-            <el-input v-model="newModel.name" placeholder="如：DeepSeek V3" />
-          </div>
-          <div class="form-item">
-            <label>提供商</label>
-            <el-select v-model="newModel.provider" placeholder="选择提供商">
-              <el-option value="openai" label="OpenAI 兼容 API" />
-              <el-option value="gemini-nano" label="Gemini Nano（本地）" />
-              <el-option value="auto" label="自动" />
-            </el-select>
-          </div>
-          <template v-if="newModel.provider !== 'gemini-nano'">
-            <div class="form-item">
-              <label>API Key</label>
-              <el-input
-                v-model="newModel.apiKey"
-                type="password"
-                placeholder="sk-..."
-                show-password
-              />
-            </div>
-            <div class="form-item">
-              <label>API 端点</label>
-              <el-input v-model="newModel.apiEndpoint" placeholder="https://api.deepseek.com" />
-            </div>
-            <div class="form-item">
-              <label>模型名称</label>
-              <el-input v-model="newModel.modelName" placeholder="deepseek-chat" />
-            </div>
-          </template>
-        </div>
-        <div class="modal-footer">
-          <el-button @click="showAddDialog = false">取消</el-button>
-          <el-button type="primary" @click="handleAddModel">保存</el-button>
-        </div>
-      </div>
-    </div>
+    <el-dialog v-model="showAddDialog" title="添加模型" width="90%" style="max-width: 400px">
+      <el-form label-position="top">
+        <el-form-item label="模型名称">
+          <el-input v-model="newModel.name" placeholder="如：DeepSeek V3" />
+        </el-form-item>
+        <el-form-item label="提供商">
+          <el-select v-model="newModel.provider" placeholder="选择提供商" style="width: 100%">
+            <el-option value="openai" label="OpenAI 兼容 API" />
+            <el-option value="gemini-nano" label="Gemini Nano（本地）" />
+            <el-option value="auto" label="自动" />
+          </el-select>
+        </el-form-item>
+        <template v-if="newModel.provider !== 'gemini-nano'">
+          <el-form-item label="API Key">
+            <el-input
+              v-model="newModel.apiKey"
+              type="password"
+              placeholder="sk-..."
+              show-password
+            />
+          </el-form-item>
+          <el-form-item label="API 端点">
+            <el-input v-model="newModel.apiEndpoint" placeholder="https://api.deepseek.com" />
+          </el-form-item>
+          <el-form-item label="模型名称">
+            <el-input v-model="newModel.modelName" placeholder="deepseek-chat" />
+          </el-form-item>
+        </template>
+      </el-form>
+      <template #footer>
+        <el-button @click="showAddDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleAddModel">保存</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 编辑模型弹窗 -->
-    <div v-if="editDialogVisible" class="modal-overlay" @click.self="editDialogVisible = false">
-      <div class="modal-content">
-        <div class="modal-header">
-          <span>编辑模型</span>
-          <div class="modal-close" @click="editDialogVisible = false">
-            <X :size="16" />
-          </div>
-        </div>
-        <div class="modal-body">
-          <div class="form-item">
-            <label>模型名称</label>
-            <el-input v-model="editingModel!.name" />
-          </div>
-          <div class="form-item">
-            <label>提供商</label>
-            <el-select v-model="editingModel!.provider">
-              <el-option value="openai" label="OpenAI 兼容 API" />
-              <el-option value="gemini-nano" label="Gemini Nano（本地）" />
-              <el-option value="auto" label="自动" />
-            </el-select>
-          </div>
-          <template v-if="editingModel && editingModel.provider !== 'gemini-nano'">
-            <div class="form-item">
-              <label>API Key</label>
-              <el-input v-model="editingModel!.apiKey" type="password" show-password />
-            </div>
-            <div class="form-item">
-              <label>API 端点</label>
-              <el-input v-model="editingModel!.apiEndpoint" />
-            </div>
-            <div class="form-item">
-              <label>模型名称</label>
-              <el-input v-model="editingModel!.modelName" />
-            </div>
-          </template>
-        </div>
-        <div class="modal-footer">
-          <el-button @click="editDialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="handleSaveEdit">保存</el-button>
-        </div>
-      </div>
-    </div>
+    <el-dialog v-model="editDialogVisible" title="编辑模型" width="90%" style="max-width: 400px">
+      <el-form label-position="top">
+        <el-form-item label="模型名称">
+          <el-input v-model="editingModel!.name" />
+        </el-form-item>
+        <el-form-item label="提供商">
+          <el-select v-model="editingModel!.provider" style="width: 100%">
+            <el-option value="openai" label="OpenAI 兼容 API" />
+            <el-option value="gemini-nano" label="Gemini Nano（本地）" />
+            <el-option value="auto" label="自动" />
+          </el-select>
+        </el-form-item>
+        <template v-if="editingModel && editingModel.provider !== 'gemini-nano'">
+          <el-form-item label="API Key">
+            <el-input v-model="editingModel!.apiKey" type="password" show-password />
+          </el-form-item>
+          <el-form-item label="API 端点">
+            <el-input v-model="editingModel!.apiEndpoint" />
+          </el-form-item>
+          <el-form-item label="模型名称">
+            <el-input v-model="editingModel!.modelName" />
+          </el-form-item>
+        </template>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveEdit">保存</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 命令输入区 -->
     <CommandInput ref="commandInputRef" v-model="commandInput" @submit="handleSubmit" />
@@ -230,7 +198,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { Settings, ChevronRight, ChevronLeft, Plus, X, Sun, Moon } from 'lucide-vue-next'
+import { Settings, ChevronRight, ChevronLeft, Plus, Sun, Moon } from 'lucide-vue-next'
 import ParticleCanvas from './components/ParticleCanvas.vue'
 import MessageList from './components/MessageList.vue'
 import CommandInput from './components/CommandInput.vue'
@@ -460,25 +428,31 @@ body {
   flex-direction: column;
 }
 
-/* 设置面板 */
-.settings-panel {
-  padding: 16px;
-  background: var(--app-bg-card);
-  border-top: 1px solid var(--app-border);
-  flex-shrink: 0;
-  max-height: 50vh;
-  overflow-y: auto;
+/* 设置抽屉 */
+.el-drawer__header {
+  margin-bottom: 0 !important;
+  padding-bottom: 0;
 }
 
-.settings-header {
+.drawer-nav {
   display: flex;
   align-items: center;
-  margin-bottom: 16px;
+  gap: 8px;
+  width: 100%;
 }
 
-.settings-title {
-  font-size: 16px;
-  font-weight: 600;
+.drawer-nav-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--app-text-primary);
+}
+
+.add-btn {
+  color: var(--app-text-muted);
+  padding: 4px;
+}
+
+.add-btn:hover {
   color: var(--app-text-primary);
 }
 
@@ -497,16 +471,11 @@ body {
 }
 
 /* 设置 Cell */
-.settings-cells {
-  display: flex;
-  flex-direction: column;
-}
-
 .settings-cell {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 0;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--app-border-light);
   cursor: pointer;
   transition: opacity 0.15s ease;
@@ -616,89 +585,12 @@ body {
   color: var(--app-text-muted);
 }
 
-/* 关闭按钮 */
-.close-btn {
-  width: 100%;
-  margin-top: 16px;
-}
-
-/* 弹窗 */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-}
-
-.modal-content {
-  background: var(--app-bg-card);
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  width: 90%;
-  max-width: 400px;
-  overflow: hidden;
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  border-bottom: 1px solid var(--app-border);
-}
-
-.modal-header span {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--app-text-primary);
-}
-
-.modal-close {
-  color: var(--app-text-secondary);
-  cursor: pointer;
-  transition: color 0.15s ease;
-}
-
-.modal-close:hover {
-  color: var(--app-text-primary);
-}
-
-.modal-body {
-  padding: 16px;
-}
-
-.form-item {
-  margin-bottom: 14px;
-}
-
-.form-item:last-child {
-  margin-bottom: 0;
-}
-
-.form-item label {
-  display: block;
-  font-size: 12px;
-  color: var(--app-text-secondary);
-  margin-bottom: 6px;
-}
-
-.modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 16px;
-  border-top: 1px solid var(--app-border);
+/* 亮色主题下遮罩 */
+:root[data-theme='light'] .el-overlay {
+  background: rgba(0, 0, 0, 0.5);
 }
 
 .ml-2 {
   margin-left: 8px;
-}
-
-/* 亮色主题下遮罩 */
-:root[data-theme='light'] .modal-overlay {
-  background: rgba(0, 0, 0, 0.5);
 }
 </style>
