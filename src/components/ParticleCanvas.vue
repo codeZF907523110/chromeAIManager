@@ -35,6 +35,29 @@ function createParticle(): Particle {
   }
 }
 
+function getBgColor(): string {
+  return getComputedStyle(document.documentElement).getPropertyValue('--app-bg').trim() || '#0a0a0a'
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
+  return result
+    ? { r: parseInt(result[1], 16), g: parseInt(result[2], 16), b: parseInt(result[3], 16) }
+    : { r: 136, g: 136, b: 136 } // --app-text-muted fallback: #888
+}
+
+function rgba(hex: string, alpha: number): string {
+  const { r, g, b } = hexToRgb(hex)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+function getParticleColor(): string {
+  return (
+    getComputedStyle(document.documentElement).getPropertyValue('--app-text-muted').trim() ||
+    '#555555'
+  )
+}
+
 function initCanvas() {
   if (animationId) {
     cancelAnimationFrame(animationId)
@@ -65,7 +88,12 @@ function draw() {
 
   ctx.clearRect(0, 0, width, height)
 
-  // 绘制粒子
+  // 填充背景色
+  ctx.fillStyle = getBgColor()
+  ctx.fillRect(0, 0, width, height)
+
+  // 绘制粒子（颜色随主题变化）
+  const particleColor = getParticleColor()
   for (const p of particles) {
     // 更新位置
     p.x += p.vx
@@ -82,7 +110,7 @@ function draw() {
     // 绘制
     ctx.beginPath()
     ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 255, 255, ${p.opacity})`
+    ctx.fillStyle = rgba(particleColor, p.opacity)
     ctx.fill()
   }
 
@@ -98,7 +126,7 @@ function draw() {
         ctx.beginPath()
         ctx.moveTo(particles[i].x, particles[i].y)
         ctx.lineTo(particles[j].x, particles[j].y)
-        ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`
+        ctx.strokeStyle = rgba(particleColor, alpha)
         ctx.lineWidth = 0.5
         ctx.stroke()
       }
@@ -150,6 +178,6 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 0;
+  z-index: -1;
 }
 </style>

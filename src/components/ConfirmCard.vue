@@ -56,6 +56,8 @@ function handleCancel() {
   background: rgba(255, 200, 50, 0.06);
   border: 1px solid rgba(255, 200, 50, 0.3);
   border-radius: 10px;
+  position: relative;
+  z-index: 1;
 }
 
 .confirm-card-title {
@@ -67,7 +69,7 @@ function handleCancel() {
 
 .confirm-card-desc {
   font-size: 12px;
-  color: #999;
+  color: var(--app-text-secondary);
   margin-bottom: 10px;
 }
 
@@ -81,7 +83,7 @@ function handleCancel() {
   display: flex;
   justify-content: space-between;
   padding: 6px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--app-border-light);
   font-size: 12px;
 }
 
@@ -90,7 +92,7 @@ function handleCancel() {
 }
 
 .confirm-card-item .primary {
-  color: #ddd;
+  color: var(--app-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -99,7 +101,7 @@ function handleCancel() {
 }
 
 .confirm-card-item .secondary {
-  color: #666;
+  color: var(--app-text-muted);
   flex-shrink: 0;
 }
 
@@ -120,12 +122,12 @@ function handleCancel() {
 }
 
 .btn-cancel {
-  background: rgba(255, 255, 255, 0.08);
-  color: #ccc;
+  background: var(--app-bg-input);
+  color: var(--app-text-secondary);
 }
 
 .btn-cancel:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--app-border);
 }
 
 .btn-confirm {

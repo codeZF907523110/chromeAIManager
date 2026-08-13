@@ -218,8 +218,8 @@ async function handleSelectModel(modelId: string) {
 .input-container {
   display: flex;
   flex-direction: column;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--app-bg-input);
+  border: 1px solid var(--app-border-input);
   border-radius: 10px;
   overflow: hidden;
 }
@@ -234,17 +234,17 @@ async function handleSelectModel(modelId: string) {
   background: transparent;
   border: none;
   outline: none;
-  color: #f0f0f0;
+  color: var(--app-text-primary);
   font-size: 14px;
   line-height: 1.5;
   resize: none;
 }
 .textarea-wrapper textarea::-webkit-scrollbar {
-  display: none; /* 直接不显示 */
+  display: none;
 }
 
 .textarea-wrapper textarea::placeholder {
-  color: #555;
+  color: var(--app-text-placeholder);
 }
 
 /* 斜杠命令选择器 */
@@ -255,23 +255,23 @@ async function handleSelectModel(modelId: string) {
   bottom: 168px;
   max-height: 240px;
   overflow-y: auto;
-  background: #1a1a1a;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--app-bg-picker);
+  border: 1px solid var(--app-border-picker);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   z-index: 100;
 }
 .slash-picker::-webkit-scrollbar {
-  display: none; /* 直接不显示 */
+  display: none;
 }
 
 .slash-picker-header {
   padding: 8px 14px;
   font-size: 11px;
-  color: #666;
+  color: var(--app-picker-header);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--app-picker-border);
 }
 
 .slash-item {
@@ -285,12 +285,12 @@ async function handleSelectModel(modelId: string) {
 
 .slash-item:hover,
 .slash-item.active {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--app-picker-item-hover);
 }
 
 .slash-name {
   font-size: 13px;
-  color: #e0e0e0;
+  color: var(--app-text-primary);
   font-family: 'SF Mono', 'Fira Code', monospace;
   white-space: nowrap;
   min-width: 100px;
@@ -298,7 +298,7 @@ async function handleSelectModel(modelId: string) {
 
 .slash-desc {
   font-size: 12px;
-  color: #666;
+  color: var(--app-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -307,7 +307,7 @@ async function handleSelectModel(modelId: string) {
 .slash-empty {
   padding: 16px;
   text-align: center;
-  color: #555;
+  color: var(--app-text-muted);
   font-size: 13px;
 }
 
@@ -316,7 +316,7 @@ async function handleSelectModel(modelId: string) {
   display: flex;
   justify-content: flex-end;
   padding: 8px 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--app-picker-border);
 }
 
 .toolbar-right {
@@ -331,14 +331,14 @@ async function handleSelectModel(modelId: string) {
   align-items: center;
   gap: 4px;
   padding: 6px 10px;
-  color: #888;
+  color: var(--app-text-muted);
   font-size: 12px;
   cursor: pointer;
   transition: color 0.15s ease;
 }
 
 .model-dropdown-link:hover {
-  color: #aaa;
+  color: var(--app-text-secondary);
 }
 
 /* 麦克风按钮 */
@@ -351,14 +351,14 @@ async function handleSelectModel(modelId: string) {
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: #666;
+  color: var(--app-text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .icon-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #888;
+  background: var(--app-picker-item-hover);
+  color: var(--app-text-muted);
 }
 
 /* 发送按钮 */
@@ -368,21 +368,21 @@ async function handleSelectModel(modelId: string) {
   justify-content: center;
   width: 32px;
   height: 32px;
-  background: #fff;
+  background: var(--app-text-primary);
   border: none;
   border-radius: 6px;
-  color: #0a0a0a;
+  color: var(--app-bg);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .send-btn:hover:not(:disabled) {
-  background: #e8e8e8;
+  background: var(--app-text-secondary);
 }
 
 .send-btn:disabled {
-  background: rgba(255, 255, 255, 0.1);
-  color: #444;
+  background: var(--app-bg-input);
+  color: var(--app-text-muted);
   cursor: not-allowed;
 }
 

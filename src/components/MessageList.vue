@@ -69,7 +69,7 @@ onMounted(() => {
 }
 
 .messages::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--app-border);
   border-radius: 2px;
 }
 </style>

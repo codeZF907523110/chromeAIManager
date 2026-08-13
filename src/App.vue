@@ -10,6 +10,14 @@
         <span class="header-title">AI 浏览器管家</span>
       </div>
       <div class="header-actions">
+        <el-button
+          text
+          @click="toggleTheme"
+          :title="themeMode === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
+        >
+          <Moon v-if="themeMode === 'dark'" :size="16" />
+          <Sun v-else :size="16" />
+        </el-button>
         <el-button text @click="toggleSettings">
           <Settings :size="16" />
         </el-button>
@@ -41,13 +49,6 @@
             <div class="cell-content">
               <span class="cell-title">模型管理</span>
               <span class="cell-desc">添加、编辑、删除 AI 模型</span>
-            </div>
-            <ChevronRight :size="16" class="cell-arrow" />
-          </div>
-          <div class="settings-cell" @click="settingsPage = 'theme'">
-            <div class="cell-content">
-              <span class="cell-title">主题设置</span>
-              <span class="cell-desc">自定义界面外观</span>
             </div>
             <ChevronRight :size="16" class="cell-arrow" />
           </div>
@@ -109,17 +110,8 @@
         </div>
       </div>
 
-      <!-- 主题设置页面 -->
-      <div v-if="settingsPage === 'theme'" class="settings-page">
-        <div class="settings-header">
-          <div class="back-btn" @click="settingsPage = 'home'">
-            <ChevronLeft :size="16" />
-            <span>返回</span>
-          </div>
-          <span class="settings-title">主题设置</span>
-        </div>
-        <div class="placeholder-text">主题设置功能开发中...</div>
-      </div>
+      <!-- 主题设置页面（已移除，切换在右上角图标按钮） -->
+      <div v-if="false" class="settings-page"></div>
 
       <!-- 关于页面 -->
       <div v-if="settingsPage === 'about'" class="settings-page">
@@ -238,15 +230,16 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { Settings, ChevronRight, ChevronLeft, Plus, X } from 'lucide-vue-next'
+import { Settings, ChevronRight, ChevronLeft, Plus, X, Sun, Moon } from 'lucide-vue-next'
 import ParticleCanvas from './components/ParticleCanvas.vue'
 import MessageList from './components/MessageList.vue'
 import CommandInput from './components/CommandInput.vue'
 import ConfirmCard from './components/ConfirmCard.vue'
 import { useAIEngine } from './composables/useAIEngine'
+import { useSettings } from './composables/useSettings'
 import type { AIModel, AIProvider } from './types'
 
-type SettingsPage = 'home' | 'models' | 'theme' | 'about'
+type SettingsPage = 'home' | 'models' | 'about'
 
 const {
   state,
@@ -264,11 +257,19 @@ const {
   persistMessages,
 } = useAIEngine()
 
+const { themeMode, setThemeMode } = useSettings()
+
 const commandInput = commandInputValue
 const commandInputRef = ref<InstanceType<typeof import('./components/CommandInput.vue').default>>()
 
 // 设置页面
 const settingsPage = ref<SettingsPage>('home')
+
+// 右上角主题切换
+async function toggleTheme() {
+  const next = themeMode.value === 'dark' ? 'light' : 'dark'
+  await setThemeMode(next)
+}
 
 // 添加模型弹窗
 const showAddDialog = ref(false)
@@ -391,8 +392,8 @@ function saveSession() {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
-  background: #0a0a0a;
-  color: #f0f0f0;
+  background: var(--app-bg);
+  color: var(--app-text-primary);
 }
 
 .app {
@@ -408,8 +409,8 @@ body {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: rgba(10, 10, 10, 0.9);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--app-bg-card);
+  border-bottom: 1px solid var(--app-border);
   flex-shrink: 0;
   position: relative;
   z-index: 10;
@@ -422,7 +423,7 @@ body {
 }
 
 .header-icon {
-  color: #fff;
+  color: var(--app-text-primary);
   font-size: 16px;
   animation: pulse 2s ease-in-out infinite;
 }
@@ -440,7 +441,7 @@ body {
 .header-title {
   font-size: 14px;
   font-weight: 600;
-  color: #fff;
+  color: var(--app-text-primary);
 }
 
 .header-actions {
@@ -462,8 +463,8 @@ body {
 /* 设置面板 */
 .settings-panel {
   padding: 16px;
-  background: rgba(10, 10, 10, 0.95);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--app-bg-card);
+  border-top: 1px solid var(--app-border);
   flex-shrink: 0;
   max-height: 50vh;
   overflow-y: auto;
@@ -478,21 +479,21 @@ body {
 .settings-title {
   font-size: 16px;
   font-weight: 600;
-  color: #fff;
+  color: var(--app-text-primary);
 }
 
 .back-btn {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: #888;
+  color: var(--app-text-muted);
   cursor: pointer;
   margin-right: 12px;
   transition: color 0.15s ease;
 }
 
 .back-btn:hover {
-  color: #fff;
+  color: var(--app-text-primary);
 }
 
 /* 设置 Cell */
@@ -506,7 +507,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 14px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--app-border-light);
   cursor: pointer;
   transition: opacity 0.15s ease;
 }
@@ -527,16 +528,16 @@ body {
 
 .cell-title {
   font-size: 14px;
-  color: #e0e0e0;
+  color: var(--app-text-primary);
 }
 
 .cell-desc {
   font-size: 12px;
-  color: #666;
+  color: var(--app-text-secondary);
 }
 
 .cell-arrow {
-  color: #555;
+  color: var(--app-text-muted);
 }
 
 /* 模型列表 */
@@ -550,7 +551,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 12px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--app-border-light);
 }
 
 .model-item:last-child {
@@ -572,12 +573,12 @@ body {
 .model-name {
   font-size: 14px;
   font-weight: 500;
-  color: #e0e0e0;
+  color: var(--app-text-primary);
 }
 
 .model-provider {
   font-size: 12px;
-  color: #666;
+  color: var(--app-text-secondary);
 }
 
 .model-actions {
@@ -588,7 +589,7 @@ body {
 /* 占位文本 */
 .placeholder-text {
   text-align: center;
-  color: #555;
+  color: var(--app-text-muted);
   padding: 40px 0;
 }
 
@@ -600,19 +601,19 @@ body {
 
 .about-content h3 {
   font-size: 18px;
-  color: #fff;
+  color: var(--app-text-primary);
   margin-bottom: 12px;
 }
 
 .about-content .version {
   font-size: 13px;
-  color: #888;
+  color: var(--app-text-secondary);
   margin-bottom: 8px;
 }
 
 .about-content .desc {
   font-size: 13px;
-  color: #666;
+  color: var(--app-text-muted);
 }
 
 /* 关闭按钮 */
@@ -633,8 +634,8 @@ body {
 }
 
 .modal-content {
-  background: #1a1a1a;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--app-bg-card);
+  border: 1px solid var(--app-border);
   border-radius: 12px;
   width: 90%;
   max-width: 400px;
@@ -646,23 +647,23 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--app-border);
 }
 
 .modal-header span {
   font-size: 16px;
   font-weight: 600;
-  color: #fff;
+  color: var(--app-text-primary);
 }
 
 .modal-close {
-  color: #666;
+  color: var(--app-text-secondary);
   cursor: pointer;
   transition: color 0.15s ease;
 }
 
 .modal-close:hover {
-  color: #fff;
+  color: var(--app-text-primary);
 }
 
 .modal-body {
@@ -680,7 +681,7 @@ body {
 .form-item label {
   display: block;
   font-size: 12px;
-  color: #888;
+  color: var(--app-text-secondary);
   margin-bottom: 6px;
 }
 
@@ -689,10 +690,15 @@ body {
   justify-content: flex-end;
   gap: 8px;
   padding: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--app-border);
 }
 
 .ml-2 {
   margin-left: 8px;
+}
+
+/* 亮色主题下遮罩 */
+:root[data-theme='light'] .modal-overlay {
+  background: rgba(0, 0, 0, 0.5);
 }
 </style>

@@ -85,23 +85,23 @@ function escapeHtml(text: string): string {
 }
 
 .bubble-user {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--app-bg-card);
+  border: 1px solid var(--app-border);
   margin-left: auto;
-  color: #e0e0e0;
+  color: var(--app-text-primary);
   border-bottom-right-radius: 4px;
 }
 
 .bubble-ai-chat {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #e0e0e0;
+  background: var(--app-bg-card);
+  border: 1px solid var(--app-border);
+  color: var(--app-text-primary);
   border-bottom-left-radius: 4px;
 }
 
 .bubble-system {
   background: transparent;
-  color: #666;
+  color: var(--app-text-secondary);
   font-size: 12px;
   padding: 8px 16px;
   max-width: 100%;
@@ -112,17 +112,17 @@ function escapeHtml(text: string): string {
 .bubble-error {
   background: rgba(255, 100, 100, 0.08);
   border: 1px solid rgba(255, 100, 100, 0.2);
-  color: #ff6b6b;
-  border-left: 3px solid #ff6b6b;
+  color: var(--app-error);
+  border-left: 3px solid var(--app-error);
 }
 
 .bubble :deep(strong) {
-  color: #fff;
+  color: var(--app-text-primary);
   font-weight: 600;
 }
 
 .bubble :deep(em) {
-  color: #aaa;
+  color: var(--app-text-muted);
   font-style: italic;
 }
 
@@ -139,7 +139,7 @@ function escapeHtml(text: string): string {
 .bubble :deep(h2),
 .bubble :deep(h3),
 .bubble :deep(h4) {
-  color: #fff;
+  color: var(--app-text-primary);
   margin: 16px 0 8px 0;
   font-weight: 600;
 }
@@ -169,7 +169,7 @@ function escapeHtml(text: string): string {
 
 .bubble :deep(pre) {
   background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--app-border);
   border-radius: 6px;
   padding: 12px;
   margin: 8px 0;
@@ -192,18 +192,18 @@ function escapeHtml(text: string): string {
 .bubble :deep(blockquote) {
   margin: 8px 0;
   padding-left: 12px;
-  border-left: 3px solid rgba(255, 255, 255, 0.2);
-  color: #888;
+  border-left: 3px solid var(--app-border);
+  color: var(--app-text-secondary);
 }
 
 .bubble :deep(a) {
-  color: #fff;
+  color: var(--app-text-primary);
   text-decoration: underline;
 }
 
 .bubble :deep(hr) {
   border: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--app-border);
   margin: 12px 0;
 }
 
@@ -215,7 +215,7 @@ function escapeHtml(text: string): string {
 
 .bubble :deep(th),
 .bubble :deep(td) {
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--app-border);
   padding: 6px 10px;
   text-align: left;
 }
@@ -235,7 +235,7 @@ function escapeHtml(text: string): string {
   max-width: 100%;
   border-radius: 8px;
   margin-top: 8px;
-  background: #000;
+  background: var(--app-video-bg);
   display: block;
 }
 
@@ -246,8 +246,8 @@ function escapeHtml(text: string): string {
   gap: 8px;
   margin-top: 8px;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--app-picker-item-hover);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
 }
 
@@ -259,7 +259,7 @@ function escapeHtml(text: string): string {
 .recording-file-card .recording-file-name {
   flex: 1;
   font-size: 12px;
-  color: #888;
+  color: var(--app-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -269,10 +269,10 @@ function escapeHtml(text: string): string {
   flex-shrink: 0;
   display: inline-block;
   padding: 4px 12px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--app-picker-item-hover);
+  border: 1px solid var(--app-border);
   border-radius: 6px;
-  color: #ccc;
+  color: var(--app-text-primary);
   text-decoration: none;
   font-size: 13px;
   transition:
@@ -282,7 +282,7 @@ function escapeHtml(text: string): string {
 }
 
 .recording-download-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: var(--app-picker-item-hover);
+  color: var(--app-text-primary);
 }
 </style>
