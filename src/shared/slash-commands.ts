@@ -340,6 +340,12 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     description: '显示所有可用命令',
     aliases: ['h', '?', '帮助'],
   },
+  {
+    slash: 'clear-chat',
+    intent: 'clear_chat',
+    description: '清空所有回话记录',
+    aliases: ['cc', '清空'],
+  },
 ] as const
 
 interface SlashMatchResult {

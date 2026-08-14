@@ -1,23 +1,33 @@
 <template>
   <div class="bubble" :class="`bubble-${msg.type}`">
-    <div v-html="processedText"></div>
-    <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
-    <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
-    <div v-if="msg.recordingFile" class="recording-file-card">
-      <video
-        v-if="msg.recordingFile.preview"
-        :src="msg.recordingFile.preview"
-        controls
-        class="recording-video"
-      />
-      <span class="recording-file-name">{{ msg.recordingFile.name }}</span>
-      <a
-        :href="msg.recordingFile.url"
-        :download="msg.recordingFile.name"
-        class="recording-download-btn"
-      >
-        ⬇ 下载
-      </a>
+    <button
+      v-if="msg.type === 'user'"
+      class="delete-btn"
+      title="删除此条消息"
+      @click="emit('delete', index)"
+    >
+      <el-icon :size="14"><Delete /></el-icon>
+    </button>
+    <div class="bubble-content">
+      <div v-html="processedText"></div>
+      <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
+      <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
+      <div v-if="msg.recordingFile" class="recording-file-card">
+        <video
+          v-if="msg.recordingFile.preview"
+          :src="msg.recordingFile.preview"
+          controls
+          class="recording-video"
+        />
+        <span class="recording-file-name">{{ msg.recordingFile.name }}</span>
+        <a
+          :href="msg.recordingFile.url"
+          :download="msg.recordingFile.name"
+          class="recording-download-btn"
+        >
+          ⬇ 下载
+        </a>
+      </div>
     </div>
   </div>
 </template>
@@ -26,10 +36,16 @@
 import { ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { Delete } from '@element-plus/icons-vue'
 import type { MessageLog } from '../types'
 
 const props = defineProps<{
   msg: MessageLog
+  index: number
+}>()
+
+const emit = defineEmits<{
+  delete: [index: number]
 }>()
 
 const processedText = ref('')
@@ -90,6 +106,32 @@ function escapeHtml(text: string): string {
   margin-left: auto;
   color: var(--app-text-primary);
   border-bottom-right-radius: 4px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.bubble-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.delete-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  color: var(--app-text-secondary);
+  transition: color 0.2s;
+  display: flex;
+  align-items: center;
+  opacity: 0.4;
+}
+
+.delete-btn:hover {
+  opacity: 1;
+  color: var(--app-error);
 }
 
 .bubble-ai-chat {

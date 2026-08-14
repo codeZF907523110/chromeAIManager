@@ -746,6 +746,11 @@ export function useAIEngine() {
       return
     }
 
+    if (resolvedIntent === 'clear_chat') {
+      clearMessages()
+      return
+    }
+
     const cmd = getCommand(resolvedIntent)
     if (!cmd) {
       addMessage('error', `未知意图: ${resolvedIntent}`)
@@ -1093,6 +1098,15 @@ export function useAIEngine() {
     messageLog.value = []
     if (isInitialized.value) {
       persistMessages()
+    }
+  }
+
+  function deleteMessage(index: number): void {
+    if (index >= 0 && index < messageLog.value.length) {
+      messageLog.value.splice(index, 1)
+      if (isInitialized.value) {
+        persistMessages()
+      }
     }
   }
 
@@ -1644,6 +1658,7 @@ export function useAIEngine() {
     // 消息
     addMessage,
     clearMessages,
+    deleteMessage,
 
     // 方法
     handleSubmit,

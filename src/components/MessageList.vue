@@ -1,6 +1,12 @@
 <template>
   <div ref="containerRef" class="messages">
-    <MessageBubble v-for="(msg, index) in messages" :key="index" :msg="msg" />
+    <MessageBubble
+      v-for="(msg, index) in messages"
+      :key="index"
+      :msg="msg"
+      :index="index"
+      @delete="emit('delete', $event)"
+    />
   </div>
 </template>
 
@@ -11,6 +17,10 @@ import MessageBubble from './MessageBubble.vue'
 
 const props = defineProps<{
   messages: readonly MessageLog[]
+}>()
+
+const emit = defineEmits<{
+  delete: [index: number]
 }>()
 
 const containerRef = ref<HTMLDivElement>()

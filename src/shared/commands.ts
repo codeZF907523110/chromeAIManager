@@ -1125,6 +1125,14 @@ export const COMMANDS: Command[] = [
 
   // ==================== 内置命令 ====================
   {
+    intent: 'clear_chat',
+    description: '清空所有回话记录',
+    dangerous: false,
+    aiHidden: true,
+    slots: {},
+    swIntent: null,
+  },
+  {
     intent: 'show_help',
     description: '显示所有可用命令',
     dangerous: false,

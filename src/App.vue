@@ -25,7 +25,7 @@
     </header>
 
     <!-- 消息列表 -->
-    <MessageList :messages="state.messageLog" />
+    <MessageList :messages="state.messageLog" @delete="deleteMessage" />
 
     <!-- 确认卡片 -->
     <ConfirmCard
@@ -223,6 +223,7 @@ const {
   pendingConfirm,
   renderExecutionResult,
   persistMessages,
+  deleteMessage,
 } = useAIEngine()
 
 const { themeMode, setThemeMode } = useSettings()

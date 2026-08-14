@@ -1,11 +1,119 @@
 {
   "version": 1,
   "skills": {
+    "browser-automation": {
+      "source": "web-infra-dev/midscene-skills",
+      "sourceType": "github",
+      "skillPath": "skills/browser/SKILL.md",
+      "computedHash": "dc3df6cb3a2aff5dc0f95b509bf1caf7cf680a613425fb300dde4a2ecc19a8e7"
+    },
+    "chrome-extension-dev": {
+      "source": "HartreeWorks/skill--chrome-extension-dev",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "e0dd2d1d7d6502d0b8f68a4a24bbc9568ec77a811c59dc437d67c2097e0a4d53"
+    },
+    "chrome-extension-wxt": {
+      "source": "tenequm/claude-plugins",
+      "sourceType": "github",
+      "skillPath": "skills/chrome-extension-wxt/SKILL.md",
+      "computedHash": "6e59d85959dfaa3b3c8ff672eae0fe64d77a1e11e164e8191209af7e15a4f9b2"
+    },
+    "css-animations": {
+      "source": "pluginagentmarketplace/custom-plugin-css",
+      "sourceType": "github",
+      "skillPath": "skills/css-animations/SKILL.md",
+      "computedHash": "1fd7dbd8e9a2d70723f9c274bc0b570a737fc2bbcc81a831542e4943aeedcc5e"
+    },
+    "css-architecture": {
+      "source": "pluginagentmarketplace/custom-plugin-css",
+      "sourceType": "github",
+      "skillPath": "skills/css-architecture/SKILL.md",
+      "computedHash": "0018c13b9291892e72e652ee22cf6eae42c8ade0f4d9be747b479702655a3444"
+    },
+    "css-first": {
+      "source": "luko248/css-first-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "914277fe71f2d1d03051dcfda29fb48efeb1e958f0fdc7c5d10b9a92ee6f1866"
+    },
+    "css-flexbox-grid": {
+      "source": "pluginagentmarketplace/custom-plugin-css",
+      "sourceType": "github",
+      "skillPath": "skills/css-flexbox-grid/SKILL.md",
+      "computedHash": "170087d5694100d815306e0ec099cfd17090db33b4a0612b608dfddaf3be4f03"
+    },
+    "css-fundamentals": {
+      "source": "pluginagentmarketplace/custom-plugin-css",
+      "sourceType": "github",
+      "skillPath": "skills/css-fundamentals/SKILL.md",
+      "computedHash": "f1639dab314e931c0152951f2de03343588a18b1c49b939e9291093b9172e386"
+    },
+    "css-modern": {
+      "source": "pluginagentmarketplace/custom-plugin-css",
+      "sourceType": "github",
+      "skillPath": "skills/css-modern/SKILL.md",
+      "computedHash": "d068218b2d86b1e913b610dcfa083c2dad42b48d57a8d2667fbf045dc87c766f"
+    },
+    "css-performance": {
+      "source": "pluginagentmarketplace/custom-plugin-css",
+      "sourceType": "github",
+      "skillPath": "skills/css-performance/SKILL.md",
+      "computedHash": "cf4db4caf6fd279f1791716b420cdb282004b49dc8a0eb125e685513b63b44ed"
+    },
+    "css-sass": {
+      "source": "pluginagentmarketplace/custom-plugin-css",
+      "sourceType": "github",
+      "skillPath": "skills/css-sass/SKILL.md",
+      "computedHash": "74c634b916ee49602fac73b8f2e6a9ff4c47674ae3705e98de1e7931dd21db20"
+    },
+    "css-styling-expert": {
+      "source": "cin12211/orca-q",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/css-expert/SKILL.md",
+      "computedHash": "0452fc26b9a005e38c423082aa6f309eb119705f7835ace3f6c821a98d46b3e8"
+    },
+    "css-tailwind": {
+      "source": "pluginagentmarketplace/custom-plugin-css",
+      "sourceType": "github",
+      "skillPath": "skills/css-tailwind/SKILL.md",
+      "computedHash": "4315c920b1e5736e8a2514a78c45911a88248d43fa0b8ba16b352a9362f57292"
+    },
     "element-plus-skills": {
       "source": "jiaiyan/element-plus-skills",
       "sourceType": "github",
       "skillPath": "SKILL.md",
       "computedHash": "a2c5e5426a9a9e47535f0ff6ce8e425d99880f17d23bb0cf48ec8193f7ca8735"
+    },
+    "frontend-ui": {
+      "source": "scientiacapital/skills",
+      "sourceType": "github",
+      "skillPath": "active/frontend-ui-skill/SKILL.md",
+      "computedHash": "59ea0e52b4a9088ec73b1e84b98f7b07508742bc71e56b7e4057921b8a04dd34"
+    },
+    "nuxtjs-vue-typescript": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": "nuxtjs-vue-typescript/SKILL.md",
+      "computedHash": "e032d20773061d7956882da83c014fef22c24466ecbe9e20ee8ff1d244d59d04"
+    },
+    "scan-codebase-health": {
+      "source": "duc01226/easyplatform",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/scan-codebase-health/SKILL.md",
+      "computedHash": "6a8426d4b1d8e9bbb60a5518b52f7fbf1b49d40fafefce768a7deb803f6839a8"
+    },
+    "vite": {
+      "source": "antfu/skills",
+      "sourceType": "github",
+      "skillPath": "skills/vite/SKILL.md",
+      "computedHash": "867ff66238f3152e9c494339ad08dc432dd0df5bcf5cc7a00b61a72b580eb908"
+    },
+    "vitest": {
+      "source": "antfu/skills",
+      "sourceType": "github",
+      "skillPath": "skills/vitest/SKILL.md",
+      "computedHash": "943d436114c677802426741980146c07560bf375297666b03062444f4b98a785"
     }
   }
 }

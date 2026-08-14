@@ -39,3 +39,8 @@ coverage/
 
 # Chrome extension specific
 # (keep src/ and manifest.json, these are source files)
+
+# Agent skills
+.agents/skills/
+.claude/skills/
+.cursor/skills/
