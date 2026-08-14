@@ -1,32 +1,34 @@
 <template>
-  <div class="bubble" :class="`bubble-${msg.type}`">
+  <div class="message-item" :class="{ 'message-item-user': msg.type === 'user' }">
     <button
       v-if="msg.type === 'user'"
       class="delete-btn"
       title="删除此条消息"
-      @click="emit('delete', index)"
+      @click="handleDelete"
     >
       <el-icon :size="14"><Delete /></el-icon>
     </button>
-    <div class="bubble-content">
-      <div v-html="processedText"></div>
-      <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
-      <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
-      <div v-if="msg.recordingFile" class="recording-file-card">
-        <video
-          v-if="msg.recordingFile.preview"
-          :src="msg.recordingFile.preview"
-          controls
-          class="recording-video"
-        />
-        <span class="recording-file-name">{{ msg.recordingFile.name }}</span>
-        <a
-          :href="msg.recordingFile.url"
-          :download="msg.recordingFile.name"
-          class="recording-download-btn"
-        >
-          ⬇ 下载
-        </a>
+    <div class="bubble" :class="`bubble-${msg.type}`">
+      <div class="bubble-content">
+        <div v-html="processedText"></div>
+        <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
+        <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
+        <div v-if="msg.recordingFile" class="recording-file-card">
+          <video
+            v-if="msg.recordingFile.preview"
+            :src="msg.recordingFile.preview"
+            controls
+            class="recording-video"
+          />
+          <span class="recording-file-name">{{ msg.recordingFile.name }}</span>
+          <a
+            :href="msg.recordingFile.url"
+            :download="msg.recordingFile.name"
+            class="recording-download-btn"
+          >
+            ⬇ 下载
+          </a>
+        </div>
       </div>
     </div>
   </div>
@@ -36,6 +38,7 @@
 import { ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { ElMessageBox } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
 import type { MessageLog } from '../types'
 
@@ -47,6 +50,19 @@ const props = defineProps<{
 const emit = defineEmits<{
   delete: [index: number]
 }>()
+
+async function handleDelete() {
+  try {
+    await ElMessageBox.confirm('确定删除这条会话吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    emit('delete', props.index)
+  } catch {
+    // 用户取消
+  }
+}
 
 const processedText = ref('')
 
@@ -79,6 +95,16 @@ function escapeHtml(text: string): string {
 </script>
 
 <style scoped>
+.message-item {
+  display: flex;
+  align-items: center;
+  animation: bubbleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.message-item-user {
+  justify-content: flex-end;
+}
+
 .bubble {
   padding: 12px 16px;
   border-radius: 10px;
@@ -86,7 +112,7 @@ function escapeHtml(text: string): string {
   word-wrap: break-word;
   font-size: 14px;
   line-height: 1.6;
-  animation: bubbleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: none;
 }
 
 @keyframes bubbleIn {
@@ -103,35 +129,37 @@ function escapeHtml(text: string): string {
 .bubble-user {
   background: var(--app-bg-card);
   border: 1px solid var(--app-border);
-  margin-left: auto;
   color: var(--app-text-primary);
   border-bottom-right-radius: 4px;
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.bubble-content {
-  flex: 1;
-  min-width: 0;
 }
 
 .delete-btn {
   flex-shrink: 0;
-  background: none;
-  border: none;
+  background: var(--app-bg-card);
+  border: 1px solid var(--app-border);
+  border-radius: 50%;
   cursor: pointer;
-  padding: 2px;
+  padding: 4px;
   color: var(--app-text-secondary);
-  transition: color 0.2s;
+  transition:
+    color 0.2s,
+    background 0.2s,
+    opacity 0.2s;
   display: flex;
   align-items: center;
-  opacity: 0.4;
+  justify-content: center;
+  opacity: 0;
+  width: 24px;
+  height: 24px;
+}
+
+.message-item:hover .delete-btn {
+  opacity: 1;
 }
 
 .delete-btn:hover {
-  opacity: 1;
   color: var(--app-error);
+  background: rgba(255, 100, 100, 0.1);
 }
 
 .bubble-ai-chat {

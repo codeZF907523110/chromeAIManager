@@ -1103,7 +1103,17 @@ export function useAIEngine() {
 
   function deleteMessage(index: number): void {
     if (index >= 0 && index < messageLog.value.length) {
-      messageLog.value.splice(index, 1)
+      // 删除整条会话：从用户消息开始，删除所有后续消息直到下一个用户消息
+      let deleteCount = 0
+      for (let i = index; i < messageLog.value.length; i++) {
+        const msg = messageLog.value[i]
+        // 如果遇到用户消息，停止删除（不删除后续的用户消息）
+        if (i > index && msg.type === 'user') {
+          break
+        }
+        deleteCount++
+      }
+      messageLog.value.splice(index, deleteCount)
       if (isInitialized.value) {
         persistMessages()
       }
