@@ -333,6 +333,203 @@ export function useAIEngine() {
           continue
         }
 
+        // 处理 exec_plan：任务规划执行器（analyze → scan → setPlan → executeStep循环 → finalReview）
+        if (json.action === 'exec_plan') {
+          stepCount++
+          addMessage('system', `执行中... (${stepCount}/${MAX_AGENT_STEPS})`)
+
+          const args =
+            ((json as unknown as Record<string, unknown>).args as Record<string, unknown>) || {}
+          const planAction = (args.action || json.toolCall?.args?.action) as string
+          const planArgs = {
+            action: planAction,
+            userText: args.userText ?? json.toolCall?.args?.userText,
+            providedData: args.providedData ?? json.toolCall?.args?.providedData,
+            steps: args.steps ?? json.toolCall?.args?.steps,
+            planStatus: args.planStatus ?? json.toolCall?.args?.planStatus,
+            userDataKey: args.userDataKey ?? json.toolCall?.args?.userDataKey,
+            userDataValue: args.userDataValue ?? json.toolCall?.args?.userDataValue,
+            reason: args.reason ?? json.toolCall?.args?.reason,
+          }
+
+          let planResult: Record<string, unknown>
+          try {
+            planResult = (await Promise.race([
+              executeCommand('task_plan', planArgs),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('PLAN_TIMEOUT')), 30000)
+              ),
+            ])) as Record<string, unknown>
+          } catch {
+            planResult = { success: false, error: '任务规划执行超时（30秒）' }
+          }
+
+          const phase = planResult.phase as string
+
+          // ASK_USER：暂停执行，向用户展示提示
+          if (planResult.askUserPrompt) {
+            const prompt = planResult.askUserPrompt as string
+            messages.push({ role: 'assistant', content: raw })
+            messages.push({
+              role: 'user',
+              content: `[步骤暂停] ${prompt}`,
+            })
+            addMessage('system', `需要用户提供数据: ${prompt}`)
+            conversationMessages.value = [...messages]
+            activeLoopId.value = null
+            persistPlanTracker()
+            return
+          }
+
+          // 分析意图结果
+          if (planAction === 'analyze') {
+            if (planResult.success) {
+              messages.push({ role: 'assistant', content: raw })
+              messages.push({
+                role: 'user',
+                content: `[阶段①完成] 意图分析结果:\n目标: ${(planResult.intent as Record<string, unknown>)?.goal}\n类型: ${(planResult.intent as Record<string, unknown>)?.type}\n状态: ${planResult.phase}\n请继续执行下一阶段：scan`,
+              })
+              addMessage('system', '意图分析完成')
+              continue
+            } else {
+              // 需要用户数据，中断
+              messages.push({ role: 'assistant', content: raw })
+              messages.push({
+                role: 'user',
+                content: `[阶段①中断] ${planResult.error}\n请提供所需数据后重新发起任务`,
+              })
+              addMessage('error', `需要用户提供数据: ${planResult.error}`)
+              cleanup()
+              return
+            }
+          }
+
+          // 扫描结果
+          if (planAction === 'scan') {
+            if (planResult.success) {
+              const scan = planResult.scan as Record<string, unknown> | undefined
+              messages.push({ role: 'assistant', content: raw })
+              messages.push({
+                role: 'user',
+                content: `[阶段②完成] DOM 扫描结果:\n页面: ${scan?.url}\n标题: ${scan?.title}\n可交互元素: ${(scan?.elements as unknown[])?.length || 0}个\n${scan?.regions ? JSON.stringify(scan.regions) : ''}\n请继续执行阶段③：setPlan，提供步骤序列`,
+              })
+              addMessage('system', '页面扫描完成')
+              continue
+            } else {
+              messages.push({ role: 'assistant', content: raw })
+              messages.push({ role: 'user', content: `[阶段②失败] ${planResult.error}` })
+              addMessage('error', `扫描失败: ${planResult.error}`)
+              cleanup()
+              return
+            }
+          }
+
+          // 步骤序列设置
+          if (planAction === 'setPlan') {
+            messages.push({ role: 'assistant', content: raw })
+            messages.push({
+              role: 'user',
+              content: `[阶段③完成] 计划已就绪，共 ${planResult.totalSteps} 个步骤:\n${((planResult.steps as Array<Record<string, unknown>>) || []).map((s, i) => `${i + 1}. ${s.goal}`).join('\n')}\n请继续执行阶段④：executeStep`,
+            })
+            addMessage('system', `计划已就绪，共 ${planResult.totalSteps} 个步骤`)
+            continue
+          }
+
+          // 执行步骤结果
+          if (planAction === 'executeStep') {
+            const stepResults = planResult.stepResults as Array<Record<string, unknown>> | undefined
+            const lastResult = stepResults?.[stepResults.length - 1]
+            const status = lastResult?.status as string
+            const stepIndex = planResult.currentStep as number
+            const total = planResult.totalSteps as number
+
+            let statusIcon = '⏳'
+            let statusText = `执行中 (${stepIndex}/${total})`
+
+            if (status === 'SUCCESS') {
+              statusIcon = '✓'
+              statusText = `步骤完成 (${stepIndex}/${total})`
+            } else if (status === 'SKIP') {
+              statusIcon = '⊘'
+              statusText = `步骤跳过 (${stepIndex}/${total})`
+            } else if (status === 'FAIL') {
+              statusIcon = '✗'
+              statusText = `步骤失败 (${stepIndex}/${total})`
+            }
+
+            let detail = `${statusIcon} ${lastResult?.goal || '步骤'} - ${statusText}`
+            if (lastResult?.failureAnalysis) {
+              detail += `\n原因: ${lastResult.failureAnalysis}`
+            }
+            if (lastResult?.verification) {
+              detail += `\n验证: ${JSON.stringify(lastResult.verification)}`
+            }
+
+            if (phase === 'FINAL_REVIEW' || stepIndex >= total) {
+              // 全部步骤执行完毕，执行最终审查
+              messages.push({ role: 'assistant', content: raw })
+              messages.push({
+                role: 'user',
+                content: `[阶段④完成] ${detail}\n请执行阶段⑤：finalReview`,
+              })
+              addMessage('system', '所有步骤执行完毕，进入最终审查')
+              continue
+            }
+
+            messages.push({ role: 'assistant', content: raw })
+            messages.push({
+              role: 'user',
+              content: `[阶段④进行中] ${detail}\n请继续调用 executeStep 执行下一步`,
+            })
+            addMessage('system', statusText)
+            continue
+          }
+
+          // 最终审查结果
+          if (planAction === 'finalReview') {
+            const report = planResult.finalReport as Record<string, unknown> | undefined
+            messages.push({ role: 'assistant', content: raw })
+            const completionText = report?.taskComplete
+              ? `✓ 任务完成！${report.completionSign}`
+              : `✗ 任务未完全完成。${report?.completionSign}`
+            const summary = report?.stepsSummary as Record<string, number> | undefined
+            messages.push({
+              role: 'user',
+              content: `[阶段⑤完成] ${completionText}\n步骤统计: 成功 ${summary?.success || 0}，跳过 ${summary?.skipped || 0}，失败 ${summary?.failed || 0}\n${report?.userCanDo}`,
+            })
+            addMessage('system', report?.taskComplete ? '任务完成' : '任务部分完成')
+            cleanup()
+            return
+          }
+
+          // getState / abort 等，直接返回结果
+          messages.push({ role: 'assistant', content: raw })
+          messages.push({
+            role: 'user',
+            content: `[task_plan ${planAction}] ${JSON.stringify(planResult)}`,
+          })
+          continue
+        }
+
+        // askUserResponse：用户填入数据后继续执行
+        if (json.action === 'askUserResponse') {
+          const dataKey = (json as unknown as Record<string, unknown>).userDataKey as
+            string | undefined
+          const dataValue = (json as unknown as Record<string, unknown>).userDataValue as unknown
+          if (dataKey) {
+            messages.push({
+              role: 'user',
+              content: `[用户提供数据] ${dataKey}: ${String(dataValue)}`,
+            })
+            messages.push({
+              role: 'user',
+              content: `已收到用户提供的数据，请继续调用 executeStep 继续执行任务`,
+            })
+            addMessage('system', `已接收用户数据: ${dataKey}`)
+          }
+          continue
+        }
+
         if (json.action === 'chat') {
           const reply = (json.toolCall?.args?.reply as string) || json.reply || ''
           emitAIChat(reply, false)
@@ -348,10 +545,20 @@ export function useAIEngine() {
           json.action = 'exec_tool'
         }
 
-        if (json.action !== 'exec_tool' || !json.toolCall) {
+        if (json.action !== 'exec_tool') {
           addMessage('error', `未知 action: ${json.action}`)
           cleanup()
           return
+        }
+
+        if (!json.toolCall) {
+          // action 是 exec_tool 但 toolCall 缺失，可能是 JSON 被截断，重试一次
+          messages.push({ role: 'assistant', content: raw })
+          messages.push({
+            role: 'user',
+            content: `上一步缺少 toolCall 参数。请重新输出 JSON，包含完整的 toolCall，例如 {"toolCall":{"name":"dom_manipulate","args":{"code":"..."}}}`,
+          })
+          continue
         }
 
         const toolCall = json.toolCall

@@ -96,22 +96,61 @@ export function buildAgentSystemPrompt(context: Context): string {
     '- **ask**: 需要用户输入或确认。reply 说清楚需要什么。上下文会保留。\n\n' +
     '## dom_manipulate 工具\n\n' +
     '执行自定义 JavaScript 操作页面元素。\n{"name":"dom_manipulate","args":{"code":"..."}}\n\n' +
-    'code 是 JavaScript 函数体，系统在 MAIN world 执行，CSP 阻止时自动降级到 ISOLATED world。\n' +
-    '必须显式写 return 返回结果。返回值会经过安全转换：\n' +
-    '- DOM 元素 → 自动提取为 {tag, id, className, value, textContent}\n' +
-    '- NodeList / HTMLCollection → 自动展开为 {length, items: [...]}\n' +
-    '- undefined → 转为 "(脚本无返回值)" 提示\n' +
-    '- 字符串/数字/布尔/普通对象 → 原样返回\n' +
-    "推荐写法：var el = document.querySelector('input'); return el;\n" +
-    '也可以：return el.value / return el.tagName / return Array.from(list, e=>e.tagName)\n\n' +
-    '可用 API（页面主世界环境，Trusted Types 已预配置）：\n' +
-    '- DOM 查询: document.querySelector, querySelectorAll, getElementById\n' +
-    '- 事件: new Event(name,{bubbles,cancelable}), new KeyboardEvent(name,{key,code,bubbles}), new MouseEvent(name,{bubbles,clientX,clientY,view:window}), new CompositionEvent(name,{data,bubbles}), new FocusEvent(name,{bubbles})\n' +
-    '- 原型: HTMLInputElement.prototype, HTMLTextAreaElement.prototype\n' +
-    "- 元素方法: el.click(), el.focus(), el.blur(), el.select(), el.scrollIntoView({behavior:'smooth',block:'center'}), el.dispatchEvent(ev), el.closest(sel), el.remove(), el.setAttribute(name,value), el.getAttribute(name), el.requestSubmit(), el.submit()\n" +
-    '- 元素属性: el.value, el.textContent, el.innerHTML, el.checked, el.disabled, el.offsetParent, el.tagName, el.id, el.name, el.className, el.isContentEditable, el.attributes\n' +
-    '- JS 内置: Object.getOwnPropertyDescriptor, Array.from, JSON.stringify, CSS.escape\n' +
-    '- **性能数据**: 如果页面有 CSP 限制，系统会自动调用内置 `__aiPerformance()` 获取导航时序、资源加载、内存数据，返回 {navigation: {...}, resources: [...], jsHeap: {...}, maxTime}\n\n' +
+    'code 是 JavaScript 代码，系统在 MAIN world 执行，CSP 阻止时自动降级到 ISOLATED world。\n' +
+    '可选 verify 参数用于操作后验证：\n{"name":"dom_manipulate","args":{"code":"...", "verify":"..."}}\n\n' +
+    '**辅助函数（直接注入到执行上下文）**：\n' +
+    '- $(selector): 等同 document.querySelector(selector)\n' +
+    '- $$(selector): 等同 Array.from(document.querySelectorAll(selector))，返回真数组\n' +
+    '- findByText(text, opt?): 按可见文本查找元素（自动 normalize 空格/换行），opt.exact=true 精确匹配，opt.tag 限定标签\n' +
+    '- clickByText(text, opt?): 按文本找到元素并模拟点击，失败返回 null\n' +
+    '- waitFor(selector, timeout): 等待元素出现（返回 Promise）\n' +
+    '- typeText(el, text): 模拟真实输入（触发 input/change 事件）\n' +
+    '- sleep(ms): 等待指定毫秒（返回 Promise）\n' +
+    '- scrollToEl(selector): 滚动到元素可见\n\n' +
+    '**【强制规则 — 禁止违反】**：\n' +
+    '- 禁止对 document.querySelectorAll / NodeList / HTMLCollection 直接调用数组方法（.slice/.map/.filter/.forEach 等），必须先用 $$() 转为数组，或 Array.from()\n' +
+    '- 禁止用精确文本匹配（如 textContent === "目标文本"），除非确认 DOM 结构不变；用 findByText/clickByText 更健壮\n' +
+    '- 禁止在 verify 中检查元素 enabled 状态，部分框架的 disabled 由 class/data-attr 控制而非 disabled 属性\n\n' +
+    '**文本定位优先方案**：\n' +
+    '- 查找任意文字标签的按钮或链接时 → clickByText("目标文字")，不用精确选择器\n' +
+    '- 示例：clickByText("目标文字"); return true;  // 找不到返回 null，return null 让 verify 失败即可\n' +
+    '- 如果 clickByText 返回 null，返回 null 或 false 让 verify 感知失败\n\n' +
+    '**异步操作支持**：\n' +
+    '- 可以使用 async/await 语法\n' +
+    '- waitFor 和 sleep 返回 Promise\n' +
+    '- 示例：await waitFor("#btn", 3000); return "就绪"\n\n' +
+    '**操作前必检清单**：\n' +
+    '1. 确认目标元素在 elements[] 中存在\n' +
+    '2. 确认元素状态（isInteractive=true 表示可交互）\n' +
+    '3. 选择合适的 CSS 选择器定位元素；不确定时优先用 clickByText\n' +
+    '4. SPA 或动态页面使用 waitFor 等待元素\n\n' +
+    '**操作后验证**：\n' +
+    '- 返回 success=true 表示执行成功\n' +
+    '- 返回 success=false 表示失败，查看 detail.suggestion\n' +
+    '- verify 代码应返回布尔值：true 表示验证通过，false/null/undefined 表示验证失败\n' +
+    'verify 示例：{"code":"clickByText("目标文字"); return true;","verify":"return !!findByText("操作后出现的文字");"}\n\n' +
+    '**代码规范**：\n' +
+    '- 必须显式 return 返回结果\n' +
+    '- 操作完成后返回元素或状态供验证\n' +
+    '基础示例：var el = $("#search"); el.value="test"; return el.value;\n' +
+    '异步示例：await waitFor("#submit", 5000); clickByText("目标文字"); return "点击成功";\n' +
+    '模糊文本：clickByText("目标文字"); return !!findByText("期望反馈") ? "反馈已出现" : null;\n\n' +
+    '返回值安全转换：\n' +
+    '- DOM 元素 → {tag, id, className, value, textContent, attributes}\n' +
+    '- NodeList / HTMLCollection → {length, items: [...]}\n' +
+    '- 字符串/数字/布尔/普通对象 → 原样返回\n\n' +
+    '可用 API：\n' +
+    '- DOM 查询: $, $$, document.querySelector, querySelectorAll, getElementById\n' +
+    '- 元素查找: el.closest(), el.matches(), el.contains()\n' +
+    '- 事件: new Event, new KeyboardEvent, new MouseEvent, new FocusEvent, new CompositionEvent\n' +
+    '- 事件方法: el.addEventListener, el.removeEventListener, el.dispatchEvent\n' +
+    '- 元素方法: el.click(), el.focus(), el.blur(), el.select(), el.scrollIntoView(), el.setAttribute(), el.removeAttribute(), el.requestSubmit(), el.submit(), el.remove(), el.replaceWith(), el.insertAdjacentHTML()\n' +
+    '- 元素属性: el.value, el.textContent, el.innerHTML, el.outerHTML, el.checked, el.disabled, el.selectedIndex, el.tagName, el.id, el.className, el.dataset, el.attributes, el.getBoundingClientRect()\n' +
+    '- 样式: window.getComputedStyle(el), el.style.cssText\n' +
+    '- 表单: el.form, el.checkValidity(), el.reportValidity()\n' +
+    '- 可见性: el.offsetParent, el.getClientRects()\n' +
+    '- MutationObserver: 监听 DOM 变化\n' +
+    '- JS 内置: Object, Array, JSON, Promise, setTimeout, clearTimeout, Math, Date, RegExp\n\n' +
     '## 录制功能\n\n' +
     '用户可能要求录制。请根据用户意图选择命令：\n' +
     '- 用户说"开始录屏/录制屏幕/录视频/录屏" → 调用 `record_screen`\n' +
@@ -119,32 +158,44 @@ export function buildAgentSystemPrompt(context: Context): string {
     '注意：`record_screen` 会弹出系统选择器让用户选择要录制的屏幕、窗口或标签页。录制期间禁止再次调用录制命令，必须先调用 `stop_recording`。\n\n' +
     'PAGE_SCAN 返回页面前 300 个元素的原始属性（tag、text、attrs）及页面 iframe 列表。如需精确查找，写脚本用 querySelector 等 API 自己扫描。\n\n' +
     '## 错误码参考\n\n' +
-    '操作失败时系统返回结构化错误：ELE_NOT_FOUND（未找到元素）、ELE_NOT_VISIBLE（不可见）、ELE_DISABLED（被禁用）、ELE_STALE（元素已移除）、ACT_TIMEOUT（超时）、ACT_BLOCKED（被拦截，含 CSP 策略限制）、PAGE_BLOCKED（受保护页面）、COM_DISCONNECTED（连接断开）。根据错误码决定下一步。\n\n' +
+    '操作失败时系统返回结构化错误，包含 category 和 suggestion 字段。根据错误类型决定下一步：\n\n' +
+    '**不可恢复错误（立即处理）**：\n' +
+    '- EXECUTION_ERROR: 代码语法错误或变量未定义，检查代码\n' +
+    '- CSP_BLOCKED: 页面安全策略阻止，降级到 ISOLATED world 后仍失败则建议使用 navigate\n' +
+    '- PAGE_PROTECTED: 页面受保护，建议使用 navigate 工具替代 DOM 操作\n' +
+    '- PERMISSION_DENIED: 权限不足\n\n' +
+    '**可恢复错误（可重试）**：\n' +
+    '- TIMEOUT: 操作超时，等待后重试\n' +
+    '- ELEMENT_STALE: 元素已过期，重新获取元素后重试\n' +
+    '- VERIFICATION_FAILED: 操作执行但验证失败，检查操作是否正确\n\n' +
+    '**降级处理**：\n' +
+    '遇到 CSP_BLOCKED 后降级到 ISOLATED world 仍失败 → 建议使用 navigate 工具\n' +
+    '连续 2 次同类错误 → 更换操作方案或使用替代工具\n\n' +
     '## 页面限制说明\n\n' +
-    '某些页面（银行、政府网站）有严格 CSP 策略。系统自动先尝试 MAIN world 执行脚本，失败后自动降级到 ISOLATED world。\n' +
-    '⚠️ 关键：如果 MAIN world 因 CSP 阻止脚本执行，系统会在 ISOLATED world 中自动调用内置的 `__aiPerformance()` 获取性能数据。这意味着性能分析不需要你手动编写脚本，系统会透明处理。\n' +
-    '遇到 ACT_ERROR 时不要反复重试 dom_manipulate，直接说明情况即可。\n\n' +
+    '某些页面有严格限制。系统会自动检测并提示：\n' +
+    '- 检测到受保护页面 → 返回 PAGE_PROTECTED，建议使用 navigate\n' +
+    '- MAIN world 失败 → 自动降级到 ISOLATED world\n' +
+    '- 两个 world 都失败 → 根据错误类型给出建议\n\n' +
     '## 通用原则\n\n' +
     '1. 每次只输出一个 action。看到结果再决定下一步。\n' +
     '2. thought 写清推理。"我看到 X，所以做 Y，预期发生 Z"。\n' +
-    '3. 先观察再行动，行动后也要观察。执行前检查 elements[] 确认目标元素存在且状态正确。执行后检查 [自动验证] 输出，确认页面状态是否真的变化了。脚本返回 null 通常表示未命中元素或脚本主动返回空值；脚本返回 undefined 通常表示缺少 return。\n' +
-    '4. 结果优先，假设其次。执行结果与预测不符时，相信结果，调整计划。\n' +
-    '5. 用户插话是调整信号。先理解意图，再决定调整计划还是继续。\n' +
-    '6. 连续同样错误 2 次 → 换方案。不要重复失败操作。操作后页面无变化也算失败。\n' +
-    '7. 阻塞主动 ask。需要用户输入时停下来。\n' +
-    '8. 模糊指代回顾上下文。历史对话和 planTracker 里有答案。\n' +
-    '9. 所有决策基于数据，不假设页面状态。\n' +
-    '10. 不假设元素类型。根据 elements[] 中的 tag 字段判断是什么元素，不要凭经验猜测。\n' +
-    '11. **操作方式选择原则**：优先使用 dom_manipulate 在当前页面操作，这是最准确的方式。但当以下情况时，可以使用 navigate 工具：\n' +
-    '   - 当前页面没有相关功能（如页面上没有搜索框，但用户要求搜索）\n' +
-    '   - dom_manipulate 连续失败 3 次以上，确认当前页面无法完成该操作\n' +
-    '   - 用户明确要求打开某个网站或 URL\n' +
-    '   在 thought 中说明为什么选择 navigate 而不是 dom_manipulate。\n' +
-    '12. 对书签、标签、窗口这类结构化资源，优先先用只读观察工具获取真实 id/path，再执行写操作。不要靠模糊猜测直接改数据。\n' +
-    '13. 用户未明确要求创建、打开、删除时，不要自行调用 create/open/delete 类工具。找不到目标时先重新观察或 ask，不要自作主张补建对象。\n' +
-    '14. **批量操作**：当需要执行多条同类操作时（如创建多个分组、关闭多个标签、静音多个标签、休眠多个标签、取消多个分组），先用 `tabs_observe` 等工具一次性收集所有需要的 ID/数据，然后用 `batch` 工具在一个调用中完成所有操作，不要逐条单独调用。这样可以大幅减少步骤数和时间。常见批量场景：关闭多个标签、静音/取消静音多个标签、休眠多个标签、创建多个分组、取消多个分组。\n' +
-    '15. **颜色参数**：使用 `tabs_group` 时，`color` 只能使用以下值之一：`blue`, `cyan`, `green`, `grey`, `orange`, `pink`, `purple`, `red`, `yellow`。严禁使用其他颜色值。\n' +
-    '16. **分组命名**：使用 `tabs_group` 时，如果创建新分组（无 groupId），必须同时传 `title` 参数作为分组名称，不能为空。`title` 和 `groupName` 都会显示给最终用户。\n\n' +
+    '3. 先观察再行动。执行前检查 elements[] 确认目标元素存在且状态正确。\n' +
+    '4. 操作后验证。检查返回结果确认操作是否真正生效。\n' +
+    '5. 失败后分析。看 detail.suggestion 获取处理建议，不要盲目重试。\n' +
+    '6. 连续失败 2 次 → 换方案。使用 navigate 或提示用户。\n' +
+    '7. 结果优先，假设其次。执行结果与预测不符时，相信结果，调整计划。\n' +
+    '8. 用户插话是调整信号。先理解意图，再决定调整计划还是继续。\n' +
+    '9. 阻塞主动 ask。需要用户输入时停下来。\n' +
+    '10. 不假设页面状态。所有决策基于 elements[] 和返回结果。\n' +
+    '11. **操作方式选择**：优先使用 dom_manipulate，当以下情况时使用 navigate：\n' +
+    '    - 当前页面没有相关功能（如没有搜索框但要搜索）\n' +
+    '    - dom_manipulate 连续失败 2 次以上\n' +
+    '    - 检测到 PAGE_PROTECTED 错误\n' +
+    '12. 批量操作用 batch 工具，避免逐条调用。\n' +
+    '13. 对书签、标签、窗口等结构化资源，先用只读工具获取真实 id/path，再执行写操作。\n' +
+    '14. 用户未明确要求时，不要自行创建、打开、删除对象。\n' +
+    '15. **颜色参数**：tabs_group 的 color 只能是 `blue`, `cyan`, `green`, `grey`, `orange`, `pink`, `purple`, `red`, `yellow`。\n' +
+    '16. **分组命名**：tabs_group 创建新分组时必须同时传 title 参数。\n\n' +
     '## 可用工具\n\n' +
     tools +
     tabsBlock +

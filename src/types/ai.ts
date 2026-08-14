@@ -26,12 +26,37 @@ export interface ToolCall {
 
 export interface AIResponse {
   thought?: string
-  action: 'exec_tool' | 'execute' | 'done' | 'ask' | 'scan' | 'chat'
+  action:
+    'exec_tool' | 'execute' | 'done' | 'ask' | 'scan' | 'chat' | 'exec_plan' | 'askUserResponse'
   plan?: string
   predict?: string
   toolCall?: ToolCall
   reply?: string
   content?: string
+  // exec_plan 相关字段
+  intent?: {
+    goal: string
+    type: string
+    requiredData: string[]
+    dataStatus: Record<string, string>
+    precondition: string
+    status: string
+    missingDataKeys?: string[]
+  }
+  steps?: Array<{
+    id: number
+    goal: string
+    action: { name: string; args: Record<string, unknown> }
+    type: 'EXECUTE' | 'ASK_USER'
+    expectState: string
+    fallback?: { description: string; code: string; verify: string }
+    userDataKey?: string
+    userDataPrompt?: string
+  }>
+  planStatus?: 'READY' | 'PARTIAL'
+  // askUserResponse 相关字段
+  userDataKey?: string
+  userDataValue?: unknown
 }
 
 // ──── AI 提供商类型 ────

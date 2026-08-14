@@ -599,12 +599,17 @@ export const COMMANDS: Command[] = [
   {
     intent: 'dom_manipulate',
     description:
-      '在当前页面执行自定义 JavaScript 代码。code 是函数体，系统自动包一层 function 执行。必须显式 return 返回值。读取页面信息是安全的，但修改 DOM（如 remove、innerHTML 赋值）需要谨慎',
+      '在当前页面执行自定义 JavaScript 代码。code 是 JavaScript 代码，系统自动执行。必须显式 return 返回值。读取页面信息是安全的，但修改 DOM（如 remove、innerHTML 赋值）需要谨慎。verify 参数可选，用于验证操作是否成功',
     dangerous: false,
     slots: {
       code: {
         type: 'string',
         description: 'JavaScript 代码，return 的值作为结果返回',
+      },
+      verify: {
+        type: 'string',
+        optional: true,
+        description: '验证代码，操作成功后执行，返回验证结果',
       },
     },
     swIntent: 'dom_manipulate',
@@ -1065,6 +1070,57 @@ export const COMMANDS: Command[] = [
       query: { type: 'string', description: '书签关键词' },
     },
     swIntent: 'bookmarks_remove_node',
+  },
+
+  // ==================== TASK_PLAN (1) ====================
+  {
+    intent: 'task_plan',
+    description:
+      '任务规划执行器。五阶段流程：①分析意图（识别任务类型和必需数据）→ ②扫描DOM（获取页面结构）→ ③规划流程（AI 拆解步骤）→ ④执行+审查（每步验证，失败重试）→ ⑤最终审查（确认任务完成）。action 指定当前阶段操作',
+    dangerous: false,
+    slots: {
+      action: {
+        type: 'string',
+        description:
+          '阶段操作：analyze（分析意图）| scan（扫描DOM）| setPlan（设置步骤序列）| executeStep（执行下一步）| provideData（填入用户数据）| finalReview（最终审查）| abort（中断任务）| getState（查询状态）',
+      },
+      userText: {
+        type: 'string',
+        optional: true,
+        description: '用户目标描述，用于 analyze 阶段',
+      },
+      providedData: {
+        type: 'object',
+        optional: true,
+        description: '用户已提供的数据键值对，用于 analyze 阶段',
+      },
+      steps: {
+        type: 'array',
+        optional: true,
+        description: '操作步骤序列，用于 setPlan 阶段',
+      },
+      planStatus: {
+        type: 'string',
+        optional: true,
+        description: 'READY | PARTIAL',
+      },
+      userDataKey: {
+        type: 'string',
+        optional: true,
+        description: '用户数据键名，用于 provideData 阶段',
+      },
+      userDataValue: {
+        type: 'string',
+        optional: true,
+        description: '用户数据值，用于 provideData 阶段',
+      },
+      reason: {
+        type: 'string',
+        optional: true,
+        description: '中断原因，用于 abort 阶段',
+      },
+    },
+    swIntent: 'task_plan',
   },
 
   // ==================== 内置命令 ====================
