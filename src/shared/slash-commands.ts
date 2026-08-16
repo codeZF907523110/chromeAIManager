@@ -327,14 +327,6 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     aliases: ['sr', '停录'],
   },
   {
-    slash: 'dom',
-    intent: 'dom_manipulate',
-    description: 'DOM 操作（增删改查当前页面元素）',
-    aliases: ['页面操作'],
-    hasArg: true,
-    placeholder: 'query/modify/remove/add/style 选择器 [值]',
-  },
-  {
     slash: 'help',
     intent: 'show_help',
     description: '显示所有可用命令',
@@ -411,7 +403,6 @@ function buildSlots(
     case 'enable_extension':
     case 'disable_extension':
     case 'uninstall_extension':
-    case 'dom_manipulate':
       ;(slots as Record<string, string>).query = args
       break
     case 'close_tabs_by_domain':

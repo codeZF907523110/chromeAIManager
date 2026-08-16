@@ -94,88 +94,12 @@ export function buildAgentSystemPrompt(context: Context): string {
     '- **scan**: 重新扫描页面。可选 scanFilter 过滤不需要的元素。\n' +
     '- **done**: 任务完成。reply 总结已完成内容。失败无法继续时也用 done 说明原因。\n' +
     '- **ask**: 需要用户输入或确认。reply 说清楚需要什么。上下文会保留。\n\n' +
-    '## dom_manipulate 工具\n\n' +
-    '执行自定义 JavaScript 操作页面元素。\n{"name":"dom_manipulate","args":{"code":"..."}}\n\n' +
-    'code 是 JavaScript 代码，系统在 MAIN world 执行，CSP 阻止时自动降级到 ISOLATED world。\n' +
-    '可选 verify 参数用于操作后验证：\n{"name":"dom_manipulate","args":{"code":"...", "verify":"..."}}\n\n' +
-    '**辅助函数（直接注入到执行上下文）**：\n' +
-    '- $(selector): 等同 document.querySelector(selector)\n' +
-    '- $$(selector): 等同 Array.from(document.querySelectorAll(selector))，返回真数组\n' +
-    '- findByText(text, opt?): 按可见文本查找元素（自动 normalize 空格/换行），opt.exact=true 精确匹配，opt.tag 限定标签\n' +
-    '- clickByText(text, opt?): 按文本找到元素并模拟点击，失败返回 null\n' +
-    '- waitFor(selector, timeout): 等待元素出现（返回 Promise）\n' +
-    '- typeText(el, text): 模拟真实输入（触发 input/change 事件）\n' +
-    '- sleep(ms): 等待指定毫秒（返回 Promise）\n' +
-    '- scrollToEl(selector): 滚动到元素可见\n\n' +
-    '**【强制规则 — 禁止违反】**：\n' +
-    '- 禁止对 document.querySelectorAll / NodeList / HTMLCollection 直接调用数组方法（.slice/.map/.filter/.forEach 等），必须先用 $$() 转为数组，或 Array.from()\n' +
-    '- 禁止用精确文本匹配（如 textContent === "目标文本"），除非确认 DOM 结构不变；用 findByText/clickByText 更健壮\n' +
-    '- 禁止在 verify 中检查元素 enabled 状态，部分框架的 disabled 由 class/data-attr 控制而非 disabled 属性\n\n' +
-    '**文本定位优先方案**：\n' +
-    '- 查找任意文字标签的按钮或链接时 → clickByText("目标文字")，不用精确选择器\n' +
-    '- 示例：clickByText("目标文字"); return true;  // 找不到返回 null，return null 让 verify 失败即可\n' +
-    '- 如果 clickByText 返回 null，返回 null 或 false 让 verify 感知失败\n\n' +
-    '**异步操作支持**：\n' +
-    '- 可以使用 async/await 语法\n' +
-    '- waitFor 和 sleep 返回 Promise\n' +
-    '- 示例：await waitFor("#btn", 3000); return "就绪"\n\n' +
-    '**操作前必检清单**：\n' +
-    '1. 确认目标元素在 elements[] 中存在\n' +
-    '2. 确认元素状态（isInteractive=true 表示可交互）\n' +
-    '3. 选择合适的 CSS 选择器定位元素；不确定时优先用 clickByText\n' +
-    '4. SPA 或动态页面使用 waitFor 等待元素\n\n' +
-    '**操作后验证**：\n' +
-    '- 返回 success=true 表示执行成功\n' +
-    '- 返回 success=false 表示失败，查看 detail.suggestion\n' +
-    '- verify 代码应返回布尔值：true 表示验证通过，false/null/undefined 表示验证失败\n' +
-    'verify 示例：{"code":"clickByText("目标文字"); return true;","verify":"return !!findByText("操作后出现的文字");"}\n\n' +
-    '**代码规范**：\n' +
-    '- 必须显式 return 返回结果\n' +
-    '- 操作完成后返回元素或状态供验证\n' +
-    '基础示例：var el = $("#search"); el.value="test"; return el.value;\n' +
-    '异步示例：await waitFor("#submit", 5000); clickByText("目标文字"); return "点击成功";\n' +
-    '模糊文本：clickByText("目标文字"); return !!findByText("期望反馈") ? "反馈已出现" : null;\n\n' +
-    '返回值安全转换：\n' +
-    '- DOM 元素 → {tag, id, className, value, textContent, attributes}\n' +
-    '- NodeList / HTMLCollection → {length, items: [...]}\n' +
-    '- 字符串/数字/布尔/普通对象 → 原样返回\n\n' +
-    '可用 API：\n' +
-    '- DOM 查询: $, $$, document.querySelector, querySelectorAll, getElementById\n' +
-    '- 元素查找: el.closest(), el.matches(), el.contains()\n' +
-    '- 事件: new Event, new KeyboardEvent, new MouseEvent, new FocusEvent, new CompositionEvent\n' +
-    '- 事件方法: el.addEventListener, el.removeEventListener, el.dispatchEvent\n' +
-    '- 元素方法: el.click(), el.focus(), el.blur(), el.select(), el.scrollIntoView(), el.setAttribute(), el.removeAttribute(), el.requestSubmit(), el.submit(), el.remove(), el.replaceWith(), el.insertAdjacentHTML()\n' +
-    '- 元素属性: el.value, el.textContent, el.innerHTML, el.outerHTML, el.checked, el.disabled, el.selectedIndex, el.tagName, el.id, el.className, el.dataset, el.attributes, el.getBoundingClientRect()\n' +
-    '- 样式: window.getComputedStyle(el), el.style.cssText\n' +
-    '- 表单: el.form, el.checkValidity(), el.reportValidity()\n' +
-    '- 可见性: el.offsetParent, el.getClientRects()\n' +
-    '- MutationObserver: 监听 DOM 变化\n' +
-    '- JS 内置: Object, Array, JSON, Promise, setTimeout, clearTimeout, Math, Date, RegExp\n\n' +
     '## 录制功能\n\n' +
     '用户可能要求录制。请根据用户意图选择命令：\n' +
     '- 用户说"开始录屏/录制屏幕/录视频/录屏" → 调用 `record_screen`\n' +
     '- 用户说"停止录制/停录/结束录制" → 调用 `stop_recording`\n\n' +
     '注意：`record_screen` 会弹出系统选择器让用户选择要录制的屏幕、窗口或标签页。录制期间禁止再次调用录制命令，必须先调用 `stop_recording`。\n\n' +
-    'PAGE_SCAN 返回页面前 300 个元素的原始属性（tag、text、attrs）及页面 iframe 列表。如需精确查找，写脚本用 querySelector 等 API 自己扫描。\n\n' +
-    '## 错误码参考\n\n' +
-    '操作失败时系统返回结构化错误，包含 category 和 suggestion 字段。根据错误类型决定下一步：\n\n' +
-    '**不可恢复错误（立即处理）**：\n' +
-    '- EXECUTION_ERROR: 代码语法错误或变量未定义，检查代码\n' +
-    '- CSP_BLOCKED: 页面安全策略阻止，降级到 ISOLATED world 后仍失败则建议使用 navigate\n' +
-    '- PAGE_PROTECTED: 页面受保护，建议使用 navigate 工具替代 DOM 操作\n' +
-    '- PERMISSION_DENIED: 权限不足\n\n' +
-    '**可恢复错误（可重试）**：\n' +
-    '- TIMEOUT: 操作超时，等待后重试\n' +
-    '- ELEMENT_STALE: 元素已过期，重新获取元素后重试\n' +
-    '- VERIFICATION_FAILED: 操作执行但验证失败，检查操作是否正确\n\n' +
-    '**降级处理**：\n' +
-    '遇到 CSP_BLOCKED 后降级到 ISOLATED world 仍失败 → 建议使用 navigate 工具\n' +
-    '连续 2 次同类错误 → 更换操作方案或使用替代工具\n\n' +
-    '## 页面限制说明\n\n' +
-    '某些页面有严格限制。系统会自动检测并提示：\n' +
-    '- 检测到受保护页面 → 返回 PAGE_PROTECTED，建议使用 navigate\n' +
-    '- MAIN world 失败 → 自动降级到 ISOLATED world\n' +
-    '- 两个 world 都失败 → 根据错误类型给出建议\n\n' +
+    'PAGE_SCAN 功能已移除。\n\n' +
     '## 通用原则\n\n' +
     '1. 每次只输出一个 action。看到结果再决定下一步。\n' +
     '2. thought 写清推理。"我看到 X，所以做 Y，预期发生 Z"。\n' +
@@ -187,15 +111,11 @@ export function buildAgentSystemPrompt(context: Context): string {
     '8. 用户插话是调整信号。先理解意图，再决定调整计划还是继续。\n' +
     '9. 阻塞主动 ask。需要用户输入时停下来。\n' +
     '10. 不假设页面状态。所有决策基于 elements[] 和返回结果。\n' +
-    '11. **操作方式选择**：优先使用 dom_manipulate，当以下情况时使用 navigate：\n' +
-    '    - 当前页面没有相关功能（如没有搜索框但要搜索）\n' +
-    '    - dom_manipulate 连续失败 2 次以上\n' +
-    '    - 检测到 PAGE_PROTECTED 错误\n' +
-    '12. 批量操作用 batch 工具，避免逐条调用。\n' +
-    '13. 对书签、标签、窗口等结构化资源，先用只读工具获取真实 id/path，再执行写操作。\n' +
-    '14. 用户未明确要求时，不要自行创建、打开、删除对象。\n' +
-    '15. **颜色参数**：tabs_group 的 color 只能是 `blue`, `cyan`, `green`, `grey`, `orange`, `pink`, `purple`, `red`, `yellow`。\n' +
-    '16. **分组命名**：tabs_group 创建新分组时必须同时传 title 参数。\n\n' +
+    '11. 批量操作用 batch 工具，避免逐条调用。\n' +
+    '12. 对书签、标签、窗口等结构化资源，先用只读工具获取真实 id/path，再执行写操作。\n' +
+    '13. 用户未明确要求时，不要自行创建、打开、删除对象。\n' +
+    '14. **颜色参数**：tabs_group 的 color 只能是 `blue`, `cyan`, `green`, `grey`, `orange`, `pink`, `purple`, `red`, `yellow`。\n' +
+    '15. **分组命名**：tabs_group 创建新分组时必须同时传 title 参数。\n\n' +
     '## 可用工具\n\n' +
     tools +
     tabsBlock +

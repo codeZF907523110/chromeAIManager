@@ -78,14 +78,6 @@ function chromeExtensionPlugin() {
       const swUnpacked = resolve(distDir, 'service-worker/index.js')
       if (existsSync(swUnpacked)) rmSync(swUnpacked, { force: true })
 
-      // 复制 dom-commander.js（AI agent 页面交互用）
-      const domCommander = resolve(__dirname, 'src/content/dom-commander.js')
-      const domCommanderDst = resolve(distDir, 'content')
-      if (existsSync(domCommander)) {
-        mkdirSync(domCommanderDst, { recursive: true })
-        copyFileSync(domCommander, resolve(domCommanderDst, 'dom-commander.js'))
-      }
-
       // 复制 offscreen 文档
       const offscreenDir = resolve(__dirname, 'src/offscreen')
       const offscreenDst = resolve(distDir, 'offscreen')

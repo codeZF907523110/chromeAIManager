@@ -556,7 +556,7 @@ export function useAIEngine() {
           messages.push({ role: 'assistant', content: raw })
           messages.push({
             role: 'user',
-            content: `上一步缺少 toolCall 参数。请重新输出 JSON，包含完整的 toolCall，例如 {"toolCall":{"name":"dom_manipulate","args":{"code":"..."}}}`,
+            content: `上一步缺少 toolCall 参数。请重新输出 JSON，包含完整的 toolCall，例如 {"toolCall":{"name":"tabs_create","args":{"url":"..."}}}`,
           })
           continue
         }
@@ -1062,21 +1062,10 @@ export function useAIEngine() {
   }
 
   async function scanCurrentPage(
-    filter?: string
+    _filter?: string
   ): Promise<{ totalCount?: number; count?: number; elements?: unknown[] } | null> {
-    try {
-      const [tab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      })
-      if (!tab?.id) return null
-      return (await chrome.tabs.sendMessage(tab.id, {
-        type: 'PAGE_SCAN',
-        filter,
-      })) as { totalCount?: number; count?: number; elements?: unknown[] }
-    } catch {
-      return null
-    }
+    // PAGE_SCAN Content Script 已移除，scan action 暂时无法使用
+    return null
   }
 
   // ──── 辅助函数 ────

@@ -14,29 +14,7 @@ import {
 } from '../shared/constants'
 import { collectContext } from './context-collector'
 import { executeCommand } from './executor'
-import { setDOMEnvConfig } from './executor'
-
 const OFFSCREEN_URL = 'offscreen/recorder.html'
-
-// ──── DOM 环境配置初始化 ────
-
-function initializeDOMEnvConfig() {
-  // 保护域名列表由用户配置注入，从 storage 读取（不硬编码）
-  chrome.storage.local
-    .get('domProtectedDomains')
-    .then((stored) => {
-      const domains = stored?.domProtectedDomains
-      if (Array.isArray(domains) && domains.length > 0) {
-        setDOMEnvConfig({ protectedDomains: domains })
-      }
-    })
-    .catch(() => {
-      // 读取失败时使用默认空配置
-    })
-}
-
-// 启动时初始化
-initializeDOMEnvConfig()
 
 // ──── 消息路由 ────
 

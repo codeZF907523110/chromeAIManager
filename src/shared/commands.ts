@@ -595,26 +595,6 @@ export const COMMANDS: Command[] = [
     clientIntent: 'stop_recording',
   },
 
-  // ==================== DOM (1) ====================
-  {
-    intent: 'dom_manipulate',
-    description:
-      '在当前页面执行自定义 JavaScript 代码。code 是 JavaScript 代码，系统自动执行。必须显式 return 返回值。读取页面信息是安全的，但修改 DOM（如 remove、innerHTML 赋值）需要谨慎。verify 参数可选，用于验证操作是否成功',
-    dangerous: false,
-    slots: {
-      code: {
-        type: 'string',
-        description: 'JavaScript 代码，return 的值作为结果返回',
-      },
-      verify: {
-        type: 'string',
-        optional: true,
-        description: '验证代码，操作成功后执行，返回验证结果',
-      },
-    },
-    swIntent: 'dom_manipulate',
-  },
-
   // ==================== BATCH (1) ====================
   {
     intent: 'batch',
