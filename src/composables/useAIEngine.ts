@@ -731,7 +731,10 @@ export function useAIEngine() {
           }
         }
 
-        if (toolName === 'screenshot' && result.screenshot) {
+        if (
+          (toolName === 'screenshot' || toolName === 'browser_take_screenshot') &&
+          result.screenshot
+        ) {
           lastScreenshot.value = result.screenshot as string
         }
 

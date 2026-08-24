@@ -838,6 +838,11 @@ async function executeBrowserTool(
   toolName: string,
   args: Record<string, unknown>
 ): Promise<ExecutionResult> {
+  // 截图不走 content script（content script 未实现），直接调用 SW 能力
+  if (toolName === 'browser_take_screenshot') {
+    return await takeScreenshot(args)
+  }
+
   const message = BROWSER_TOOL_TO_MESSAGE[toolName]
   if (!message) {
     return { success: false, code: 'UNKNOWN_TOOL', message: `未知工具: ${toolName}` }
