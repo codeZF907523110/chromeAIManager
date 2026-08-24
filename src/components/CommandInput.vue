@@ -34,6 +34,11 @@
       <!-- 工具栏 -->
       <div class="toolbar">
         <div class="toolbar-right">
+          <!-- 停止按钮（AI 思考中显示） -->
+          <button v-if="isRunning" class="stop-btn" title="停止生成" @click="emit('stop')">
+            <StopCircle :size="16" />
+          </button>
+
           <!-- 模型选择 -->
           <el-dropdown trigger="click" @command="handleSelectModel">
             <span class="model-dropdown-link">
@@ -57,8 +62,8 @@
             <Mic :size="16" />
           </button>
 
-          <!-- 发送按钮 -->
-          <button class="send-btn" :disabled="!inputValue.trim()" @click="handleSend">
+          <!-- 发送按钮（思考中禁用） -->
+          <button class="send-btn" :disabled="isRunning || !inputValue.trim()" @click="handleSend">
             <ArrowUp :size="16" />
           </button>
         </div>
@@ -69,7 +74,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
-import { ChevronDown, Mic, ArrowUp } from 'lucide-vue-next'
+import { ChevronDown, Mic, ArrowUp, StopCircle } from 'lucide-vue-next'
 import { useAIEngine } from '../composables/useAIEngine'
 import { useCommandHistory } from '../composables/useCommandHistory'
 import { SLASH_COMMANDS } from '../shared/slash-commands'
@@ -77,11 +82,13 @@ import type { SlashCommand } from '../types'
 
 const props = defineProps<{
   modelValue: string
+  isRunning: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'submit'): void
+  (e: 'stop'): void
 }>()
 
 defineExpose({
@@ -359,6 +366,26 @@ async function handleSelectModel(modelId: string) {
 .icon-btn:hover {
   background: var(--app-picker-item-hover);
   color: var(--app-text-muted);
+}
+
+/* 停止按钮 */
+.stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #ef4444;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.stop-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
 }
 
 /* 发送按钮 */

@@ -127,6 +127,8 @@ export interface AIOptions {
   maxTokens?: number
   timeout?: number
   jsonMode?: boolean
+  /** 对话模式：'task' 任务执行（严格），'chat' 纯聊天（宽松） */
+  mode?: 'task' | 'chat'
 }
 
 // ──── AI 适配器接口 ────

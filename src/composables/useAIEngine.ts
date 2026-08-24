@@ -227,8 +227,16 @@ export function useAIEngine() {
 
         let raw: string
         try {
+          // 根据最后一条 assistant 消息的 action 决定 temperature：工具调用用 0.1（严格），闲聊/首轮用 1.2（宽松）
+          const lastAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant')
+          // 匹配所有工具调用 action：browser_* / tabs_* / bookmarks_* 等前缀，以及 task_plan / navigate / screenshot / batch / scan / exec_plan / askUserResponse / done / exec_tool / execute
+          const isToolCall =
+            lastAssistantMsg &&
+            /"action"\s*:\s*"(browser_|tabs_|bookmarks_|history_|windows_|storage_|permissions_|extensions_|theme_|font_|download_|session_|top_sites_|task_plan|navigate|screenshot|batch|scan|exec_plan|askUserResponse|done|exec_tool|execute)"/.test(
+              lastAssistantMsg.content
+            )
           raw = await aiEngine.chatWithHistory(messages, {
-            temperature: 0.2,
+            temperature: isToolCall ? 0.1 : 1.2,
             maxTokens: 4096,
           })
           console.log('[AI Commander] Raw response:', raw?.slice(0, 500))
@@ -752,7 +760,8 @@ export function useAIEngine() {
           addMessage('error', errorMsg as string)
         }
 
-        if (messages.length > MAX_MESSAGES_COUNT) {
+        // 更早压缩消息，避免系统 prompt（含页面 DOM）+ 历史消息超过 token 限制
+        if (messages.length > 15) {
           compressMessages(messages)
         }
 
@@ -804,6 +813,12 @@ export function useAIEngine() {
 
     if (resolvedIntent === 'clear_chat') {
       clearMessages()
+      return
+    }
+
+    if (resolvedIntent === 'reset_context') {
+      cleanup()
+      addMessage('system', '已清除全部上下文，可以重新开始对话')
       return
     }
 
@@ -1132,7 +1147,7 @@ export function useAIEngine() {
     // 使用新的 browser_snapshot 工具替代已移除的 PAGE_SCAN
     try {
       const result = await executeCommand('browser_snapshot', {
-        maxElements: 500,
+        maxElements: 200,
         includeIframes: true,
       } as Record<string, unknown>)
       if (result.success && result.result) {
@@ -1349,7 +1364,8 @@ export function useAIEngine() {
 
   function compressMessages(messages: ChatMessage[]) {
     const systemMsg = messages.find((m) => m.role === 'system')
-    const recent = messages.slice(-20)
+    // 保留最近 10 条交互消息（压缩前 messages.length 可能达 15+）
+    const recent = messages.slice(-10)
     messages.length = 0
     if (systemMsg) messages.push(systemMsg)
     messages.push(

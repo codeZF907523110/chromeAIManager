@@ -43,10 +43,12 @@ export class OpenAIAdapter implements AIAdapter {
       const timer = setTimeout(() => controller.abort(new Error('请求超时')), timeout)
 
       try {
+        // 根据 mode 决定默认 temperature：任务执行严格（0.1），纯聊天宽松（1.2）
+        const defaultTemp = options.mode === 'chat' ? 1.2 : 0.1
         const body: Record<string, unknown> = {
           model: this.model,
           messages,
-          temperature: options.temperature ?? 0.1,
+          temperature: options.temperature ?? defaultTemp,
           max_tokens: options.maxTokens ?? 4096,
         }
 

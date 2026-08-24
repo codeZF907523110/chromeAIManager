@@ -192,7 +192,13 @@
     </el-dialog>
 
     <!-- 命令输入区 -->
-    <CommandInput ref="commandInputRef" v-model="commandInput" @submit="handleSubmit" />
+    <CommandInput
+      ref="commandInputRef"
+      v-model="commandInput"
+      :is-running="!!state.activeLoopId"
+      @submit="handleSubmit"
+      @stop="handleStop"
+    />
   </div>
 </template>
 
@@ -218,6 +224,7 @@ const appVersion =
 const {
   state,
   handleSubmit: aiHandleSubmit,
+  cleanup: aiCleanup,
   toggleSettings,
   initEngine,
   models,
@@ -322,6 +329,11 @@ async function handleSubmit() {
   lastSubmittedText = text.trim()
   await aiHandleSubmit(text)
   lastSubmittedText = '' // 清零，允许发送相同命令（非连续）
+}
+
+// 停止当前对话
+function handleStop() {
+  aiCleanup()
 }
 
 onMounted(async () => {

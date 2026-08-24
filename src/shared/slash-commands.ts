@@ -338,6 +338,12 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     description: '清空所有回话记录',
     aliases: ['cc', '清空'],
   },
+  {
+    slash: 'reset',
+    intent: 'reset_context',
+    description: '清除全部上下文并重新开始对话',
+    aliases: ['重置'],
+  },
 ] as const
 
 interface SlashMatchResult {
