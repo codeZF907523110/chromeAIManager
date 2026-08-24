@@ -1,0 +1,47 @@
+/* card component */
+
+:root {
+  --color-primary: #3a7bd5;
+  --color-text: #1a1a2e;
+  --color-white: #ffffff;
+  --color-border: #e0e0e0;
+  --radius-card: 8px;
+  --radius-badge: 4px;
+  --spacing-4: 16px;
+  --spacing-6: 24px;
+}
+
+.card {
+  background: var(--color-white);
+  border-radius: var(--radius-card);
+  padding: var(--spacing-6);
+  margin-bottom: var(--spacing-6);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+.card .title {
+  font-size: 18px;
+  color: var(--color-text);
+  font-weight: 600;
+  margin-bottom: 0;
+}
+
+.card .badge {
+  background-color: var(--color-primary);
+  color: var(--color-white);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: var(--radius-badge);
+}
+
+.card .footer {
+  color: var(--color-text);
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--spacing-6);
+  padding-top: var(--spacing-4);
+}
+
+.card .footer a {
+  color: var(--color-primary);
+  text-decoration: none;
+}

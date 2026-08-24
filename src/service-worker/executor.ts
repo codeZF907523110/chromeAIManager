@@ -71,6 +71,10 @@ export async function executeCommand(
     case 'bookmarks_open_node':
       return await openBookmark(payload)
     case 'bookmarks_remove_node':
+      console.log(
+        '[ServiceWorker] bookmarks_remove_node called with payload:',
+        JSON.stringify(payload)
+      )
       return await removeBookmark(payload)
     case 'bookmarks_add_current_page':
       return await addCurrentPageBookmark(payload)
@@ -146,6 +150,46 @@ export async function executeCommand(
     // ──── TASK_PLAN ────
     case 'task_plan':
       return await execPlan(payload)
+    // ──── BROWSER DOM 操作（Playwright MCP 兼容）────
+    case 'browser_snapshot':
+      return await executeBrowserTool('browser_snapshot', payload)
+    case 'browser_click':
+      return await executeBrowserTool('browser_click', payload)
+    case 'browser_type':
+      return await executeBrowserTool('browser_type', payload)
+    case 'browser_select_option':
+      return await executeBrowserTool('browser_select_option', payload)
+    case 'browser_hover':
+      return await executeBrowserTool('browser_hover', payload)
+    case 'browser_press_key':
+      return await executeBrowserTool('browser_press_key', payload)
+    case 'browser_check':
+      return await executeBrowserTool('browser_check', payload)
+    case 'browser_uncheck':
+      return await executeBrowserTool('browser_uncheck', payload)
+    case 'browser_fill_form':
+      return await executeBrowserTool('browser_fill_form', payload)
+    case 'browser_wait_for':
+      return await executeBrowserTool('browser_wait_for', payload)
+    case 'browser_take_screenshot':
+      return await executeBrowserTool('browser_take_screenshot', payload)
+    case 'browser_navigate':
+      return await executeBrowserTool('browser_navigate', payload)
+    case 'browser_navigate_back':
+      return await executeBrowserTool('browser_navigate_back', payload)
+    case 'browser_navigate_forward':
+      return await executeBrowserTool('browser_navigate_forward', payload)
+    case 'browser_reload':
+      return await executeBrowserTool('browser_reload', payload)
+    // 标签页别名映射到旧体系
+    case 'browser_tab_list':
+      return await observeTabs(payload)
+    case 'browser_tab_new':
+      return await createTab(payload)
+    case 'browser_tab_select':
+      return await updateTab({ ...payload, updateType: 'select' })
+    case 'browser_tab_close':
+      return await removeTabs(payload)
     default:
       return { success: false, code: 'UNKNOWN_INTENT', message: `未知命令: ${intent}` }
   }
@@ -163,7 +207,7 @@ async function checkDangerousConfirm(
     success: false,
     code: 'NEEDS_CONFIRM',
     message: `确认执行 "${intent}" 操作？此操作不可撤销。`,
-    detail: { intent, payload },
+    detail: { intent, payload, nodeId: payload.nodeId, title: payload.title },
   }
 }
 
@@ -339,12 +383,17 @@ async function observeBookmarks(payload: Record<string, unknown>): Promise<Execu
           continue
         }
       }
+      // 构建节点路径
+      const nodePath = node.parentId ? `.../${node.parentId}/${node.id}` : `/${node.id}`
       results.push({
         id: node.id,
         title: node.title,
+        type: isFolder ? 'folder' : 'bookmark',
         url: node.url,
         parentId: node.parentId,
         index: node.index,
+        path: nodePath,
+        childCount: node.children?.length || 0,
         dateAdded: node.dateAdded,
         dateGroupCreated: node.dateGroupCreated,
       })
@@ -761,4 +810,88 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
     results.push(r)
   }
   return { success: true, results, total: calls.length }
+}
+
+// ──── BROWSER DOM 操作（Playwright MCP 兼容）────
+
+const BROWSER_TOOL_TO_MESSAGE: Record<string, string> = {
+  browser_snapshot: 'SNAPSHOT',
+  browser_click: 'CLICK',
+  browser_type: 'TYPE',
+  browser_select_option: 'SELECT',
+  browser_hover: 'HOVER',
+  browser_press_key: 'PRESS_KEY',
+  browser_navigate: 'NAVIGATE',
+  browser_take_screenshot: 'SCREENSHOT',
+  browser_check: 'CHECK',
+  browser_uncheck: 'UNCHECK',
+  browser_fill_form: 'FILL_FORM',
+  browser_wait_for: 'WAIT_FOR',
+  browser_navigate_back: 'NAVIGATE_BACK',
+  browser_navigate_forward: 'NAVIGATE_FORWARD',
+  browser_reload: 'RELOAD',
+}
+
+async function executeBrowserTool(
+  toolName: string,
+  args: Record<string, unknown>
+): Promise<ExecutionResult> {
+  const message = BROWSER_TOOL_TO_MESSAGE[toolName]
+  if (!message) {
+    return { success: false, code: 'UNKNOWN_TOOL', message: `未知工具: ${toolName}` }
+  }
+
+  const tabInfo = await getCurrentTab()
+  if (!tabInfo) {
+    return { success: false, code: 'TAB_NOT_FOUND', message: '未找到活动标签页' }
+  }
+
+  try {
+    const response = await chrome.tabs.sendMessage(tabInfo.tabId, {
+      type: message,
+      ...args,
+      timestamp: Date.now(),
+    })
+    return mapContentScriptResponse(response)
+  } catch {
+    // chrome.tabs.sendMessage 失败（如 content script 未加载）
+    return {
+      success: false,
+      code: 'CONTENT_SCRIPT_ERROR',
+      message: 'Content Script 未响应，请确认页面已加载扩展',
+      suggestion: 'RELOAD_PAGE',
+    }
+  }
+}
+
+function mapContentScriptResponse(response: unknown): ExecutionResult {
+  if (!response || typeof response !== 'object') {
+    return { success: false, code: 'INVALID_RESPONSE', message: '无效响应' }
+  }
+  const r = response as {
+    success: boolean
+    data?: unknown
+    error?: string
+    message?: string
+    suggestion?: string
+  }
+  if (r.success) {
+    return { success: true, result: r.data }
+  }
+  return {
+    success: false,
+    code: r.error || 'UNKNOWN_ERROR',
+    message: r.message || r.error,
+    suggestion: r.suggestion,
+  }
+}
+
+async function getCurrentTab(): Promise<{ tabId: number } | null> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab || tab.id === undefined) return null
+    return { tabId: tab.id }
+  } catch {
+    return null
+  }
 }

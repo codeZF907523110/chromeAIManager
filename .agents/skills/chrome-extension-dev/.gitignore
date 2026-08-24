@@ -1,0 +1,12 @@
+# Private local data (not published)
+data/
+
+# OS files
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/

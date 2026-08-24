@@ -1103,6 +1103,144 @@ export const COMMANDS: Command[] = [
     swIntent: 'task_plan',
   },
 
+  // ==================== BROWSER DOM 操作（Playwright MCP 兼容）====================
+  {
+    intent: 'browser_snapshot',
+    description: '扫描当前页面，获取所有可交互元素的 Accessibility Tree 快照',
+    dangerous: false,
+    slots: {
+      maxElements: { type: 'number', optional: true, description: '最大元素数量，默认500' },
+      includeIframes: { type: 'boolean', optional: true, description: '是否包含iframe，默认true' },
+    },
+    swIntent: 'browser_snapshot',
+  },
+  {
+    intent: 'browser_click',
+    description: '点击页面元素，使用 [ref=eN] 引用',
+    dangerous: false,
+    slots: {
+      ref: { type: 'string', description: '元素引用，格式 [ref=eN]' },
+    },
+    swIntent: 'browser_click',
+  },
+  {
+    intent: 'browser_type',
+    description: '向输入框输入文本，使用 [ref=eN] 引用',
+    dangerous: false,
+    slots: {
+      ref: { type: 'string', description: '元素引用，格式 [ref=eN]' },
+      text: { type: 'string', description: '要输入的文本' },
+      submit: { type: 'boolean', optional: true, description: '输入后是否按Enter提交' },
+    },
+    swIntent: 'browser_type',
+  },
+  {
+    intent: 'browser_select_option',
+    description: '选择下拉框选项',
+    dangerous: false,
+    slots: {
+      ref: { type: 'string', description: 'select 元素引用' },
+      value: { type: 'string', description: '要选择的值' },
+    },
+    swIntent: 'browser_select_option',
+  },
+  {
+    intent: 'browser_hover',
+    description: '悬停在元素上',
+    dangerous: false,
+    slots: {
+      ref: { type: 'string', description: '元素引用' },
+    },
+    swIntent: 'browser_hover',
+  },
+  {
+    intent: 'browser_press_key',
+    description: '按键操作（如 Enter, Tab, Escape）',
+    dangerous: false,
+    slots: {
+      key: { type: 'string', description: '按键名称，如 Enter, Tab, Escape' },
+    },
+    swIntent: 'browser_press_key',
+  },
+  {
+    intent: 'browser_check',
+    description: '勾选复选框或单选框',
+    dangerous: false,
+    slots: {
+      ref: { type: 'string', description: 'checkbox/radio 元素引用' },
+    },
+    swIntent: 'browser_check',
+  },
+  {
+    intent: 'browser_uncheck',
+    description: '取消勾选复选框',
+    dangerous: false,
+    slots: {
+      ref: { type: 'string', description: 'checkbox 元素引用' },
+    },
+    swIntent: 'browser_uncheck',
+  },
+  {
+    intent: 'browser_fill_form',
+    description: '批量填写表单字段',
+    dangerous: false,
+    slots: {
+      fields: { type: 'array', description: '字段列表，每个包含 ref 和 value' },
+    },
+    swIntent: 'browser_fill_form',
+  },
+  {
+    intent: 'browser_wait_for',
+    description: '等待条件满足（文本出现或元素可见）',
+    dangerous: false,
+    slots: {
+      text: { type: 'string', optional: true, description: '等待出现的文本' },
+      ref: { type: 'string', optional: true, description: '等待出现的元素引用' },
+      timeout: { type: 'number', optional: true, description: '超时时间(ms)，默认5000' },
+    },
+    swIntent: 'browser_wait_for',
+  },
+  {
+    intent: 'browser_take_screenshot',
+    description: '截取当前页面截图',
+    dangerous: false,
+    slots: {
+      path: { type: 'string', optional: true, description: '保存路径' },
+      fullPage: { type: 'boolean', optional: true, description: '是否全页截图' },
+    },
+    swIntent: 'browser_take_screenshot',
+  },
+  {
+    intent: 'browser_navigate',
+    description: '导航到指定 URL',
+    dangerous: false,
+    slots: {
+      url: { type: 'string', description: '目标 URL' },
+    },
+    swIntent: 'browser_navigate',
+  },
+  {
+    intent: 'browser_navigate_back',
+    description: '浏览器后退',
+    dangerous: false,
+    slots: {},
+    swIntent: 'browser_navigate_back',
+  },
+  {
+    intent: 'browser_navigate_forward',
+    description: '浏览器前进',
+    dangerous: false,
+    slots: {},
+    swIntent: 'browser_navigate_forward',
+  },
+  {
+    intent: 'browser_reload',
+    description: '刷新当前页面',
+    dangerous: false,
+    slots: {},
+    swIntent: 'browser_reload',
+  },
+
   // ==================== 内置命令 ====================
   {
     intent: 'clear_chat',

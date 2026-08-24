@@ -259,6 +259,7 @@ export function useAIEngine() {
             maxTokens: 4096,
           })
           console.log('[AI Commander] Raw response:', raw?.slice(0, 500))
+          console.log('[AI Commander] Raw response type:', typeof raw, 'length:', raw?.length)
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e)
           addMessage('error', `AI 调用失败: ${msg}`)
@@ -266,11 +267,21 @@ export function useAIEngine() {
           return
         }
 
+        if (!raw || raw.trim() === '') {
+          console.error('[AI Commander] AI returned empty response!')
+          addMessage('error', 'AI 返回了空响应')
+          cleanup()
+          return
+        }
+
         let json: AIResponse | null
         try {
           json = repairJSON(raw)
+          console.log('[AI Commander] Parsed JSON action:', json?.action)
+          console.log('[AI Commander] Parsed JSON args:', JSON.stringify(json?.args))
         } catch {
           json = null
+          console.error('[AI Commander] repairJSON failed')
         }
 
         if (!json?.action) {
@@ -278,8 +289,10 @@ export function useAIEngine() {
           if (jsonMatch) {
             try {
               json = JSON.parse(jsonMatch[0]) as AIResponse
+              console.log('[AI Commander] Fallback parsed JSON action:', json?.action)
             } catch {
               json = null
+              console.error('[AI Commander] Fallback parse also failed')
             }
           }
         }
@@ -309,7 +322,9 @@ export function useAIEngine() {
         jsonRetryCount = 0
 
         if (json.action === 'done') {
-          emitAIChat(json.reply || json.content || '操作完成', true)
+          const doneReply = json.reply || json.content || '操作完成'
+          console.log('[AI Commander] done action, reply:', JSON.stringify(doneReply))
+          emitAIChat(doneReply, true)
           return
         }
 
@@ -318,12 +333,14 @@ export function useAIEngine() {
           conversationMessages.value = [...messages]
           activeLoopId.value = null
           persistPlanTracker()
-          emitAIChat(json.reply || json.content || '请提供更多信息', false)
+          const askReply = json.reply || json.content || '请提供更多信息'
+          console.log('[AI Commander] ask action, reply:', JSON.stringify(askReply))
+          emitAIChat(askReply, false)
           return
         }
 
         if (json.action === 'scan') {
-          const scanResult = await scanCurrentPage(json.toolCall?.args?.scanFilter as string)
+          const scanResult = await scanCurrentPage((json.args?.scanFilter as string) || undefined)
           const scanStr = scanResult
             ? `页面扫描结果(${scanResult.totalCount || scanResult.count}元素): ${JSON.stringify(scanResult)}`
             : '扫描失败'
@@ -531,7 +548,16 @@ export function useAIEngine() {
         }
 
         if (json.action === 'chat') {
-          const reply = (json.toolCall?.args?.reply as string) || json.reply || ''
+          // 兼容多种字段名：reply、message、content
+          const reply =
+            (json.args?.reply as string) ||
+            (json.args?.message as string) ||
+            (json.args?.content as string) ||
+            json.reply ||
+            json.content ||
+            ''
+          console.log('[AI Commander] chat action detected, reply:', JSON.stringify(reply))
+          console.log('[AI Commander] chat action full json:', JSON.stringify(json))
           emitAIChat(reply, false)
           messages.push({ role: 'assistant', content: raw })
           conversationMessages.value = [...messages]
@@ -545,27 +571,53 @@ export function useAIEngine() {
           json.action = 'exec_tool'
         }
 
-        if (json.action !== 'exec_tool') {
+        // 提取工具名和参数：优先扁平格式，兼容旧 toolCall 格式
+        let toolName: string
+        let toolArgs: Record<string, unknown>
+        const actionStr = json.action as string
+
+        if (
+          actionStr.startsWith('browser_') ||
+          actionStr.startsWith('tabs_') ||
+          actionStr.startsWith('bookmarks_') ||
+          actionStr.startsWith('history_') ||
+          actionStr.startsWith('windows_') ||
+          actionStr.startsWith('storage_') ||
+          actionStr.startsWith('permissions_') ||
+          actionStr.startsWith('extensions_') ||
+          actionStr.startsWith('theme_') ||
+          actionStr.startsWith('font_') ||
+          actionStr.startsWith('download_') ||
+          actionStr.startsWith('session_') ||
+          actionStr.startsWith('top_sites_') ||
+          actionStr === 'task_plan' ||
+          actionStr === 'navigate' ||
+          actionStr === 'screenshot' ||
+          actionStr === 'batch'
+        ) {
+          // 扁平格式：action 直接是工具名
+          toolName = actionStr
+          toolArgs = (json.args as Record<string, unknown>) || {}
+        } else if (actionStr === 'exec_tool' || actionStr === 'done' || actionStr === 'ask') {
+          // 旧格式：使用 toolCall
+          if (!json.toolCall) {
+            messages.push({ role: 'assistant', content: raw })
+            messages.push({
+              role: 'user',
+              content: `上一步缺少 toolCall 参数。请重新输出 JSON，例如 {"action":"exec_tool","toolCall":{"name":"tabs_create","args":{"url":"..."}}}`,
+            })
+            continue
+          }
+          toolName = json.toolCall.name
+          toolArgs = json.toolCall.args || {}
+        } else {
           addMessage('error', `未知 action: ${json.action}`)
           cleanup()
           return
         }
 
-        if (!json.toolCall) {
-          // action 是 exec_tool 但 toolCall 缺失，可能是 JSON 被截断，重试一次
-          messages.push({ role: 'assistant', content: raw })
-          messages.push({
-            role: 'user',
-            content: `上一步缺少 toolCall 参数。请重新输出 JSON，包含完整的 toolCall，例如 {"toolCall":{"name":"tabs_create","args":{"url":"..."}}}`,
-          })
-          continue
-        }
-
-        const toolCall = json.toolCall
-        const toolName = toolCall.name
-
         if (toolName === 'chat') {
-          emitAIChat((toolCall.args?.reply as string) || '', true)
+          emitAIChat((toolArgs?.reply as string) || '', true)
           return
         }
 
@@ -576,7 +628,7 @@ export function useAIEngine() {
         let result: ExecutionResult
         try {
           result = await Promise.race([
-            executeCommand(toolName, toolCall.args || {}),
+            executeCommand(toolName, toolArgs),
             new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error('ACT_TIMEOUT')), STEP_TIMEOUT_MS)
             ),
@@ -611,11 +663,20 @@ export function useAIEngine() {
             })),
             onConfirm: async () => {
               try {
+                console.log(
+                  '[AI Commander] Confirm called, toolName:',
+                  toolName,
+                  'nodeId:',
+                  nodeId,
+                  'json.args:',
+                  JSON.stringify(json.args)
+                )
                 const confirmResult = await executeCommand(toolName, {
-                  ...toolCall.args,
+                  ...(json.args ?? {}),
                   nodeId,
                   force: true,
                 })
+                console.log('[AI Commander] Confirm result:', confirmResult)
                 if (confirmResult.success !== false) {
                   renderExecutionResult(toolName, confirmResult)
                 } else {
@@ -658,9 +719,20 @@ export function useAIEngine() {
 
         messages.push({ role: 'assistant', content: raw })
         const sanitized = sanitizeResult(result)
+        const resultContent = `执行结果(${toolName}): ${JSON.stringify(sanitized)}`
+        console.log(
+          '[AI Commander] Tool result:',
+          toolName,
+          'success:',
+          result.success,
+          'code:',
+          result.code,
+          'message:',
+          result.message
+        )
         messages.push({
           role: 'user',
-          content: `执行结果(${toolName}): ${JSON.stringify(sanitized)}`,
+          content: resultContent,
         })
 
         if (result.result === undefined) {
@@ -695,6 +767,14 @@ export function useAIEngine() {
           'system',
           `[${stepCount}] ${stepStatus} 💭 ${thought}\n    ${formatStepSummary(result, toolName)}`
         )
+
+        // 如果执行失败，添加错误消息供用户查看
+        if (result.code || result.error) {
+          const errorMsg = result.code
+            ? `[${result.code}] ${result.message || '操作失败'}`
+            : result.error
+          addMessage('error', errorMsg as string)
+        }
 
         if (messages.length > MAX_MESSAGES_COUNT) {
           compressMessages(messages)
@@ -847,12 +927,21 @@ export function useAIEngine() {
       if (cmd.requiresPrecompute) {
         payload = await precompute(intent, slots)
       }
+      console.log(
+        '[AI Commander] Sending command:',
+        intent,
+        '->',
+        cmd.swIntent,
+        'payload:',
+        JSON.stringify(payload)
+      )
       return (await chrome.runtime.sendMessage({
         type: MSG_EXECUTE,
         command: { intent: cmd.swIntent, payload },
       })) as ExecutionResult
     } catch (e: unknown) {
       const errorMessage = e instanceof Error ? e.message : String(e)
+      console.error('[AI Commander] Command execution error:', intent, errorMessage)
       return {
         success: false,
         code: 'COM_DISCONNECTED',
@@ -1064,7 +1153,33 @@ export function useAIEngine() {
   async function scanCurrentPage(
     _filter?: string
   ): Promise<{ totalCount?: number; count?: number; elements?: unknown[] } | null> {
-    // PAGE_SCAN Content Script 已移除，scan action 暂时无法使用
+    // 使用新的 browser_snapshot 工具替代已移除的 PAGE_SCAN
+    try {
+      const result = await executeCommand('browser_snapshot', {
+        maxElements: 500,
+        includeIframes: true,
+      } as Record<string, unknown>)
+      if (result.success && result.result) {
+        const snap = result.result as {
+          nodes?: Array<{ ref: string; role: string; name: string }>
+          url?: string
+          title?: string
+        }
+        const elements = snap?.nodes?.map((n, i) => ({
+          index: i,
+          tag: n.role || 'element',
+          text: n.name || '',
+          attrs: { ref: n.ref },
+        }))
+        return {
+          totalCount: snap?.nodes?.length || 0,
+          count: snap?.nodes?.length || 0,
+          elements,
+        }
+      }
+    } catch {
+      // snapshot 失败时静默处理
+    }
     return null
   }
 
@@ -1077,6 +1192,14 @@ export function useAIEngine() {
     video?: string,
     recordingFile?: MessageLog['recordingFile']
   ): void {
+    console.log(
+      '[AI Commander] addMessage called, type:',
+      type,
+      'text length:',
+      text.length,
+      'text preview:',
+      text?.slice(0, 50)
+    )
     messageLog.value.push({ type, text, image, video, recordingFile })
     if (isInitialized.value) {
       persistMessages()
@@ -1581,12 +1704,14 @@ export function useAIEngine() {
    * 保证文字和截图在同一个气泡中显示。
    */
   function emitAIChat(text: string, doCleanup: boolean) {
+    console.log('[AI Commander] emitAIChat called with text:', JSON.stringify(text))
     const image = lastScreenshot.value
     if (image) {
       copyScreenshotToClipboard(image)
       lastScreenshot.value = null
     }
     addMessage('ai-chat', wrapCatReply(text), image || undefined)
+    console.log('[AI Commander] addMessage called, text length:', text.length)
     if (doCleanup) cleanup()
   }
 

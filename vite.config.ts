@@ -119,8 +119,10 @@ export default defineConfig({
       input: {
         // Side Panel 入口
         sidepanel: resolve(__dirname, 'public/index.html'),
-        // Service Worker 入口（由 Vite 打包）
+        // Service Worker 入口
         'service-worker': resolve(__dirname, 'src/service-worker/index.ts'),
+        // Content Script 入口
+        'content': resolve(__dirname, 'src/content/index.ts'),
       },
       output: {
         entryFileNames: '[name].js',

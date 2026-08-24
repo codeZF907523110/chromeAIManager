@@ -1,0 +1,880 @@
+/*! browserux.css 3.0.0 | 2026 MIT Licence | github.com/Effeilo/browserux.css */
+
+/**
+ * 🎨 browserux.css
+ *
+ * A modern, opinionated CSS foundation that normalizes browser inconsistencies
+ * and applies sensible defaults across all HTML elements.
+ *
+ * Built around CSS custom properties (design tokens) for easy theming, with
+ * automatic adaptations for dark mode, reduced motion, high contrast,
+ * reduced transparency, and forced colors.
+ *
+ * Key features:
+ * - Design tokens via :root custom properties for colors, typography, scrollbar, and form UX
+ * - Automatic dark mode token overrides via prefers-color-scheme
+ * - Full user-preference support: motion, contrast, transparency, forced colors
+ * - Cross-browser scrollbar styling (WebKit + Firefox)
+ * - Form UX enhancements: accent color, caret, validation states, focus rings
+ * - Print-safe overrides
+ */
+
+/* ============================================================================
+ *
+ * ### 🎨 Design Tokens
+ *
+ * Core design tokens defined as CSS custom properties on :root.
+ * These variables are the single source of truth for colors, typography,
+ * scrollbar dimensions, and form UI behavior throughout the stylesheet.
+ *
+ * Tokens are organized by functional category:
+ * - 🎨 Colors (page, brand, accent)
+ * - ✅ Form validation states (valid / invalid)
+ * - 📊 Progress bar
+ * - ✨ Text selection
+ * - 📜 Scrollbar
+ * - 🔤 Typography
+ * - 🌐 Browser behavior flags
+ *
+ * A dark mode override block follows, redefining a subset of these tokens
+ * via @media (prefers-color-scheme: dark).
+ *
+ * ============================================================================ */
+
+:root {
+
+  /**
+   * 🎨 Color tokens
+   */
+  --bux-page-bg: #eaeaea;
+  --bux-page-color: #121212;
+  --bux-color-primary: #f05e0e;
+  --bux-color-secondary: #0e93f0;
+  --bux-transparent: transparent;
+
+  /**
+   * ✅ Form validation tokens
+   */
+  --bux-valid-border-color: #29b94c;
+  --bux-valid-bg-color: #f0fff5;
+  --bux-invalid-border-color: #dc303e;
+  --bux-invalid-bg-color: #fff0f0;
+  --bux-placeholder-color: #aaa;
+  --bux-invalid-placeholder-color: #dc303e;
+
+  /**
+   * 📊 Progress bar tokens
+   */
+  --bux-progress-bar-bg: #efefef;
+  --bux-progress-value-bg: #29b94c;
+
+  /**
+   * ✨ Selection tokens
+   */
+  --bux-selection-bg: var(--bux-page-color);
+  --bux-selection-color: var(--bux-page-bg);
+  --bux-selection-text-shadow: none;
+
+  /**
+   * 📜 Scrollbar tokens
+   */
+  --bux-scrollbar: var(--bux-page-bg);
+  --bux-scrollbar-track: #ddecf6;
+  --bux-scrollbar-thumb: var(--bux-color-secondary);
+  --bux-scrollbar-thumb-hover: var(--bux-color-primary);
+  --bux-scrollbar-vertical-width: 10px;
+  --bux-scrollbar-horizontal-height: 10px;
+
+  /**
+   * 🔤 Typography tokens
+   */
+  --bux-typo-font-family: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --bux-typo-font-family-mono: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+  --bux-typo-font-size: 1.6rem;
+  --bux-typo-line-height: 1.6;
+
+  /**
+   * 🌐 Browser behavior
+   */
+  color-scheme: light dark;
+  interpolate-size: allow-keywords;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🌑 Dark Mode
+ * ---------------------------------------------------------------------------- */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bux-page-bg: #121212;
+    --bux-page-color: #eaeaea;
+    --bux-color-primary: #f05e0e;
+    --bux-color-secondary: #0e93f0;
+    --bux-valid-bg-color: #0d2e18;
+    --bux-invalid-bg-color: #2e0d0d;
+    --bux-scrollbar-track: #1a2535;
+  }
+}
+
+/* ============================================================================
+ *
+ * ### ⚙️ User Preferences
+ *
+ * Adaptive styles that respond to the user's OS-level accessibility settings.
+ * Each block addresses a specific CSS media feature:
+ *
+ * - prefers-reduced-motion : disables or enables transitions and animations
+ * - prefers-contrast : adjusts placeholder, disabled, and emphasis styles
+ * - prefers-reduced-transparency : increases opacity of translucent elements
+ * - forced-colors : ensures visibility in Windows High Contrast Mode
+ *
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * ## 🎞️ Reduced Motion
+ * ---------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  :root {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    transition: background-color 0.3s, color 0.3s;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0s !important;
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🔆 High Contrast
+ * ---------------------------------------------------------------------------- */
+
+@media (prefers-contrast: more) {
+
+  ::placeholder {
+    color: rgba(16, 16, 16, 0.8);
+    opacity: 1;
+  }
+
+  [disabled] {
+    color: rgba(16, 16, 16, 0.8);
+  }
+
+  ::selection {
+    text-shadow: none;
+  }
+
+  em,
+  i,
+  small {
+    font-weight: bold;
+  }
+}
+
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  ::placeholder {
+    color: rgba(239, 239, 239, 0.9);
+    opacity: 1;
+  }
+
+  [disabled] {
+    color: rgba(239, 239, 239, 0.9);
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🫥 Reduced Transparency
+ * ---------------------------------------------------------------------------- */
+
+@media (prefers-reduced-transparency: reduce) {
+
+  dialog::backdrop {
+    background: rgba(0, 0, 0, 0.9);
+  }
+
+  ::-webkit-scrollbar {
+    background: var(--bux-page-bg);
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🪟 Forced Colors
+ * ---------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+
+  :focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    border: 1px solid ButtonText;
+  }
+
+  [disabled],
+  [aria-disabled="true"] {
+    opacity: 0.5;
+  }
+}
+
+/* ============================================================================
+ *
+ * ### ✨ Selection
+ *
+ * Custom styling for text selection across the page.
+ * Uses design token variables for colors and text-shadow.
+ *
+ * ============================================================================ */
+
+/**
+ * # Text Selection
+ */
+
+::selection {
+  background: var(--bux-selection-bg);
+  color: var(--bux-selection-color);
+  text-shadow: var(--bux-selection-text-shadow);
+}
+
+/* ============================================================================
+ *
+ * ### 📜 Scrollbar
+ *
+ * Custom scrollbar styling for both Firefox (via scrollbar-color / scrollbar-width)
+ * and WebKit browsers (via ::-webkit-scrollbar pseudo-elements).
+ *
+ * Colors, dimensions, and track appearance are controlled by design tokens.
+ *
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * ## 🦊 Firefox
+ * ---------------------------------------------------------------------------- */
+
+/**
+ * # Firefox Scrollbar (scrollbar-color)
+ */
+
+@supports (-moz-appearance: none) {
+  html {
+    scrollbar-color: var(--bux-scrollbar-thumb) var(--bux-scrollbar-track);
+    scrollbar-width: auto;
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🌐 WebKit
+ * ---------------------------------------------------------------------------- */
+
+/**
+ * # WebKit Scrollbar Track
+ */
+
+::-webkit-scrollbar {
+  background: var(--bux-scrollbar);
+  height: var(--bux-scrollbar-horizontal-height);
+  width: var(--bux-scrollbar-vertical-width);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+::-webkit-scrollbar-track {
+  background-color: var(--bux-scrollbar-track);
+}
+
+/**
+ * # WebKit Scrollbar Thumb
+ */
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--bux-scrollbar-thumb);
+  border-radius: calc(var(--bux-scrollbar-vertical-width) / 2);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--bux-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ============================================================================
+ *
+ * ### 🎛️ Form UX
+ *
+ * Enhances the default appearance and behavior of native form controls.
+ * Covers placeholder styling, caret color, accent color, range thumb,
+ * user-validation feedback, progress bar appearance, and focus management.
+ *
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * ## 📝 Placeholder & Caret
+ * ---------------------------------------------------------------------------- */
+
+::placeholder {
+  color: var(--bux-placeholder-color);
+}
+
+input,
+textarea,
+[contenteditable] {
+  caret-color: var(--bux-color-primary);
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🎨 Accent Color & Range Thumb
+ * ---------------------------------------------------------------------------- */
+
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+meter,
+select {
+  accent-color: var(--bux-color-primary);
+}
+
+progress {
+  accent-color: var(--bux-progress-value-bg);
+}
+
+input[type="range"]::-webkit-slider-thumb,
+input[type="range"]::-moz-range-thumb {
+  background: var(--bux-color-primary);
+  border: none;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## ✅ Validation States
+ * ---------------------------------------------------------------------------- */
+
+input:user-valid,
+textarea:user-valid,
+select:user-valid {
+  background-color: var(--bux-valid-bg-color);
+  border-color: var(--bux-valid-border-color);
+}
+
+input:user-invalid,
+textarea:user-invalid,
+select:user-invalid {
+  background-color: var(--bux-invalid-bg-color);
+  border-color: var(--bux-invalid-border-color);
+}
+
+input:user-invalid::placeholder,
+textarea:user-invalid::placeholder {
+  color: var(--bux-invalid-placeholder-color);
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 📊 Progress Bar
+ * ---------------------------------------------------------------------------- */
+
+progress::-webkit-progress-bar {
+  background-color: var(--bux-progress-bar-bg);
+  border-radius: 8px;
+}
+
+progress::-webkit-progress-value {
+  background-color: var(--bux-progress-value-bg);
+  border-radius: 8px;
+}
+
+progress::-moz-progress-bar {
+  background-color: var(--bux-progress-value-bg);
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🔍 Focus Management
+ * ---------------------------------------------------------------------------- */
+
+/**
+ * # :focus, Remove Default Outline
+ */
+
+:focus {
+  outline: none;
+}
+
+/**
+ * # :focus-visible, Keyboard Focus Ring
+ */
+
+:focus-visible {
+  outline: 2px solid var(--bux-color-primary);
+  outline-offset: 2px;
+}
+
+/* ============================================================================
+ *
+ * ### 🧱 Reset & Base
+ *
+ * Establishes a consistent box model and applies fundamental resets to html
+ * and body. Removes default margins and padding from all elements,
+ * enforces border-box sizing, and sets baseline typography on the root.
+ *
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * ## 📦 Box Model
+ * ---------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+*,
+::before,
+::after {
+  box-sizing: inherit;
+}
+
+html {
+  box-sizing: border-box;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🌍 Base Elements
+ * ---------------------------------------------------------------------------- */
+
+html {
+  font-family: var(--bux-typo-font-family);
+  font-size: 62.5%;
+  min-height: 100%;
+  overflow-y: scroll;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  tab-size: 4;
+  -moz-tab-size: 4;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+body {
+  background: var(--bux-page-bg);
+  color: var(--bux-page-color);
+  font-size: var(--bux-typo-font-size);
+  line-height: var(--bux-typo-line-height);
+  min-height: 100%;
+  overflow-wrap: break-word;
+}
+
+/* ============================================================================
+ *
+ * ### 🔤 Typography
+ *
+ * Default styles for text-level elements: headings, block content (blockquote,
+ * pre, hr), links, and inline semantics (abbr, b, code, small, sub, sup).
+ *
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * ## 📰 Headings
+ * ---------------------------------------------------------------------------- */
+
+h1, h2, h3, h4, h5, h6 {
+  text-wrap: balance;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 📄 Block Content
+ * ---------------------------------------------------------------------------- */
+
+blockquote,
+pre {
+  max-width: 100%;
+}
+
+pre {
+  font-family: var(--bux-typo-font-family-mono);
+}
+
+hr {
+  border: none;
+  border-top: 1px solid currentColor;
+  color: inherit;
+  height: 0;
+  overflow: visible;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🔗 Links
+ * ---------------------------------------------------------------------------- */
+
+a {
+  outline: 0;
+  text-decoration: none;
+  text-decoration-skip-ink: auto;
+  text-underline-offset: 0.2em;
+  touch-action: manipulation;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🔡 Inline Text
+ * ---------------------------------------------------------------------------- */
+
+abbr[title],
+dfn[title] {
+  cursor: help;
+  text-decoration: underline dotted;
+}
+
+b,
+strong {
+  font-weight: bolder;
+}
+
+code {
+  max-width: 100%;
+  white-space: pre-wrap;
+}
+
+code,
+kbd,
+samp {
+  font-family: var(--bux-typo-font-family-mono);
+}
+
+small {
+  font-size: 80%;
+}
+
+sub,
+sup {
+  font-size: 75%;
+  line-height: 0;
+  position: relative;
+  vertical-align: baseline;
+}
+
+sub {
+  bottom: -0.25em;
+}
+
+sup {
+  top: -0.5em;
+}
+
+/* ============================================================================
+ *
+ * ### 🖼️ Media
+ *
+ * Ensures media elements (images, video, SVG, canvas, iframe) are responsive,
+ * vertically aligned, and correctly sized by default.
+ *
+ * ============================================================================ */
+
+area {
+  touch-action: manipulation;
+}
+
+audio,
+canvas,
+iframe,
+img,
+svg,
+video {
+  vertical-align: middle;
+}
+
+img::selection {
+  background-color: var(--bux-transparent);
+}
+
+img,
+svg,
+video {
+  height: auto;
+  max-width: 100%;
+}
+
+svg {
+  fill: currentColor;
+}
+
+/* ============================================================================
+ *
+ * ### 📊 Tables
+ *
+ * Restores sensible table defaults removed by some browser resets:
+ * inherits border color and removes default text indentation.
+ *
+ * ============================================================================ */
+
+table {
+  border-color: inherit;
+  text-indent: 0;
+}
+
+table,
+td {
+  max-width: 100%;
+}
+
+/* ============================================================================
+ *
+ * ### 📝 Forms
+ *
+ * Cross-browser normalization for all native form elements.
+ * Strips browser-specific appearance, normalizes font inheritance,
+ * sets consistent cursor behavior, and applies touch-friendly defaults.
+ *
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * ## 🗂️ Fieldset & Legend
+ * ---------------------------------------------------------------------------- */
+
+fieldset {
+  border: none;
+  padding: 0;
+}
+
+legend {
+  padding: 0;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🖱️ Buttons
+ * ---------------------------------------------------------------------------- */
+
+button {
+  appearance: none;
+  border: none;
+  background: none;
+  user-select: none;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🎚️ Shared Controls
+ * ---------------------------------------------------------------------------- */
+
+button,
+input,
+label,
+select,
+textarea {
+  touch-action: manipulation;
+}
+
+button,
+input,
+optgroup,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 100%;
+}
+
+button,
+select {
+  text-transform: none;
+}
+
+button:not(:disabled),
+[type=button]:not(:disabled),
+[type=reset]:not(:disabled),
+[type=submit]:not(:disabled),
+label[for],
+select {
+  cursor: pointer;
+}
+
+[disabled],
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+button,
+[type="button"],
+[type="reset"],
+[type="submit"] {
+  appearance: button;
+  -webkit-appearance: button;
+}
+
+input,
+textarea {
+  max-width: 100%;
+}
+
+input,
+select,
+textarea {
+  user-select: text;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🔧 Browser Fixes
+ * ---------------------------------------------------------------------------- */
+
+[type="search"] {
+  appearance: textfield;
+  -webkit-appearance: textfield;
+  outline-offset: -2px;
+}
+
+[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+}
+
+progress {
+  vertical-align: baseline;
+}
+
+textarea {
+  field-sizing: content;
+  resize: vertical;
+}
+
+::-webkit-file-upload-button {
+  appearance: button;
+  -webkit-appearance: button;
+  font: inherit;
+}
+
+::-webkit-inner-spin-button,
+::-webkit-outer-spin-button {
+  height: auto;
+}
+
+::-moz-focus-inner {
+  border-style: none;
+  padding: 0;
+}
+
+:-moz-ui-invalid {
+  box-shadow: none;
+}
+
+/* ============================================================================
+ *
+ * ### 💬 Interactions
+ *
+ * Styles for interactive disclosure elements (summary, details) and the native
+ * dialog element, including open/close transition animations when reduced
+ * motion is not preferred.
+ *
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * ## 📋 Summary & Details
+ * ---------------------------------------------------------------------------- */
+
+summary {
+  display: list-item;
+}
+
+[role="button"],
+details[open] summary,
+summary {
+  user-select: none;
+}
+
+/* ----------------------------------------------------------------------------
+ * ## 🗨️ Dialog
+ * ---------------------------------------------------------------------------- */
+
+dialog {
+  background: var(--bux-page-bg);
+  border: none;
+  color: var(--bux-page-color);
+  margin: auto;
+  max-width: 100%;
+  padding: 0;
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog {
+    opacity: 1;
+    transform: translateY(0);
+    transition:
+      display 0.25s allow-discrete,
+      opacity 0.25s,
+      overlay 0.25s allow-discrete,
+      transform 0.25s;
+  }
+
+  @starting-style {
+    dialog[open] {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+  }
+
+  dialog::backdrop {
+    transition:
+      background-color 0.25s,
+      display 0.25s allow-discrete,
+      overlay 0.25s allow-discrete;
+  }
+
+  @starting-style {
+    dialog[open]::backdrop {
+      background-color: rgba(0, 0, 0, 0);
+    }
+  }
+}
+
+
+/* ============================================================================
+ *
+ * ### 🖨️ Print
+ *
+ * Ensures readable, ink-efficient output when the page is printed:
+ * strips backgrounds, shadows, and colors, and appends link URLs after
+ * anchor text for reference.
+ *
+ * ============================================================================ */
+
+@media print {
+  *,
+  *::before,
+  *::after {
+    background: transparent !important;
+    box-shadow: none !important;
+    color: #000 !important;
+    text-shadow: none !important;
+  }
+
+  a[href]::after {
+    content: " (" attr(href) ")";
+  }
+
+  img,
+  figure {
+    page-break-inside: avoid;
+  }
+}

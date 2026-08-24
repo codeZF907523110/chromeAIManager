@@ -1,7 +1,7 @@
 # Dependencies
 node_modules/
 package-lock.json
-package.json
+
 
 # Build outputs
 dist/
@@ -39,8 +39,3 @@ coverage/
 
 # Chrome extension specific
 # (keep src/ and manifest.json, these are source files)
-
-# Agent skills
-.agents/skills/
-.claude/skills/
-.cursor/skills/

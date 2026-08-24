@@ -27,12 +27,40 @@ export interface ToolCall {
 export interface AIResponse {
   thought?: string
   action:
-    'exec_tool' | 'execute' | 'done' | 'ask' | 'scan' | 'chat' | 'exec_plan' | 'askUserResponse'
+    | 'browser_snapshot'
+    | 'browser_click'
+    | 'browser_type'
+    | 'browser_select_option'
+    | 'browser_hover'
+    | 'browser_press_key'
+    | 'browser_check'
+    | 'browser_uncheck'
+    | 'browser_fill_form'
+    | 'browser_wait_for'
+    | 'browser_take_screenshot'
+    | 'browser_navigate'
+    | 'browser_navigate_back'
+    | 'browser_navigate_forward'
+    | 'browser_reload'
+    | 'browser_tab_list'
+    | 'browser_tab_new'
+    | 'browser_tab_select'
+    | 'browser_tab_close'
+    | 'exec_tool'
+    | 'execute'
+    | 'done'
+    | 'ask'
+    | 'scan'
+    | 'chat'
+    | 'exec_plan'
+    | 'askUserResponse'
+  args?: Record<string, unknown> // 扁平格式参数（方案 B）
   plan?: string
   predict?: string
-  toolCall?: ToolCall
+  toolCall?: ToolCall // 兼容旧格式
   reply?: string
   content?: string
+  step?: number // 步骤序号
   // exec_plan 相关字段
   intent?: {
     goal: string
