@@ -2,7 +2,6 @@
  * Service Worker — AI 浏览器管家后台入口
  * 管理消息路由、上下文收集、命令执行、录制协调
  */
-// @ts-nocheck
 
 import {
   MSG_GET_CONTEXT,
@@ -81,7 +80,8 @@ async function handleRecordingStart() {
     const result = await chrome.runtime.sendMessage({ type: 'START_RECORDING' })
     return result
   } catch (e) {
-    return { success: false, code: 'RECORDING_SW_ERROR', message: e?.message || String(e) }
+    const err = e as { message?: string }
+    return { success: false, code: 'RECORDING_SW_ERROR', message: err?.message || String(e) }
   }
 }
 
@@ -90,7 +90,8 @@ async function handleRecordingStop() {
     const result = await chrome.runtime.sendMessage({ type: 'STOP_RECORDING' })
     return result
   } catch (e) {
-    return { success: false, code: 'RECORDING_SW_ERROR', message: e?.message || String(e) }
+    const err = e as { message?: string }
+    return { success: false, code: 'RECORDING_SW_ERROR', message: err?.message || String(e) }
   }
 }
 
@@ -148,10 +149,10 @@ async function openSidePanel() {
 
 // ──── 安装时日志 ────
 
-chrome.runtime.onInstalled.addListener((details) => {
+chrome.runtime.onInstalled.addListener((details: { reason: string }) => {
   if (details.reason === 'install') {
     console.log('[AI管家] 首次安装')
   } else if (details.reason === 'update') {
-    console.log('[AI管家] 更新到', chrome.runtime.getManifest().version)
+    console.log('[AI管家] 更新到', '0.1.0')
   }
 })

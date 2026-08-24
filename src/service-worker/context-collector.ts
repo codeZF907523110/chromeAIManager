@@ -1,7 +1,6 @@
 /**
  * 上下文收集器 — 收集浏览器当前状态
  */
-// @ts-nocheck
 
 export async function collectContext(
   options: { mode?: string; query?: string } = {}
@@ -14,7 +13,7 @@ export async function collectContext(
     chrome.windows.getCurrent({ populate: true }),
   ])
 
-  const activeTab = currentWindow.tabs?.find((t) => t.active) || null
+  const activeTab = currentWindow.tabs?.find((t: TabInfo) => t.active) || null
 
   if (mode === 'summary') {
     return buildSummary(allTabs, activeTab, bookmarks)
@@ -26,19 +25,19 @@ export async function collectContext(
 // ──── 摘要模式 ────
 
 function buildSummary(
-  tabs: chrome.tabs.Tab[],
-  activeTab: chrome.tabs.Tab | null,
-  bookmarks: chrome.bookmarks.BookmarkTreeNode[]
+  tabs: TabInfo[],
+  activeTab: TabInfo | null,
+  bookmarks: BookmarkNode[]
 ): Record<string, unknown> {
   const domainCounts = new Map<string, number>()
   const groups = new Map<number, number>()
 
-  for (const tab of tabs) {
-    if (!tab.url || tab.url.startsWith('chrome://')) continue
-    const domain = extractDomain(tab.url)
+  for (const t of tabs) {
+    if (!t.url || t.url.startsWith('chrome://')) continue
+    const domain = extractDomain(t.url)
     domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1)
-    if (tab.groupId !== -1) {
-      groups.set(tab.groupId, (groups.get(tab.groupId) || 0) + 1)
+    if (t.groupId !== -1) {
+      groups.set(t.groupId, (groups.get(t.groupId) || 0) + 1)
     }
   }
 
@@ -59,9 +58,9 @@ function buildSummary(
 // ──── 详情模式 ────
 
 function buildDetailed(
-  tabs: chrome.tabs.Tab[],
-  activeTab: chrome.tabs.Tab | null,
-  bookmarks: chrome.bookmarks.BookmarkTreeNode[],
+  tabs: TabInfo[],
+  activeTab: TabInfo | null,
+  bookmarks: BookmarkNode[],
   query: string
 ): Record<string, unknown> {
   const MAX_TABS = 120
@@ -70,7 +69,7 @@ function buildDetailed(
   if (query) {
     const q = query.toLowerCase()
     filteredTabs = tabs.filter(
-      (t) =>
+      (t: TabInfo) =>
         t.url &&
         !t.url.startsWith('chrome://') &&
         ((t.title || '').toLowerCase().includes(q) || (t.url || '').toLowerCase().includes(q))
@@ -110,7 +109,7 @@ function buildDetailed(
 
 // ──── 辅助函数 ────
 
-function formatTab(t: chrome.tabs.Tab) {
+function formatTab(t: TabInfo): TabInfo {
   return {
     id: t.id,
     title: (t.title || '').slice(0, 100),
@@ -119,7 +118,7 @@ function formatTab(t: chrome.tabs.Tab) {
     active: t.active,
     groupId: t.groupId ?? -1,
     index: t.index,
-    muted: t.mutedInfo?.muted || false,
+    muted: false,
   }
 }
 
@@ -131,14 +130,14 @@ function extractDomain(url: string): string {
   }
 }
 
-function extractFolders(tree: chrome.bookmarks.BookmarkTreeNode[]): string[] {
+function extractFolders(tree: BookmarkNode[]): string[] {
   const folders: string[] = []
-  function walk(nodes: chrome.bookmarks.BookmarkTreeNode[], path: string) {
+  function walk(nodes: BookmarkNode[], path: string) {
     for (const node of nodes) {
       if (node.children) {
-        const fullPath = path ? `${path}/${node.title}` : node.title
+        const fullPath = path ? `${path}/${node.title}` : node.title || ''
         folders.push(fullPath)
-        walk(node.children, fullPath)
+        walk(node.children ?? [], fullPath)
       }
     }
   }

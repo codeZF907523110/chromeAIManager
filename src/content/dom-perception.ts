@@ -167,6 +167,9 @@ export function findElementByRef(ref: string): HTMLElement | null {
   const snapshot = snapshotCache
   if (!snapshot) return null
 
+  // 跨页面导航后 snapshot 过期，避免使用旧页面的元素引用
+  if (snapshot.url !== window.location.href) return null
+
   const cleanRef = ref.replace('[ref=', '').replace(']', '')
   const node = snapshot.nodes.find((n) => n.ref === `[ref=${cleanRef}]`)
   if (!node?.xpath) return null
@@ -206,6 +209,11 @@ function isInteractive(el: HTMLElement): boolean {
   const tag = el.tagName.toLowerCase()
 
   if (['a', 'button', 'input', 'select', 'textarea'].includes(tag)) {
+    return true
+  }
+
+  // contenteditable 元素（富文本编辑器、可编辑 div 等）
+  if (el.getAttribute('contenteditable') === 'true' || el.isContentEditable) {
     return true
   }
 
@@ -397,6 +405,12 @@ function getAccessibleName(el: HTMLElement): string {
   }
 
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const placeholder = el.getAttribute('placeholder')
+    if (placeholder) return placeholder
+  }
+
+  // contenteditable 元素的 placeholder
+  if (el.isContentEditable) {
     const placeholder = el.getAttribute('placeholder')
     if (placeholder) return placeholder
   }

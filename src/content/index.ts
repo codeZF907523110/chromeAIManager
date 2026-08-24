@@ -82,42 +82,55 @@ function setupMessageListener(): void {
       }
 
       case 'SELECT': {
-        sendResponse(executeSelect(message.ref, message.value))
+        const ref = typeof message.ref === 'string' ? message.ref : ''
+        const value = typeof message.value === 'string' ? message.value : ''
+        sendResponse(executeSelect(ref, value))
         return false
       }
 
       case 'HOVER': {
-        sendResponse(executeHover(message.ref))
+        const ref = typeof message.ref === 'string' ? message.ref : ''
+        sendResponse(executeHover(ref))
         return false
       }
 
       case 'PRESS_KEY': {
-        sendResponse(executeKeyPress(message.key))
+        const key = typeof message.key === 'string' ? message.key : ''
+        sendResponse(executeKeyPress(key))
         return false
       }
 
       case 'CHECK': {
-        sendResponse(executeCheck(message.ref, true))
+        const ref = typeof message.ref === 'string' ? message.ref : ''
+        sendResponse(executeCheck(ref, true))
         return false
       }
 
       case 'UNCHECK': {
-        sendResponse(executeCheck(message.ref, false))
+        const ref = typeof message.ref === 'string' ? message.ref : ''
+        sendResponse(executeCheck(ref, false))
         return false
       }
 
       case 'FILL_FORM': {
-        sendResponse(executeFillForm(message.fields))
+        const fields = Array.isArray(message.fields)
+          ? (message.fields as Array<{ ref: string; value: string }>)
+          : []
+        sendResponse(executeFillForm(fields))
         return false
       }
 
       case 'WAIT_FOR': {
-        sendResponse(executeWaitFor(message.text, message.ref, message.timeout))
+        const text = typeof message.text === 'string' ? message.text : undefined
+        const ref = typeof message.ref === 'string' ? message.ref : undefined
+        const timeout = typeof message.timeout === 'number' ? message.timeout : undefined
+        sendResponse(executeWaitFor(text, ref, timeout))
         return false
       }
 
       case 'NAVIGATE': {
-        window.location.href = message.url
+        const url = typeof message.url === 'string' ? message.url : ''
+        window.location.href = url
         sendResponse({ success: true, timestamp: message.timestamp } as ContentScriptResponse)
         return false
       }
@@ -213,7 +226,20 @@ function executeType(ref: string, text: string, submit?: boolean): ContentScript
   }
 
   const el = findElementByRef(ref)
-  if (!el || !(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
+  if (!el) {
+    return {
+      success: false,
+      error: 'ELEMENT_NOT_FOUND',
+      message: `Ref ${ref} 对应的元素未找到`,
+      suggestion: 'RESCAN',
+      timestamp: Date.now(),
+    }
+  }
+
+  // 支持 input、textarea 和 contenteditable 元素
+  const isInput =
+    el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable
+  if (!isInput) {
     return {
       success: false,
       error: 'ELEMENT_NOT_INPUT',
@@ -223,9 +249,18 @@ function executeType(ref: string, text: string, submit?: boolean): ContentScript
   }
 
   // 清空并设置值
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(el, text)
-  el.dispatchEvent(new Event('input', { bubbles: true }))
-  el.dispatchEvent(new Event('change', { bubbles: true }))
+  if (el.isContentEditable) {
+    // contenteditable: 先清除再插入文本，触发 input 事件
+    el.textContent = ''
+    el.focus()
+    document.execCommand('insertText', false, text)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  } else {
+    // input/textarea: 直接设 value，绕过 setter 触发框架响应
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(el, text)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  }
 
   if (submit) {
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
@@ -282,7 +317,7 @@ function executeHover(ref: string): ContentScriptResponse {
 
 function executeKeyPress(key: string): ContentScriptResponse {
   const event = new KeyboardEvent('keydown', { key, bubbles: true })
-  document.dispatchEvent(event)
+  document.body.dispatchEvent(event)
   console.log(`[DOM感知] PRESS_KEY: ${key}`)
   return { success: true, timestamp: Date.now() }
 }

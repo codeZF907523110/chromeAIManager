@@ -85,7 +85,6 @@ export type LegacyErrorCode = (typeof LEGACY_ERRORS)[keyof typeof LEGACY_ERRORS]
 
 // ──── 系统常量 ────
 
-export const MAX_ELEMENTS_COUNT = 80
 export const MAX_ELEMENT_TEXT_LENGTH = 200
 export const MAX_AGENT_STEPS = 12
 export const STEP_TIMEOUT_MS = 10000

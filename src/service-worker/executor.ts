@@ -1,7 +1,6 @@
 /**
  * 命令执行器 — 解析 AI 响应并派发到 Chrome API
  */
-// @ts-nocheck
 
 import { execPlan } from './task-planner'
 
@@ -31,8 +30,8 @@ export async function executeCommand(
         return {
           success: false,
           code: 'NEEDS_CONFIRM',
-          message: err.message || '需要确认',
-          detail: err.detail,
+          message: (e as { message?: string }).message || '需要确认',
+          detail: (e as { detail?: Record<string, unknown> }).detail,
         }
       }
       throw err
@@ -149,7 +148,9 @@ export async function executeCommand(
       return await batchExecute(payload)
     // ──── TASK_PLAN ────
     case 'task_plan':
-      return await execPlan(payload)
+      return (await execPlan(
+        payload as unknown as import('./task-planner').ExecPlanPayload
+      )) as unknown as ExecutionResult
     // ──── BROWSER DOM 操作（Playwright MCP 兼容）────
     case 'browser_snapshot':
       return await executeBrowserTool('browser_snapshot', payload)
@@ -267,7 +268,7 @@ async function updateTab(payload: Record<string, unknown>): Promise<ExecutionRes
   if (payload.muted !== undefined) updateProps.muted = payload.muted as boolean
   if (payload.pinned !== undefined) updateProps.pinned = payload.pinned as boolean
   if (payload.discarded !== undefined) updateProps.discarded = payload.discarded as boolean
-  const tab = await chrome.tabs.update(tabId, updateProps)
+  const tab = await chrome.tabs.update(tabId!, updateProps)
   return { success: true, tab, reloaded: payload.reload ? true : undefined }
 }
 
@@ -361,7 +362,8 @@ async function groupByDomain(): Promise<ExecutionResult> {
 
 async function observeBookmarks(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tree = await chrome.bookmarks.getTree()
-  const results: chrome.bookmarks.BookmarkTreeNode[] = []
+  const results: Array<chrome.bookmarks.BookmarkTreeNode & { path?: string; childCount?: number }> =
+    []
   const maxDepth = (payload.maxDepth as number) || 3
   const maxResults = (payload.maxResults as number) || 100
   const nodeType = payload.nodeType as string | undefined
@@ -388,7 +390,7 @@ async function observeBookmarks(payload: Record<string, unknown>): Promise<Execu
       results.push({
         id: node.id,
         title: node.title,
-        type: isFolder ? 'folder' : 'bookmark',
+        type: isFolder ? 'folder' : 'url',
         url: node.url,
         parentId: node.parentId,
         index: node.index,
@@ -406,9 +408,9 @@ async function observeBookmarks(payload: Record<string, unknown>): Promise<Execu
 }
 
 async function moveBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const moveProps: chrome.bookmarks.MoveProperties = {}
+  const moveProps: chrome.bookmarks.MoveProperties = { index: 0 }
   if (payload.parentId !== undefined) moveProps.parentId = payload.parentId as string
-  if (payload.index !== undefined) moveProps.index = payload.index as number
+  moveProps.index = (payload.index as number) ?? 0
   const node = await chrome.bookmarks.move(payload.nodeId as string, moveProps)
   return { success: true, node }
 }
@@ -751,7 +753,11 @@ async function updatePermissions(payload: Record<string, unknown>): Promise<Exec
 
 async function getStorage(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const result = await chrome.storage.local.get(payload.key as string)
-  return { success: true, key: payload.key, value: result[payload.key as string] }
+  return {
+    success: true,
+    key: payload.key,
+    value: (result as Record<string, unknown>)[payload.key as string],
+  }
 }
 
 async function setStorage(payload: Record<string, unknown>): Promise<ExecutionResult> {
