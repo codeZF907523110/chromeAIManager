@@ -70,10 +70,6 @@ export async function executeCommand(
     case 'bookmarks_open_node':
       return await openBookmark(payload)
     case 'bookmarks_remove_node':
-      console.log(
-        '[ServiceWorker] bookmarks_remove_node called with payload:',
-        JSON.stringify(payload)
-      )
       return await removeBookmark(payload)
     case 'bookmarks_add_current_page':
       return await addCurrentPageBookmark(payload)
@@ -325,7 +321,7 @@ async function observeGroups(): Promise<ExecutionResult> {
     if (tab.groupId !== -1) {
       if (!groupMap.has(tab.groupId)) {
         groupMap.set(tab.groupId, {
-          color: tab.groupId !== -1 ? 'gray' : 'gray',
+          color: 'grey',
           title: tab.title,
           tabs: [],
         })

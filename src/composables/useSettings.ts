@@ -5,6 +5,7 @@
 
 import { ref, readonly } from 'vue'
 import type { AIModel } from '../types'
+import { createDefaultModel as createDefaultModelFromConstants } from '../shared/constants'
 
 const STORAGE_KEYS = {
   MODELS: 'ai_models',
@@ -24,16 +25,7 @@ function generateId(): string {
 }
 
 function createDefaultModel(): AIModel {
-  return {
-    id: generateId(),
-    name: 'DeepSeek V3',
-    provider: 'openai',
-    apiKey: '',
-    apiEndpoint: 'https://api.deepseek.com',
-    modelName: 'deepseek-chat',
-    isDefault: true,
-    createdAt: Date.now(),
-  }
+  return createDefaultModelFromConstants(generateId(), Date.now())
 }
 
 export function useSettings() {

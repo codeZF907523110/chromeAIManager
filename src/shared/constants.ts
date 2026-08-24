@@ -2,6 +2,8 @@
  * 消息类型常量（Side Panel ↔ Service Worker）
  */
 
+import type { AIModel } from '../types'
+
 // Side Panel → Service Worker
 export const MSG_GET_CONTEXT = 'GET_CONTEXT'
 export const MSG_GET_BOOKMARKS = 'GET_BOOKMARKS'
@@ -91,6 +93,21 @@ export const STEP_TIMEOUT_MS = 10000
 export const TOTAL_TASK_TIMEOUT_MS = 120000
 export const MAX_CONSECUTIVE_FAILURES = 3
 export const MAX_MESSAGES_COUNT = 30
+
+// ──── 默认模型配置 ────
+
+export function createDefaultModel(id: string, createdAt: number): AIModel {
+  return {
+    id,
+    name: 'DeepSeek V3',
+    provider: 'openai',
+    apiKey: '',
+    apiEndpoint: 'https://api.deepseek.com',
+    modelName: 'deepseek-chat',
+    isDefault: true,
+    createdAt,
+  }
+}
 
 // ──── 受保护页面配置 ────
 

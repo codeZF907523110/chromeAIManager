@@ -39,6 +39,7 @@ async function handleConfirm() {
     await props.onConfirm()
   } catch (e: unknown) {
     console.error('[AI管家] 确认操作失败:', e)
+    emit('cancel')
   } finally {
     loading.value = false
   }

@@ -4,7 +4,15 @@
  */
 
 import { ref, watch, onScopeDispose } from 'vue'
-import type { ChatMessage, MessageLog, AIResponse, Context, ExecutionResult } from '../types'
+import type {
+  ChatMessage,
+  MessageLog,
+  AIResponse,
+  Context,
+  ExecutionResult,
+  Lesson,
+  PlanTracker,
+} from '../types'
 import {
   MSG_GET_CONTEXT,
   MSG_GET_BOOKMARKS,
@@ -28,44 +36,9 @@ import { createRecordingExecutor } from '../recording/executor'
 const SESSION_KEY = 'ai_commander_session'
 const MESSAGE_LOG_KEY = 'ai_message_log'
 
-const MAX_PERSISTED_MESSAGES = 50
+const MAX_PERSISTED_MESSAGES = MAX_MESSAGES_COUNT
 
-export interface AgentState {
-  messageLog: MessageLog[]
-  commandHistory: string[]
-  contextCache: Context | null
-  isSettingsOpen: boolean
-  activeLoopId: string | null
-  conversationMessages: ChatMessage[] | null
-  planTracker: PlanTracker | null
-  lessons: Lesson[]
-  lastScreenshot: string | null
-  displayMode: 'sidepanel'
-  commandInputValue: string
-}
-
-interface PlanStep {
-  step: number
-  thought: string
-  intent: string
-  result: string
-  status: 'ok' | 'failed'
-}
-
-interface PlanTracker {
-  goal: string
-  currentPlan: string
-  steps: PlanStep[]
-}
-
-interface Lesson {
-  domain: string
-  userInput: string
-  intent: string
-  error: string
-  timestamp: number
-}
-
+// ConfirmItem 和 PendingConfirm 是内部配置类型，保留本地定义
 interface ConfirmItem {
   primary: string
   secondary: string
@@ -87,7 +60,7 @@ export function useAIEngine() {
   // ──── 状态 ────
   const messageLog = ref<MessageLog[]>([])
   const contextCache = ref<Context | null>(null)
-  const contextCacheTime = ref(0)
+  let contextCacheAt = 0
   const activeLoopId = ref<string | null>(null)
   const conversationMessages = ref<ChatMessage[] | null>(null)
   const planTracker = ref<PlanTracker | null>(null)
@@ -884,7 +857,7 @@ export function useAIEngine() {
     if (!trimmedText) return
 
     if (trimmedText.startsWith('/')) {
-      // slash 命令：原始输入不进入消息列表（与旧版一致）
+      addMessage('user', trimmedText)
       try {
         await handleSlashCommand(trimmedText)
       } catch (error) {
@@ -1134,7 +1107,7 @@ export function useAIEngine() {
   async function getContext(): Promise<Context> {
     const now = Date.now()
     // 缓存未过期且已有数据则直接返回
-    if (contextCache.value && now - contextCacheTime.value < CONTEXT_CACHE_TTL_MS) {
+    if (contextCache.value && now - contextCacheAt < CONTEXT_CACHE_TTL_MS) {
       return contextCache.value
     }
     try {
@@ -1142,7 +1115,7 @@ export function useAIEngine() {
         type: MSG_GET_CONTEXT,
         options: { mode: 'detailed' },
       })) as Context
-      contextCacheTime.value = now
+      contextCacheAt = now
     } catch (e: unknown) {
       console.warn('[AI管家] 获取上下文失败:', e)
       contextCache.value = { tabs: [], pageStructure: undefined } as unknown as Context
@@ -1184,6 +1157,131 @@ export function useAIEngine() {
   }
 
   // ──── 辅助函数 ────
+
+  /**
+   * 结果字段解析 → 通用描述模板（格式紧凑，用于 agent loop 日志）
+   */
+  function formatResultDescription(r: Record<string, unknown>): string {
+    if (r.code === 'NEEDS_CONFIRM') return `⚠️ ${r.message}`
+    if (r.code) return `[${r.code}] ${r.message || '操作失败'}`
+    if (r.error) return `失败: ${typeof r.error === 'object' ? JSON.stringify(r.error) : r.error}`
+    // DOM 脚本结果
+    if (r.result !== undefined) {
+      if (r.result === null) return '脚本结果: null（通常表示未命中元素）'
+      const s = typeof r.result === 'string' ? r.result : JSON.stringify(r.result)
+      return '脚本结果: ' + s.slice(0, 100)
+    }
+    // Tabs
+    if (r.tabs) return `列出 ${r.observed || (r.tabs as unknown[]).length} 个标签`
+    if (r.tab && r.active !== undefined)
+      return r.active
+        ? `切换到标签 *${(r.tab as { title?: string }).title || ''}*`
+        : `更新标签 *${(r.tab as { title?: string }).title || ''}*`
+    if (r.tab)
+      return `创建标签 *${(r.tab as { title?: string }).title || (r.tab as { url?: string }).url || ''}*`
+    if (r.moved !== undefined) return `移动 ${r.moved} 个标签`
+    if (r.removed !== undefined) return `关闭 ${r.removed} 个标签`
+    if (r.groupedTabs) return `创建分组 *${r.title || r.groupName}* (${r.groupedTabs} 个标签)`
+    if (r.groupId && !r.groupedTabs) return `更新分组 *${r.title || r.groupId}*`
+    if (r.ungrouped !== undefined) return `取消 ${r.ungrouped} 个分组`
+    if (r.groups) return `列出 ${(r.groups as unknown[]).length} 个标签组`
+    if (r.reloaded) return '刷新标签'
+    if (r.pinned !== undefined) return r.pinned ? '固定标签' : '取消固定'
+    if (r.discarded !== undefined) return `休眠 ${r.discarded} 个标签`
+    if (r.duplicated !== undefined) return '复制标签'
+    // Bookmarks
+    if (r.nodes) return `观察到 ${r.observed || (r.nodes as unknown[]).length} 个书签节点`
+    if (r.movedNode)
+      return `移动 ${(r.movedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.movedNode as { title: string }).title}*`
+    if (r.createdNode)
+      return `创建 ${(r.createdNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.createdNode as { title: string }).title}*`
+    if (r.existingNode)
+      return `目标已存在，复用 ${(r.existingNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.existingNode as { title: string }).title}*`
+    if (r.updatedNode)
+      return `更新 ${(r.updatedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.updatedNode as { title: string }).title}*`
+    if (r.openedNode) return `打开书签 *${(r.openedNode as { title: string }).title}*`
+    if (r.removedNode)
+      return `删除 ${(r.removedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.removedNode as { title: string }).title}*`
+    if (r.bookmark) return `添加书签 *${(r.bookmark as { title: string }).title}*`
+    // Windows
+    if (r.windows) return `列出 ${(r.windows as unknown[]).length} 个窗口`
+    if (r.window) return '创建窗口'
+    // History
+    if (r.items) return `搜索到 ${r.found} 条历史`
+    if (r.deleted !== undefined && r.timeRange) return `删除 ${r.deleted} 条历史 (${r.timeRange})`
+    if (r.deleted !== undefined) return `删除 ${r.deleted} 条记录`
+    // Navigation
+    if (r.navigated) return `导航至 ${r.navigated}`
+    if (r.dataUrl && !r.stopped && !r.pendingRecording) return '截图已捕获'
+    // Page
+    if (r.zoomFactor !== undefined) return `缩放至 ${Math.round((r.zoomFactor as number) * 100)}%`
+    if (r.opened) return '打开下载页面'
+    // Theme
+    if (r.themeMode !== undefined) return `主题: ${r.themeMode}`
+    // Font
+    if (r.fontSize !== undefined) return `字号: ${r.fontSizeLabel || r.fontSize + 'px'}`
+    if (r.font) return `字体: ${r.font}`
+    // Cookies
+    if (r.cookies) return `查看 ${r.found || 0} 个 Cookie (${r.domain})`
+    if (r.domain && r.deleted !== undefined) return `清除 ${r.domain} 的 ${r.deleted} 个 Cookie`
+    // Top Sites
+    if (r.sites) return `展示 ${r.found || 0} 个常用网站`
+    // Extensions
+    if (r.extensions) return `列出 ${r.found || 0} 个扩展`
+    if (r.id && r.enabled !== undefined) return r.enabled ? '启用扩展' : '禁用扩展'
+    if (r.id && (r as { uninstalled?: string }).uninstalled) return `卸载扩展`
+    // Permissions
+    if (r.permissions) return `查看 ${r.domain} 的权限设置`
+    if (r.setting && r.value) return `设置 ${r.domain} 的 ${r.setting} 权限`
+    // Storage
+    if (r.key && r.value !== undefined)
+      return `存储 *${r.key}* = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
+    if (r.storageRemoved) return `删除存储 *${r.storageRemoved}*`
+    // Recording
+    if (r.recording === 'screen') return `开始录制屏幕`
+    if (r.recording) return `开始录制 ${r.recording}`
+    if (r.saved) return `录制已保存为 ${r.saved}`
+    if (r.stopped) {
+      const size = r.size as number | undefined
+      return size ? `录制已停止 (${(size / 1024 / 1024).toFixed(1)}MB)` : '录制已停止'
+    }
+    // Sessions
+    if (r.restored) return `恢复标签 ${r.restored}`
+    // Batch
+    if (r.results && r.total !== undefined) return `批量执行 ${r.total} 个操作`
+    // 旧格式兼容
+    if (r.action === 'query') return `查询 ${r.count} 个 "${r.value || r.selector || '元素'}"`
+    if (r.action === 'modify')
+      return `修改 ${r.changed} 个 "${r.value || r.selector}" 的 ${r.property}`
+    if (r.action === 'remove') return `删除 ${r.removed} 个 "${r.value || r.selector}"`
+    if (r.action === 'add') return `添加 <${r.tag}> 到 ${r.target || r.parentSelector || 'body'}`
+    if (r.action === 'style') return `修改 ${r.changed} 个 "${r.value || r.selector}" 样式`
+    if (r.action === 'event') {
+      const evLabels: Record<string, string> = {
+        click: '点击',
+        input: '输入',
+        focus: '聚焦',
+        blur: '失焦',
+        submit: '提交表单',
+        change: '变更',
+        scroll: '滚动',
+        select: '全选',
+        keydown: '按键',
+        keyup: '抬起',
+      }
+      return `${evLabels[r.eventType as string] || r.eventType} "${r.value || r.selector}"${r.eventValue ? ' -> ' + r.eventValue : ''}`
+    }
+    if (r.enabled) return `启用扩展 *${r.enabled}*`
+    if (r.disabled) return `禁用扩展 *${r.disabled}*`
+    if (r.moved && r.to) return `移动 *${r.moved}* → ${r.to}`
+    if (r.reordered) return `调整 *${r.reordered}* 位置`
+    if (r.sortedBookmarks) return `整理 *${r.folder}* 中 ${r.sortedBookmarks} 个书签`
+    if ((r.folder as { title?: string })?.title)
+      return `创建文件夹 *${(r.folder as { title: string }).title}*`
+    if (r.renamed && r.to) return `重命名 *${r.renamed}* -> *${r.to}*`
+    if (r.renamed) return `重命名 *${r.renamed}*`
+    return JSON.stringify(r).slice(0, 100)
+  }
 
   function addMessage(
     type: MessageLog['type'],
@@ -1365,127 +1463,11 @@ export function useAIEngine() {
     }
   }
 
+  /**
+   * Agent loop 步骤日志摘要（紧凑格式）
+   */
   function formatStepSummary(result: ExecutionResult, _toolName: string): string {
-    const r = result as Record<string, unknown>
-    if (r.code === 'NEEDS_CONFIRM') return `⚠️ ${r.message}`
-    if (r.code) return `[${r.code}] ${r.message || '操作失败'}`
-    if (r.error) return `失败: ${typeof r.error === 'object' ? JSON.stringify(r.error) : r.error}`
-    // DOM 脚本结果
-    if (r.result !== undefined) {
-      if (r.result === null) return '脚本结果: null（通常表示未命中元素）'
-      const s = typeof r.result === 'string' ? r.result : JSON.stringify(r.result)
-      return '脚本结果: ' + s.slice(0, 100)
-    }
-    // Tabs
-    if (r.tabs) return `列出 ${r.observed || (r.tabs as unknown[]).length} 个标签`
-    if (r.tab && r.active !== undefined)
-      return r.active
-        ? `切换到标签 *${(r.tab as { title?: string }).title || ''}*`
-        : `更新标签 *${(r.tab as { title?: string }).title || ''}*`
-    if (r.tab)
-      return `创建标签 *${(r.tab as { title?: string }).title || (r.tab as { url?: string }).url || ''}*`
-    if (r.moved !== undefined) return `移动 ${r.moved} 个标签`
-    if (r.removed !== undefined) return `关闭 ${r.removed} 个标签`
-    if (r.groupedTabs) return `创建分组 *${r.title || r.groupName}* (${r.groupedTabs} 个标签)`
-    if (r.groupId && !r.groupedTabs) return `更新分组 *${r.title || r.groupId}*`
-    if (r.ungrouped !== undefined) return `取消 ${r.ungrouped} 个分组`
-    if (r.groups) return `列出 ${(r.groups as unknown[]).length} 个标签组`
-    if (r.reloaded) return '刷新标签'
-    if (r.pinned !== undefined) return r.pinned ? '固定标签' : '取消固定'
-    if (r.discarded !== undefined) return `休眠 ${r.discarded} 个标签`
-    if (r.duplicated !== undefined) return '复制标签'
-    // Bookmarks
-    if (r.nodes) return `观察到 ${r.observed || (r.nodes as unknown[]).length} 个书签节点`
-    if (r.movedNode)
-      return `移动 ${(r.movedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.movedNode as { title: string }).title}*`
-    if (r.createdNode)
-      return `创建 ${(r.createdNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.createdNode as { title: string }).title}*`
-    if (r.existingNode)
-      return `目标已存在，复用 ${(r.existingNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.existingNode as { title: string }).title}*`
-    if (r.updatedNode)
-      return `更新 ${(r.updatedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.updatedNode as { title: string }).title}*`
-    if (r.openedNode) return `打开书签 *${(r.openedNode as { title: string }).title}*`
-    if (r.removedNode)
-      return `删除 ${(r.removedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.removedNode as { title: string }).title}*`
-    if (r.bookmark) return `添加书签 *${(r.bookmark as { title: string }).title}*`
-    // Windows
-    if (r.windows) return `列出 ${(r.windows as unknown[]).length} 个窗口`
-    if (r.window) return '创建窗口'
-    // History
-    if (r.items) return `搜索到 ${r.found} 条历史`
-    if (r.deleted !== undefined && r.timeRange) return `删除 ${r.deleted} 条历史 (${r.timeRange})`
-    if (r.deleted !== undefined) return `删除 ${r.deleted} 条记录`
-    // Navigation
-    if (r.navigated) return `导航至 ${r.navigated}`
-    if (r.dataUrl && !r.stopped && !r.pendingRecording) return '截图已捕获'
-    // Page
-    if (r.zoomFactor !== undefined) return `缩放至 ${Math.round((r.zoomFactor as number) * 100)}%`
-    if (r.opened) return '打开下载页面'
-    // Theme
-    if (r.themeMode !== undefined) return `主题: ${r.themeMode}`
-    // Font
-    if (r.fontSize !== undefined) return `字号: ${r.fontSizeLabel || r.fontSize + 'px'}`
-    if (r.font) return `字体: ${r.font}`
-    // Cookies
-    if (r.cookies) return `查看 ${r.found || 0} 个 Cookie (${r.domain})`
-    if (r.domain && r.deleted !== undefined) return `清除 ${r.domain} 的 ${r.deleted} 个 Cookie`
-    // Top Sites
-    if (r.sites) return `展示 ${r.found || 0} 个常用网站`
-    // Extensions
-    if (r.extensions) return `列出 ${r.found || 0} 个扩展`
-    if (r.id && r.enabled !== undefined) return r.enabled ? '启用扩展' : '禁用扩展'
-    if (r.id && (r as { uninstalled?: string }).uninstalled) return `卸载扩展`
-    // Permissions
-    if (r.permissions) return `查看 ${r.domain} 的权限设置`
-    if (r.setting && r.value) return `设置 ${r.domain} 的 ${r.setting} 权限`
-    // Storage
-    if (r.key && r.value !== undefined)
-      return `存储 *${r.key}* = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
-    if (r.storageRemoved) return `删除存储 *${r.storageRemoved}*`
-    // Recording
-    if (r.recording === 'screen') return `开始录制屏幕`
-    if (r.recording) return `开始录制 ${r.recording}`
-    if (r.saved) return `录制已保存为 ${r.saved}`
-    if (r.stopped) {
-      const size = r.size as number | undefined
-      return size ? `录制已停止 (${(size / 1024 / 1024).toFixed(1)}MB)` : '录制已停止'
-    }
-    // Sessions
-    if (r.restored) return `恢复标签 ${r.restored}`
-    // Batch
-    if (r.results && r.total !== undefined) return `批量执行 ${r.total} 个操作`
-    // 旧格式兼容
-    if (r.action === 'query') return `查询 ${r.count} 个 "${r.value || r.selector || '元素'}"`
-    if (r.action === 'modify')
-      return `修改 ${r.changed} 个 "${r.value || r.selector}" 的 ${r.property}`
-    if (r.action === 'remove') return `删除 ${r.removed} 个 "${r.value || r.selector}"`
-    if (r.action === 'add') return `添加 <${r.tag}> 到 ${r.target || r.parentSelector || 'body'}`
-    if (r.action === 'style') return `修改 ${r.changed} 个 "${r.value || r.selector}" 样式`
-    if (r.action === 'event') {
-      const evLabels: Record<string, string> = {
-        click: '点击',
-        input: '输入',
-        focus: '聚焦',
-        blur: '失焦',
-        submit: '提交表单',
-        change: '变更',
-        scroll: '滚动',
-        select: '全选',
-        keydown: '按键',
-        keyup: '抬起',
-      }
-      return `${evLabels[r.eventType as string] || r.eventType} "${r.value || r.selector}"${r.eventValue ? ' -> ' + r.eventValue : ''}`
-    }
-    if (r.enabled) return `启用扩展 *${r.enabled}*`
-    if (r.disabled) return `禁用扩展 *${r.disabled}*`
-    if (r.moved && r.to) return `移动 *${r.moved}* → ${r.to}`
-    if (r.reordered) return `调整 *${r.reordered}* 位置`
-    if (r.sortedBookmarks) return `整理 *${r.folder}* 中 ${r.sortedBookmarks} 个书签`
-    if ((r.folder as { title?: string })?.title)
-      return `创建文件夹 *${(r.folder as { title: string }).title}*`
-    if (r.renamed && r.to) return `重命名 *${r.renamed}* -> *${r.to}*`
-    if (r.renamed) return `重命名 *${r.renamed}*`
-    return JSON.stringify(result).slice(0, 100)
+    return formatResultDescription(result as Record<string, unknown>)
   }
 
   function formatHelp(): string {

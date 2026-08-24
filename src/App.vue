@@ -119,7 +119,7 @@
       <!-- 关于页 -->
       <div v-else-if="settingsPage === 'about'" class="about-content">
         <h3>AI 浏览器管家</h3>
-        <p class="version">版本 0.1.0</p>
+        <p class="version">版本 {{ appVersion }}</p>
         <p class="desc">一个基于 AI 的浏览器命令中心</p>
       </div>
     </el-drawer>
@@ -147,10 +147,10 @@
             />
           </el-form-item>
           <el-form-item label="API 端点">
-            <el-input v-model="newModel.apiEndpoint" placeholder="https://api.deepseek.com" />
+            <el-input v-model="newModel.apiEndpoint" placeholder="如：https://api.openai.com" />
           </el-form-item>
           <el-form-item label="模型名称">
-            <el-input v-model="newModel.modelName" placeholder="deepseek-chat" />
+            <el-input v-model="newModel.modelName" placeholder="如：gpt-4o" />
           </el-form-item>
         </template>
       </el-form>
@@ -209,6 +209,12 @@ import type { AIModel, AIProvider } from './types'
 
 type SettingsPage = 'home' | 'models' | 'about'
 
+// 版本号 — 从 manifest.json 读取（Service Worker 环境）或在构建时由 Vite 注入
+const appVersion =
+  (typeof chrome !== 'undefined' && chrome.runtime?.getManifest()?.version) ||
+  import.meta.env.VITE_APP_VERSION ||
+  '0.1.0'
+
 const {
   state,
   handleSubmit: aiHandleSubmit,
@@ -246,8 +252,8 @@ const newModel = ref({
   name: '',
   provider: 'openai' as AIProvider,
   apiKey: '',
-  apiEndpoint: 'https://api.deepseek.com',
-  modelName: 'deepseek-chat',
+  apiEndpoint: '',
+  modelName: '',
 })
 
 async function handleAddModel() {
@@ -257,8 +263,8 @@ async function handleAddModel() {
     name: '',
     provider: 'openai',
     apiKey: '',
-    apiEndpoint: 'https://api.deepseek.com',
-    modelName: 'deepseek-chat',
+    apiEndpoint: '',
+    modelName: '',
   }
   showAddDialog.value = false
 }

@@ -153,6 +153,6 @@ chrome.runtime.onInstalled.addListener((details: { reason: string }) => {
   if (details.reason === 'install') {
     console.log('[AI管家] 首次安装')
   } else if (details.reason === 'update') {
-    console.log('[AI管家] 更新到', '0.1.0')
+    console.log('[AI管家] 更新到', (chrome.runtime.getManifest() as { version: string }).version)
   }
 })

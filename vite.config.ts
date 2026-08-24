@@ -16,6 +16,9 @@ import { fileURLToPath } from 'url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const distDir = resolve(__dirname, 'dist')
 
+// 从 package.json 读取版本号
+const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'))
+
 // ──── 构建自定义插件 ────
 
 function chromeExtensionPlugin() {
@@ -112,6 +115,9 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
     },
   },
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   build: {
     outDir: distDir,
     emptyOutDir: false,
@@ -122,7 +128,7 @@ export default defineConfig({
         // Service Worker 入口
         'service-worker': resolve(__dirname, 'src/service-worker/index.ts'),
         // Content Script 入口
-        'content': resolve(__dirname, 'src/content/index.ts'),
+        content: resolve(__dirname, 'src/content/index.ts'),
       },
       output: {
         entryFileNames: '[name].js',

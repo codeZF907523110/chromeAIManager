@@ -2,31 +2,13 @@
  * UI 相关类型定义
  */
 
-// 注意：MessageLog 的权威定义在 types/ai.ts，此文件仅为备份，请以 ai.ts 为准
+// 导入依赖类型
+import type { Context } from './context'
+import type { MessageLog, ChatMessage } from './ai'
+import type { Lesson, PlanTracker } from './context'
 
-// ──── 历史记录类型 ────
-
-export interface Lesson {
-  domain: string
-  userInput: string
-  intent: string
-  error: string
-  timestamp: number
-}
-
-// ──── 计划追踪类型 ────
-
-export interface PlanTracker {
-  goal: string
-  currentPlan: string
-  steps: {
-    step: number
-    thought: string
-    intent: string
-    result: string
-    status: 'ok' | 'failed'
-  }[]
-}
+// Lesson、PlanTracker 的权威定义在 types/context.ts，此处 re-export 保持单一数据源
+export type { Lesson, PlanTracker } from './context'
 
 // ──── Agent 状态类型 ────
 
@@ -51,7 +33,3 @@ export interface Settings {
   apiEndpoint: string
   modelName: string
 }
-
-// 导入 Context 类型
-import type { Context } from './context'
-import type { MessageLog, ChatMessage } from './ai'

@@ -5,17 +5,17 @@
 import { detectAICapability, AI_CAPABILITIES } from './api-detector'
 import { GeminiNanoAdapter } from './gemini-nano'
 import { OpenAIAdapter } from './openai-adapter'
-import type { AIAdapter, AIOptions, AIStatus, ChatMessage } from '../../types'
+import type { AIAdapter, AIOptions, AIStatus, ChatMessage, AIModel } from '../../types'
 
 export class AIEngine {
   private backend: AIAdapter | null = null
   private _checked: AIStatus | null = null
-  private currentModel: any = null
+  private currentModel: AIModel | null = null
 
   /**
    * 设置当前使用的模型
    */
-  setModel(model: any): void {
+  setModel(model: AIModel): void {
     this.currentModel = model
     this.reset()
   }
