@@ -16,6 +16,7 @@
     "@lucide/vue": "^1.28.0",
     "dompurify": "^3.4.13",
     "element-plus": "^2.14.3",
+    "lucide-vue-next": "^1.0.0",
     "marked": "^18.0.7",
     "vue": "^3.5.0"
   },
