@@ -1542,6 +1542,11 @@ lodash@^4.17.21, lodash@^4.18.1:
   resolved "https://registry.npmmirror.com/lodash/-/lodash-4.18.1.tgz#ff2b66c1f6326d59513de2407bf881439812771c"
   integrity sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==
 
+lucide-vue-next@^1.0.0:
+  version "1.0.0"
+  resolved "http://artifactory.intra.xiaojukeji.com/artifactory/api/npm/npm/lucide-vue-next/-/lucide-vue-next-1.0.0.tgz?dl=https%3A%2F%2Fregistry.npmmirror.com%2Flucide-vue-next%2F-%2Flucide-vue-next-1.0.0.tgz#663ad26b7bfa327c7662b75bb0b843ebe749a31b"
+  integrity sha512-V6SPvx1IHTj/UY+FrIYWV5faISsPSb8BnWSFDxAtezWKvWc9ZZ40PDrdu1/Qb5vg4lHWr1hs1BAMGVGm6V1Xdg==
+
 magic-string@^0.30.21:
   version "0.30.21"
   resolved "https://registry.npmmirror.com/magic-string/-/magic-string-0.30.21.tgz#56763ec09a0fa8091df27879fd94d19078c00d91"
