@@ -12,6 +12,7 @@ import type {
   ExecutionResult,
   Lesson,
   PlanTracker,
+  MessageBody,
 } from '../types'
 import {
   MSG_GET_CONTEXT,
@@ -30,6 +31,7 @@ import { AIEngine } from '../shared/ai/engine'
 import { buildAgentSystemPrompt } from '../shared/prompts'
 import { repairJSON } from '../shared/json-repair'
 import { wrapCatReply } from '../shared/personality'
+import { buildMarkdownBody } from '../shared/block-renderers'
 import { useSettings } from './useSettings'
 import { createRecordingExecutor } from '../recording/executor'
 
@@ -150,12 +152,48 @@ export function useAIEngine() {
   /**
    * 加载持久化的消息
    */
+  /**
+   * 把持久化记录反序列化为 MessageLog。
+   *
+   * 兼容两种历史形态：
+   *   - 老数据 text: string（无 markdown / components）
+   *   - 新数据 text: MessageBody = { markdown, components? }
+   *
+   * 损坏或形状不符的记录降级为 system + 空 markdown 气泡，避免组件渲染崩。
+   */
+  function normalizePersistedMessage(raw: unknown): MessageLog | null {
+    if (!raw || typeof raw !== 'object') return null
+    const m = raw as Partial<MessageLog> & { text?: unknown }
+    let text: MessageBody
+    if (typeof m.text === 'string') {
+      text = { markdown: m.text }
+    } else if (
+      m.text &&
+      typeof m.text === 'object' &&
+      'markdown' in (m.text as object) &&
+      typeof (m.text as { markdown: unknown }).markdown === 'string'
+    ) {
+      text = m.text as MessageBody
+    } else {
+      return null
+    }
+    if (!text.markdown.trim() && !m.image && !m.video && !m.recordingFile) return null
+    const validTypes: MessageLog['type'][] = ['user', 'system', 'ai', 'ai-chat', 'error']
+    const type = validTypes.includes(m.type as MessageLog['type'])
+      ? (m.type as MessageLog['type'])
+      : 'system'
+    return { type, text, image: m.image, video: m.video, recordingFile: m.recordingFile }
+  }
+
   async function loadPersistedMessages() {
     try {
       const result = (await chrome.storage.local.get(MESSAGE_LOG_KEY)) as Record<string, unknown>
-      const persisted = result[MESSAGE_LOG_KEY] as MessageLog[] | undefined
+      const persisted = result[MESSAGE_LOG_KEY] as unknown[] | undefined
       if (persisted && Array.isArray(persisted)) {
-        messageLog.value = persisted.slice(-MAX_PERSISTED_MESSAGES)
+        messageLog.value = persisted
+          .slice(-MAX_PERSISTED_MESSAGES)
+          .map(normalizePersistedMessage)
+          .filter((message): message is MessageLog => message !== null)
       }
     } catch {
       // ignore
@@ -325,9 +363,7 @@ export function useAIEngine() {
         jsonRetryCount = 0
 
         if (json.action === 'done') {
-          const doneReply = json.reply || json.content || '操作完成'
-          console.log('[AI Commander] done action, reply:', JSON.stringify(doneReply))
-          emitAIChat(doneReply, true)
+          emitAIChat(resolveAIReply(json, '操作完成'), true)
           return
         }
 
@@ -336,9 +372,7 @@ export function useAIEngine() {
           conversationMessages.value = [...messages]
           activeLoopId.value = null
           persistPlanTracker()
-          const askReply = json.reply || json.content || '请提供更多信息'
-          console.log('[AI Commander] ask action, reply:', JSON.stringify(askReply))
-          emitAIChat(askReply, false)
+          emitAIChat(resolveAIReply(json, '请提供更多信息'), false)
           return
         }
 
@@ -551,17 +585,7 @@ export function useAIEngine() {
         }
 
         if (json.action === 'chat') {
-          // 兼容多种字段名：reply、message、content
-          const reply =
-            (json.args?.reply as string) ||
-            (json.args?.message as string) ||
-            (json.args?.content as string) ||
-            json.reply ||
-            json.content ||
-            ''
-          console.log('[AI Commander] chat action detected, reply:', JSON.stringify(reply))
-          console.log('[AI Commander] chat action full json:', JSON.stringify(json))
-          emitAIChat(reply, false)
+          emitAIChat(resolveAIReply(json, ''), false)
           messages.push({ role: 'assistant', content: raw })
           conversationMessages.value = [...messages]
           activeLoopId.value = null
@@ -620,7 +644,9 @@ export function useAIEngine() {
         }
 
         if (toolName === 'chat') {
-          emitAIChat((toolArgs?.reply as string) || '', true)
+          // 老 toolCall 格式：args.reply 是 string
+          const reply = toolArgs?.reply
+          emitAIChat(typeof reply === 'string' ? reply : '', true)
           return
         }
 
@@ -1324,7 +1350,9 @@ export function useAIEngine() {
   // ──── 辅助函数 ────
 
   /**
-   * 结果字段解析 → 通用描述模板（格式紧凑，用于 agent loop 日志）
+   * 结果字段解析 → 通用描述模板
+   *
+   * 用于 agent loop 步骤日志（formatStepSummary）和 markdown-factory 未覆盖时的 fallback。
    */
   function formatResultDescription(r: Record<string, unknown>): string {
     if (r.code === 'NEEDS_CONFIRM') return `⚠️ ${r.message}`
@@ -1448,22 +1476,34 @@ export function useAIEngine() {
     return JSON.stringify(r).slice(0, 100)
   }
 
+  /**
+   * 把字符串 / MessageBody 规范化为 MessageBody
+   * 字符串 → { markdown }；对象透传
+   *
+   * 第一版一次性切完：所有调用点必须传入 MessageBody 或 string，
+   * addMessage 内部归一化，不存在"老 string 兼容入口"。
+   */
+  function normalizeBody(text: string | MessageBody): MessageBody {
+    return typeof text === 'string' ? { markdown: text } : text
+  }
+
   function addMessage(
     type: MessageLog['type'],
-    text: string,
+    text: string | MessageBody,
     image?: string,
     video?: string,
     recordingFile?: MessageLog['recordingFile']
   ): void {
+    const body = normalizeBody(text)
     console.log(
       '[AI Commander] addMessage called, type:',
       type,
-      'text length:',
-      text.length,
-      'text preview:',
-      text?.slice(0, 50)
+      'markdown length:',
+      body.markdown.length,
+      'components:',
+      body.components?.length ?? 0
     )
-    messageLog.value.push({ type, text, image, video, recordingFile })
+    messageLog.value.push({ type, text: body, image, video, recordingFile })
     if (isInitialized.value) {
       persistMessages()
     }
@@ -1664,6 +1704,8 @@ export function useAIEngine() {
     response: unknown,
     slots?: Record<string, unknown>
   ) {
+    // 预留给后续 markdown factory 按命令参数定制文案
+    void slots
     const result = response as ExecutionResult
     if (result.success === false && result.code) {
       // 失败提示：用 ai-chat 通道，让用户感觉 AI 在主动回应，
@@ -1682,8 +1724,6 @@ export function useAIEngine() {
     }
 
     const r = result as Record<string, unknown>
-    // 局部 slots（renderExecutionResult 第三个参数）：sort_tabs 等命令需要根据 order 字段显示反馈
-    const localSlots = (slots || {}) as Record<string, unknown>
 
     // 客户端执行路径：chrome.tabs.group 在 MV3 SW 上下文会被静默挂起
     // （SW 不是用户激活的上下文）。SW 把分组数据准备好后返回 clientExec 标志，
@@ -1817,214 +1857,35 @@ export function useAIEngine() {
       // 已在 agent loop 中通过 lastScreenshot + emitAIChat 处理，此处仅作兜底摘要
     }
 
-    let text = '操作完成'
-
-    // intent 感知覆盖
-    if (intent === 'find_tab') {
-      const tabs = (r.tabs as Array<{ title?: string; url: string }>) || []
-      if (tabs.length === 0) text = `没有找到匹配的标签页`
-      else
-        text = `找到 ${tabs.length} 个匹配标签:\n${tabs
-          .map((t) => `  ${t.title || t.url}\n    ${t.url}`)
-          .join('\n')}`
-    } else if (intent === 'list_groups') {
-      const groups = (r.groups as Array<{ title?: string; tabs: unknown[] }>) || []
-      if (groups.length === 0) text = '当前没有标签分组'
-      else text = `找到 ${groups.length} 个分组`
-    } else if (intent === 'group_by_domain') {
-      // 已经在前面的 clientExec 分支处理过：side panel 直接调 chrome.tabs.group
-      // 这里只兜底 SW 异常或分组数为 0 的情况
-      const groupsCreated = (r.groupsCreated as number) ?? 0
-      if (groupsCreated === 0) {
-        text = (r.message as string) || '没有需要分组的同域名标签'
-      } else {
-        text = `已按域名自动分组：创建 ${groupsCreated} 个分组`
-      }
-    } else if (intent === 'ungroup_all') {
-      // 已经在前面的 clientExec 分支处理过
-      const cleared = (r.cleared as number) ?? 0
-      if (cleared === 0) {
-        text = (r.message as string) || '当前没有任何标签分组'
-      } else {
-        text = `已取消 ${cleared} 个分组`
-      }
-    } else if (intent === 'sort_tabs' && r.moved) {
-      // sort_tabs 默认按 domain 升序，title 时显示"按标题"，与 precompute 里 order 取值对齐
-      const order = (localSlots.order as string) || 'domain'
-      const orderLabel = order === 'title' ? '标题' : '域名字母'
-      text = `已按 ${orderLabel}排序 ${r.moved} 个标签`
-    } else if (intent === 'pin_tab') {
-      const tab = r.tab as { pinned?: boolean } | undefined
-      text = tab?.pinned ? '已固定标签' : '已取消固定'
-    } else if (intent === 'reload_tab') text = '已刷新'
-    else if (intent === 'duplicate_tab') text = '标签已复制'
-    else if (intent === 'mute_tabs_by_domain' && r.tab) text = '已静音'
-    else if (intent === 'unmute_tabs_by_domain' && r.tab) text = '已取消静音'
-    else if (intent === 'discard_tabs' && r.tab) text = '已休眠'
-    else if (intent === 'remove_bookmark') {
-      // SW 端在勾选子集删除时返回 removed: N；单节点删除没有 removed，按 1 处理
-      const removed = (r.removed as number) ?? 1
-      text = `已删除 ${removed} 个书签`
-    } else if (intent === 'clear_cookies') text = 'Cookie 已清理'
-    else if (intent === 'close_duplicate_tabs' && r.removed) text = `已关闭 ${r.removed} 个重复标签`
-    else if (intent === 'close_tabs_by_url') {
-      // 没有匹配标签时 SW 返回 removed: 0 + message，r.removed 为 0 走通用兜底会失真
-      text = r.removed ? `已关闭 ${r.removed} 个标签` : (r.message as string) || '没有可关闭的标签'
-    } else if (intent === 'close_other_tabs' && r.removed) text = `已关闭 ${r.removed} 个标签`
-    else if (intent === 'history_remove') {
-      // 子集删除时 SW 返回 deleted: N；按时间段删除时也可能带 deleted
-      const deleted = (r.deleted as number) ?? 0
-      text = deleted > 0 ? `已删除 ${deleted} 条历史记录` : '没有可删除的历史记录'
+    // 先按用户 intent 处理所有 tabs_update 语义，不能仅凭返回的 tab 字段猜成“创建”。
+    if (intent === 'pin_tab') {
+      const pinned = (r.tab as { pinned?: boolean } | undefined)?.pinned
+      addMessage('ai-chat', { markdown: wrapCatReply(pinned ? '已固定标签' : '已取消固定') })
+      return
     }
-    // 通用结果类型
-    else if (r.closed) text = `已为你关闭 ${r.closed} 个标签页`
-    else if (r.focused) text = `已切换到: ${(r.focused as { title?: string }).title || ''}`
-    else if (r.found && r.bookmarks)
-      text = `为你找到 ${r.found} 个书签:\n${(r.bookmarks as Array<{ title: string; url: string }>).map((b) => `  ${b.title} — ${b.url}`).join('\n')}`
-    else if (r.items && intent === 'search_history') {
-      // Markdown 表格渲染：标题里明确"今天"，避免用户误以为是其它时间窗。
-      // chrome.history 返回 visitCount 时只显示数字 > 1 的项，避免"访问 1 次"噪声。
-      // URL 超长截断：单元格文字限制 ~24 字符，剩余用 … 表示；完整 URL 放在 `<a title>`
-      // 上，鼠标 hover 时浏览器自动展示原生 tooltip。marked 会原样保留 title 属性，再交给 DOMPurify。
-      const items = r.items as Array<{
-        title?: string
-        url: string
-        lastVisitTime?: number
-        visitCount?: number
-      }>
-      const count = r.found || items.length
-      const timeLabel = (r.timeRange as { label?: string } | undefined)?.label || '今天'
-      if (count === 0) {
-        text = `今天还没有浏览记录呢~`
-      } else {
-        const header = `为你找到 **${count}** 条**${timeLabel}**的浏览记录：`
-        const tableHeader = '| 时间 | 标题 | 链接 |\n| --- | --- | --- |'
-        const MAX_URL_DISPLAY = 24
-        const rows = items
-          .map((it) => {
-            const time = it.lastVisitTime
-              ? new Date(it.lastVisitTime).toLocaleTimeString('zh-CN', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })
-              : '-'
-            const title = (it.title || it.url || '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
-            const rawUrl = it.url
-            const displayUrl =
-              rawUrl.length > MAX_URL_DISPLAY ? rawUrl.slice(0, MAX_URL_DISPLAY) + '…' : rawUrl
-            const urlForMarkdown = displayUrl.replace(/\|/g, '\\|')
-            // url 转义放 | + 转义反引号，title=完整 URL（marked 会原样写到 <a title="...">）
-            const escapedFullUrl = rawUrl.replace(/"/g, '&quot;')
-            const visits = it.visitCount && it.visitCount > 1 ? ` · ${it.visitCount}次` : ''
-            return `| ${time} | ${title}${visits} | [${urlForMarkdown}](${rawUrl} "${escapedFullUrl}") |`
-          })
-          .join('\n')
-        text = `${header}\n\n${tableHeader}\n${rows}`
-      }
-    } else if (r.cookies)
-      text = `为你找到 ${r.found} 个 Cookie (${r.domain}):\n${(r.cookies as Array<{ name: string; value: string; secure?: boolean; httpOnly?: boolean; sameSite?: string }>).map((c) => `  ${c.name} = ${c.value}${c.secure ? ' [安全]' : ''}${c.httpOnly ? ' [HttpOnly]' : ''}${c.sameSite ? ' SameSite=' + c.sameSite : ''}`).join('\n')}`
-    else if (r.sites)
-      text = `为你展示最常访问的 ${r.found} 个网站:\n${(r.sites as Array<{ title: string; url: string }>).map((s, i) => `  ${i + 1}. ${s.title} — ${s.url}`).join('\n')}`
-    else if (r.extensions)
-      text = `为你找到 ${r.found} 个扩展:\n${(r.extensions as Array<{ enabled: boolean; name: string; id: string; description?: string }>).map((e) => `  ${e.enabled ? '✓' : '✗'} ${e.name} (${e.id.slice(0, 12)}...)${e.description ? '\n    ' + e.description : ''}`).join('\n')}`
-    else if (r.enabled) text = `已为你启用扩展 "${r.enabled}"`
-    else if (r.disabled) text = `已为你禁用扩展 "${r.disabled}"`
-    else if (r.uninstalled) text = `已为你卸载扩展 "${r.uninstalled}"`
-    else if (r.permissions) {
-      const labels: Record<string, string> = { allow: '允许', block: '阻止', default: '默认' }
-      text = `为你查看 ${r.domain} 的权限设置:\n${Object.entries(
-        r.permissions as Record<string, string>
-      )
-        .map(([k, v]) => `  ${k}: ${labels[v] || v}`)
-        .join('\n')}`
-    } else if (r.setting && r.value !== undefined) {
-      const label: Record<string, string> = { allow: '允许', block: '阻止', default: '默认' }
-      text = `已将 ${r.domain} 的 ${r.setting} 权限设置为 ${label[r.value as string] || r.value}`
-    } else if (r.key && r.value !== undefined)
-      text = `存储 "${r.key}" = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
-    else if (r.found) text = `为你找到 ${r.found} 条结果`
-    else if (r.sorted) text = `已按 ${r.order} 排序 ${r.sorted} 个标签`
-    else if (r.groupedTabs)
-      text = `已创建分组 "${r.title || r.groupName}"，包含 ${r.groupedTabs} 个标签`
-    else if (r.ungrouped) text = `已取消 ${r.ungrouped} 个标签的分组`
-    else if (r.restored) text = `已恢复: ${r.restored}`
-    else if (r.navigated) text = `已导航至 ${r.navigated}`
-    else if (r.muted) text = `已静音 ${r.muted} 个标签`
-    else if (r.pinned !== undefined) text = r.pinned ? '已固定标签' : '已取消固定'
-    else if (r.reloaded) text = '已刷新'
-    else if (r.duplicated) text = '标签已复制'
-    else if (r.removed) text = `已删除 ${r.removed} 个书签`
-    else if (r.bookmark) {
-      // 区分"当前页"和"指定 url"两种模式，让用户能直观看到添加结果
-      const bm = r.bookmark as { title?: string; url?: string }
-      text = bm.url ? `已添加书签: ${bm.title || bm.url}\n  ${bm.url}` : '已添加书签'
-    } else if (r.storageRemoved) text = `已删除存储键 "${r.storageRemoved}"`
-    else if (r.opened) text = `已打开: ${r.opened}`
-    else if (r.reordered) text = `已将 "${r.reordered}" 调整到第 ${r.index} 位`
-    else if (r.moved && r.to) text = `已将 "${r.moved}" 移动到 ${r.to}`
-    else if (r.moved !== undefined) text = `标签已移到位置 ${((r.index as number) || 0) + 1}`
-    else if (r.discarded) text = `已休眠 ${r.discarded} 个标签`
-    else if (r.unmuted) text = `已取消静音 ${r.unmuted} 个标签`
-    else if (r.zoom !== undefined) text = `缩放: ${Math.round((r.zoom as number) * 100)}%`
-    else if (r.windowId) text = '新窗口已打开'
-    else if (r.domain && r.deleted !== undefined)
-      text = `已为你清除 ${r.domain} 的 ${r.deleted} 个 Cookie`
-    else if (typeof r.deleted === 'string') text = `已删除文件夹 "${r.deleted}"`
-    else if (r.deleted)
-      text = `已清理 ${r.deleted} 条${r.timeRange ? ` (${r.timeRange})` : ''}历史记录`
-    else if (r.timeRange) text = `已清除${r.timeRange === 'all' ? '全部' : ''}历史记录`
-    else if (r.groupsCreated !== undefined)
-      text =
-        (r.groupsCreated as number) > 0
-          ? `已创建 ${r.groupsCreated} 个分组`
-          : '当前页面暂无需要分组'
-    else if (r.groups)
-      text = `为你找到 ${r.total} 个分组:\n${(r.groups as Array<{ title?: string; count: number; tabs: Array<{ title?: string }> }>).map((g) => `  ${g.title || '未命名'} (${g.count} 个标签)\n    ${g.tabs.map((t) => t.title).join(' · ')}`).join('\n')}`
-    else if (r.renamed && r.to) text = `已将文件夹 "${r.renamed}" 重命名为 "${r.to}"`
-    else if (r.renamed) text = `已重命名分组: ${r.renamed}`
-    else if (r.sortedBookmarks) text = `已整理 "${r.folder}" 中的 ${r.sortedBookmarks} 个书签`
-    else if ((r.folder as { title?: string })?.title)
-      text = `已创建书签文件夹 "${(r.folder as { title: string }).title}"`
-    else if (r.applied) text = (r.message as string) || '设置已生效'
-    else if (r.darkMode !== undefined) text = r.darkMode ? '夜间模式已开启' : '夜间模式已关闭'
-    else if (r.themeMode) {
-      const modeLabel: Record<string, string> = { light: '浅色', dark: '深色', device: '跟随设备' }
-      text = `当前主题模式: ${modeLabel[r.themeMode as string] || r.themeMode}`
-    } else if (r.fontSize && r.fontSizeLabel)
-      text = `当前字号: ${r.fontSizeLabel} (${r.fontSize}px)`
-    else if ((r.fonts as { standard?: string } | undefined)?.standard) {
-      const f = r.fonts as { standard?: string; serif?: string; sansSerif?: string; fixed?: string }
-      text = `当前字体设置:\n标准: ${f.standard || '-'}\n衬线: ${f.serif || '-'}\n无衬线: ${f.sansSerif || '-'}\n等宽: ${f.fixed || '-'}`
-    } else if (r.fontSize) text = `字号: ${r.fontSize}`
-    else if (r.font) text = `字体: ${r.font}`
-    else if (r.recording === 'screen') text = '已开始录制屏幕'
-    else if (r.recording) text = (r.message as string) || `已开始录制 ${r.recording}`
-    else if (r.saved) text = `录制已保存为 ${r.saved}`
-    else if (r.message && typeof r.message === 'string') text = r.message
-    else if (r.action === 'query')
-      text = `找到 ${r.count} 个匹配元素:\n${(r.items as Array<{ index: number; text?: string; html?: string }>).map((it) => `  [${it.index}] ${it.text || it.html || ''}`).join('\n')}`
-    else if (r.action === 'modify') text = `已修改 ${r.changed} 个 "${r.value}" 的 ${r.property}`
-    else if (r.action === 'remove') text = `已删除 ${r.removed} 个元素`
-    else if (r.action === 'add') text = `已添加 <${r.tag}>`
-    else if (r.action === 'style') text = `已修改 ${r.changed} 个元素样式`
-    else if (r.action === 'event') {
-      const evLabels: Record<string, string> = {
-        click: '点击',
-        input: '输入',
-        focus: '聚焦',
-        blur: '失焦',
-        submit: '提交表单',
-        change: '变更',
-        scroll: '滚动',
-        select: '全选',
-        keydown: '按键',
-        keyup: '抬起',
-        dblclick: '双击',
-      }
-      text = `已对 "${r.value}" 触发 ${evLabels[r.eventType as string] || r.eventType} 事件`
+    if (intent === 'reload_tab') {
+      addMessage('ai-chat', { markdown: wrapCatReply('已刷新当前标签') })
+      return
+    }
+    if (intent === 'mute_tabs_by_domain') {
+      addMessage('ai-chat', { markdown: wrapCatReply('已静音匹配的标签') })
+      return
+    }
+    if (intent === 'unmute_tabs_by_domain') {
+      addMessage('ai-chat', { markdown: wrapCatReply('已取消匹配标签的静音') })
+      return
+    }
+    if (intent === 'discard_tabs') {
+      addMessage('ai-chat', { markdown: wrapCatReply('已休眠匹配的标签') })
+      return
     }
 
-    addMessage('ai-chat', wrapCatReply(text))
+    // 走 markdown-factory 优先；未注册的 intent 走 fallback（纯 markdown 兜底）
+    const body = buildMarkdownBody(intent, result)
+    addMessage(
+      'ai-chat',
+      body ?? { markdown: wrapCatReply(formatResultDescription(r) || '操作完成') }
+    )
   }
 
   // ──── 录制执行器（由独立模块管理，避免本文件状态膨胀） ────
@@ -2034,7 +1895,7 @@ export function useAIEngine() {
     addSystemMessage: (text) => addMessage('system', text),
     addAIChat: (text, recordingFile) => {
       if (recordingFile) {
-        addMessage('ai-chat', '', undefined, undefined, recordingFile)
+        addMessage('ai-chat', { markdown: '' }, undefined, undefined, recordingFile)
       } else if (text) {
         addMessage('ai-chat', text)
       }
@@ -2057,18 +1918,48 @@ export function useAIEngine() {
   }
 
   /**
+   * 把 AI 协议里各种"回复字段"归一化为 MessageBody
+   *
+   * 优先级：
+   *   1. reply 是 MessageBody（rich） → 原样透传（不再加 cat 人设）
+   *   2. reply 是 string → 包成 markdown + cat 人设
+   *   3. content 是 string → 同上
+   *   4. args.reply / args.message / args.content（toolCall 嵌套里的 string）→ 包成 markdown
+   *   5. 都缺 → fallback 字符串
+   *
+   * 单一收口，调用方不再各自处理。
+   */
+  function resolveAIReply(ai: AIResponse, fallback: string): MessageBody {
+    const args = (ai.args ?? {}) as Record<string, unknown>
+    const nested =
+      (args.reply as string | undefined) ??
+      (args.message as string | undefined) ??
+      (args.content as string | undefined)
+    if (ai.reply && typeof ai.reply === 'object') return ai.reply
+    if (typeof ai.reply === 'string') return { markdown: wrapCatReply(ai.reply) }
+    if (typeof ai.content === 'string') return { markdown: wrapCatReply(ai.content) }
+    if (typeof nested === 'string') return { markdown: wrapCatReply(nested) }
+    return { markdown: wrapCatReply(fallback) }
+  }
+
+  /**
    * 发送 AI 对话消息，自动附带待处理的截图。
    * 保证文字和截图在同一个气泡中显示。
+   *
+   * text 支持两种形态：
+   *   - string：纯 markdown（被 wrapCatReply 加语气）
+   *   - MessageBody：富文本（components 透传，不重复加语气）
+   *
+   * AI 协议里的多形态 reply 收敛在 resolveAIReply，这里只接受已规范化的 body。
    */
-  function emitAIChat(text: string, doCleanup: boolean) {
-    console.log('[AI Commander] emitAIChat called with text:', JSON.stringify(text))
+  function emitAIChat(text: string | MessageBody, doCleanup: boolean) {
     const image = lastScreenshot.value
     if (image) {
       copyScreenshotToClipboard(image)
       lastScreenshot.value = null
     }
-    addMessage('ai-chat', wrapCatReply(text), image || undefined)
-    console.log('[AI Commander] addMessage called, text length:', text.length)
+    const body: MessageBody = typeof text === 'string' ? { markdown: wrapCatReply(text) } : text
+    addMessage('ai-chat', body, image || undefined)
     if (doCleanup) cleanup()
   }
 

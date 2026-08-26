@@ -63,12 +63,7 @@
           </button>
 
           <!-- 发送按钮（思考中隐藏） -->
-          <button
-            v-else
-            class="send-btn"
-            :disabled="!inputValue.trim()"
-            @click="handleSend"
-          >
+          <button v-else class="send-btn" :disabled="!inputValue.trim()" @click="handleSend">
             <ArrowUp :size="16" />
           </button>
         </div>
@@ -159,6 +154,7 @@ function handleInput() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // 选择器打开时，方向键只负责选择命令候选项
   if (showSlashPicker.value) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -178,6 +174,26 @@ function handleKeydown(e: KeyboardEvent) {
       handleSend()
     } else if (e.key === 'Escape') {
       showSlashPicker.value = false
+    }
+    return
+  }
+
+  // 选择器关闭时，上下键导航已发送过的命令（包括 /sort、/history 等斜杠命令）
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault()
+    const direction = e.key === 'ArrowUp' ? -1 : 1
+    const previous = navigateHistory(direction, inputValue.value)
+    if (previous !== null) {
+      inputValue.value = previous
+      handleInput()
+      nextTick(() => {
+        const textarea = textareaRef.value
+        if (textarea) {
+          textarea.focus()
+          const len = textarea.value.length
+          textarea.setSelectionRange(len, len)
+        }
+      })
     }
   }
   // 注意：移除了单独的 Enter 发送处理，必须手动点发送按钮才能发送
