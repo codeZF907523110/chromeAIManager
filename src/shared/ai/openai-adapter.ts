@@ -39,7 +39,16 @@ export class OpenAIAdapter implements AIAdapter {
     await this.ensurePermission()
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // 合并：超时定时器 + 调用方传入的 AbortSignal
+      // 任一触发都会立即中断当前 fetch
       const controller = new AbortController()
+      const onAbort = () => controller.abort(new Error('ABORTED'))
+      if (options.signal) {
+        if (options.signal.aborted) {
+          throw new DOMException('Aborted', 'AbortError')
+        }
+        options.signal.addEventListener('abort', onAbort, { once: true })
+      }
       const timer = setTimeout(() => controller.abort(new Error('请求超时')), timeout)
 
       try {
@@ -95,6 +104,9 @@ export class OpenAIAdapter implements AIAdapter {
         await new Promise((r) => setTimeout(r, 1000))
       } finally {
         clearTimeout(timer)
+        if (options.signal) {
+          options.signal.removeEventListener('abort', onAbort)
+        }
       }
     }
 

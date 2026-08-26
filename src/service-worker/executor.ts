@@ -56,7 +56,11 @@ export async function executeCommand(
     case 'tabs_observe_groups':
       return await observeGroups()
     case 'tabs_group_by_domain':
-      return await groupByDomain()
+      // 这个命令由 side panel 自己执行（chrome.tabs.group 需要用户激活的上下文），
+      // SW 只负责计算 tabIds + windowId 映射，返回给 side panel 让它直接调 API
+      return await prepareGroupByDomain(payload)
+    case 'tabs_ungroup_all':
+      return await ungroupAllTabs(payload)
     // ──── BOOKMARKS ────
     case 'bookmarks_observe_tree':
       return await observeBookmarks(payload)
@@ -288,7 +292,7 @@ async function buildConfirmChildren(
 // ──── TABS 实现 ────
 
 async function observeTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const query: chrome.tabs.QueryOptions = {}
+  const query: chrome.tabs.QueryOptions = {} as chrome.tabs.QueryOptions
   if (payload.currentWindow) query.currentWindow = true
   if (payload.pinned !== undefined) query.pinned = payload.pinned as boolean
   if (payload.muted !== undefined) query.muted = payload.muted as boolean
@@ -348,28 +352,53 @@ async function updateTab(payload: Record<string, unknown>): Promise<ExecutionRes
 async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
   // 统一处理 tabIds，支持字符串数组或数字数组
   const tabIds = (payload.tabIds as unknown[])
-    ? (payload.tabIds as unknown[]).map((id: unknown) => Number(id)).filter((id: number) => !isNaN(id))
+    ? (payload.tabIds as unknown[])
+        .map((id: unknown) => Number(id))
+        .filter((id: number) => !isNaN(id))
     : undefined
   const index = payload.index as number
 
   if (!tabIds?.length) {
     // 没有指定 tabIds，移动当前活动标签
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签', suggestion: '请先打开一个标签页' }
+    if (!active?.id)
+      return {
+        success: false,
+        code: 'NO_TABS_FOUND',
+        message: '未找到活动标签',
+        suggestion: '请先打开一个标签页',
+      }
     const tabs = await chrome.tabs.move([active.id], { index })
-    return { success: true, moved: Array.isArray(tabs) ? tabs.length : 1, tabId: active.id, newIndex: index }
+    return {
+      success: true,
+      moved: Array.isArray(tabs) ? tabs.length : 1,
+      tabId: active.id,
+      newIndex: index,
+    }
   }
 
   try {
-    const tabs = await chrome.tabs.move(tabIds, { index })
-    return { success: true, moved: Array.isArray(tabs) ? tabs.length : 1, tabIds, newIndex: index }
+    // chrome.tabs.move 支持单 tab 移动和批量移动两种形式。
+    // 这里要做"全局重排"：批量 move 会按 tabIds 顺序依次放到 index 起点，
+    // 与"按当前期望顺序整体替换"的语义不一致——批量后顺序是输入顺序的反向 / 错位，
+    // 并且同域名的相邻 tab 会被前面的非相邻插入分隔开。
+    // 正确做法：把期望顺序倒序逐个 move 到 0，最终结果正好等于期望顺序。
+    //   期望 [D1, D2, D3]
+    //   move D3→0: [D3, ...]
+    //   move D2→0: [D2, D3, ...]
+    //   move D1→0: [D1, D2, D3, ...] ✓
+    const reversed = [...tabIds].reverse()
+    for (const id of reversed) {
+      await chrome.tabs.move([id], { index })
+    }
+    return { success: true, moved: reversed.length, tabIds, newIndex: index }
   } catch (err: unknown) {
     const e = err as { message?: string }
     return {
       success: false,
       code: 'MOVE_FAILED',
       message: e?.message || '移动标签失败',
-      suggestion: '请检查 tabIds 是否有效，标签页可能已被关闭'
+      suggestion: '请检查 tabIds 是否有效，标签页可能已被关闭',
     }
   }
 }
@@ -434,66 +463,128 @@ async function observeGroups(): Promise<ExecutionResult> {
   return { success: true, groups: Array.from(groupMap.entries()).map(([id, g]) => ({ id, ...g })) }
 }
 
-async function groupByDomain(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  // 支持两种作用范围：当前窗口（默认）或所有窗口
-  const allWindows = payload.allWindows === true
-  const tabs = allWindows
-    ? await chrome.tabs.query({})
-    : await chrome.tabs.query({ currentWindow: true })
-  if (!tabs.length) return { success: false, code: 'NO_TABS_FOUND', message: '没有可分组的标签' }
+/**
+ * 一键取消所有标签分组
+ * 与 group_by_domain 类似，需要从用户激活的上下文（side panel）执行，
+ * SW 只负责计算每个分组包含的 tabIds。
+ */
+async function ungroupAllTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const allWindows = payload.allWindows !== false
+  let tabs: chrome.tabs.Tab[]
+  if (allWindows) {
+    tabs = await chrome.tabs.query({})
+  } else {
+    const lastFocused = await chrome.windows.getLastFocused({ windowTypes: ['normal'] })
+    if (!lastFocused?.id) {
+      return { success: false, code: 'NO_TABS_FOUND', message: '找不到当前窗口' }
+    }
+    tabs = await chrome.tabs.query({ windowId: lastFocused.id })
+  }
 
-  // 按 hostname 分组
-  const domainMap = new Map<string, { tabIds: number[]; windowId: number }>()
+  // 收集所有分组（同时返回每个分组的 tabIds，方便预览/勾选）
+  const groupMap = new Map<number, number[]>()
   for (const tab of tabs) {
-    if (!tab.url || tab.url.startsWith('chrome://') || !tab.id) continue
-    // pinned 标签不参与自动分组
-    if (tab.pinned) continue
-    try {
-      const d = new URL(tab.url).hostname
-      if (!d) continue
-      if (!domainMap.has(d)) {
-        domainMap.set(d, { tabIds: [], windowId: tab.windowId })
-      }
-      domainMap.get(d)!.tabIds.push(tab.id)
-    } catch {
-      /* ignore */
-    }
+    if (tab.id === undefined) continue
+    if (tab.groupId === undefined || tab.groupId === -1) continue
+    if (!groupMap.has(tab.groupId)) groupMap.set(tab.groupId, [])
+    groupMap.get(tab.groupId)!.push(tab.id)
   }
 
-  // 统计实际分了几组
-  let groupCount = 0
-  let groupedTabCount = 0
-  for (const [domain, { tabIds, windowId }] of domainMap) {
-    if (tabIds.length > 1) {
-      try {
-        await chrome.tabs.group({
-          tabIds,
-          createProperties: { windowId, title: domain },
-        })
-        groupCount++
-        groupedTabCount += tabIds.length
-      } catch (e: unknown) {
-        console.warn('[groupByDomain] 创建分组失败:', domain, e)
-      }
-    }
-  }
-
-  if (groupCount === 0) {
+  if (!groupMap.size) {
     return {
       success: true,
-      groupsCreated: 0,
-      message: '没有找到需要分组的同域名标签（单个标签不分组）',
+      groupsCleared: 0,
+      message: '当前没有任何标签分组',
     }
   }
+
+  // 序列化成 side panel 直接使用的格式
+  const groups: Array<{ groupId: number; tabIds: number[] }> = []
+  for (const [groupId, tabIds] of groupMap) {
+    groups.push({ groupId, tabIds })
+  }
+
+  // 如果用户已经勾选了子集（前端 confirm 卡勾选后回传），只把这些分组给客户端
+  const selectedGroupIds = Array.isArray(payload.selectedGroupIds)
+    ? (payload.selectedGroupIds as unknown[])
+        .map((g) => Number(g))
+        .filter((g) => Number.isFinite(g))
+    : null
+
   return {
     success: true,
-    groupsCreated: groupCount,
-    groupedTabs: groupedTabCount,
-    message: `已创建 ${groupCount} 个分组，共 ${groupedTabCount} 个标签`,
+    clientExec: 'tabs_ungroup_all',
+    groups: selectedGroupIds ? groups.filter((g) => selectedGroupIds.includes(g.groupId)) : groups,
+    count: selectedGroupIds ? selectedGroupIds.length : groups.length,
   }
 }
 
-// ──── BOOKMARKS 实现 ────
+async function prepareGroupByDomain(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // MV3 Service Worker 不是用户激活的上下文，chrome.tabs.group 在这里会被静默挂起。
+  // 解决方案：SW 端只计算"按窗口分桶的 tabIds"，返回给 side panel 让它在用户激活上下文中调 API。
+  const allWindows = payload.allWindows !== false
+  let tabs: chrome.tabs.Tab[]
+  if (allWindows) {
+    tabs = await chrome.tabs.query({})
+  } else {
+    const lastFocused = await chrome.windows.getLastFocused({ windowTypes: ['normal'] })
+    if (!lastFocused?.id) {
+      return { success: false, code: 'NO_TABS_FOUND', message: '找不到当前窗口' }
+    }
+    tabs = await chrome.tabs.query({ windowId: lastFocused.id })
+  }
+
+  if (!tabs.length) {
+    return { success: false, code: 'NO_TABS_FOUND', message: '没有可分组的标签' }
+  }
+
+  // 收集每个标签的 hostname
+  const eligible: Array<{ id: number; hostname: string; windowId: number }> = []
+  for (const tab of tabs) {
+    if (!tab.url || tab.id === undefined) continue
+    if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) continue
+    if (tab.pinned) continue
+    if (tab.groupId !== undefined && tab.groupId !== -1) continue
+    if (tab.windowId === undefined) continue
+    const hostname = safeHostname(tab.url)
+    if (!hostname) continue
+    eligible.push({ id: tab.id, hostname, windowId: tab.windowId })
+  }
+
+  // 按 hostname 分组，每个 (hostname, windowId) 一组
+  const groupMap = new Map<string, number[]>()
+  for (const { id, hostname, windowId } of eligible) {
+    const key = `${hostname}\0${windowId}`
+    if (!groupMap.has(key)) groupMap.set(key, [])
+    groupMap.get(key)!.push(id)
+  }
+
+  // 序列化成可被 side panel 直接使用的格式
+  const groups: Array<{ title: string; tabIds: number[]; windowId: number }> = []
+  for (const [key, tabIds] of groupMap) {
+    if (tabIds.length < 2) continue // 跨窗口后单标签不分组
+    const sepIdx = key.indexOf('\0')
+    const hostname = key.slice(0, sepIdx)
+    const windowId = Number(key.slice(sepIdx + 1))
+    groups.push({ title: hostname, tabIds, windowId })
+  }
+
+  return {
+    success: true,
+    // 自定义字段，side panel 通过此标志决定走客户端执行路径
+    clientExec: 'tabs_group_by_domain',
+    groups,
+    count: groups.length,
+  }
+}
+
+function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return ''
+  }
+}
 
 async function observeBookmarks(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tree = await chrome.bookmarks.getTree()
@@ -545,7 +636,12 @@ async function observeBookmarks(payload: Record<string, unknown>): Promise<Execu
 async function moveBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const nodeId = String(payload.nodeId || '')
   if (!nodeId) {
-    return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId 参数', suggestion: '请先调用 bookmarks_observe_tree 获取书签列表，从返回结果中获取 nodeId' }
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: '缺少 nodeId 参数',
+      suggestion: '请先调用 bookmarks_observe_tree 获取书签列表，从返回结果中获取 nodeId',
+    }
   }
 
   const moveProps: chrome.bookmarks.MoveProperties = { index: 0 }
@@ -563,7 +659,7 @@ async function moveBookmark(payload: Record<string, unknown>): Promise<Execution
       success: false,
       code: 'BOOKMARK_MOVE_FAILED',
       message: e?.message || '移动书签失败',
-      suggestion: '请检查 nodeId 是否正确，或尝试先获取书签列表确认节点存在'
+      suggestion: '请检查 nodeId 是否正确，或尝试先获取书签列表确认节点存在',
     }
   }
 }
@@ -649,7 +745,11 @@ async function addCurrentPageBookmark(payload: Record<string, unknown>): Promise
 
   if (url) {
     // 显式指定 url：以 payload 为主
-    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('javascript:')) {
+    if (
+      url.startsWith('chrome://') ||
+      url.startsWith('chrome-extension://') ||
+      url.startsWith('javascript:')
+    ) {
       return { success: false, code: 'PAGE_BLOCKED', message: '无法为特殊页面添加书签' }
     }
     try {
@@ -704,23 +804,13 @@ async function updateWindow(payload: Record<string, unknown>): Promise<Execution
 // ──── HISTORY 实现 ────
 
 async function searchHistory(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const query = payload.query as string
-  const maxResults = (payload.maxResults as number) || 20
-  const range = payload.timeRange as string | undefined
-  const validRanges = ['today', 'yesterday', 'week', 'month']
-  const endTime = range && validRanges.includes(range) ? Date.now() : undefined
-  let startTime: number | undefined
-  if (range === 'today') {
-    startTime = new Date().setHours(0, 0, 0, 0)
-  } else if (range === 'yesterday') {
-    const d = new Date()
-    d.setDate(d.getDate() - 1)
-    startTime = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
-  } else if (range === 'week') {
-    startTime = Date.now() - 7 * 86400000
-  } else if (range === 'month') {
-    startTime = Date.now() - 30 * 86400000
-  }
+  // /history 默认展示今天全部；query 留空 = 列出当天所有历史，非空 = 按关键词过滤
+  // （chrome.history.search 自带 title/url 匹配）。
+  const query = ((payload.query as string) || '').trim()
+  const maxResults = (payload.maxResults as number) || 50
+  // 把"今天的 0 点"和"现在的时刻"一起回传给前端，便于反馈里直接显示"今天"时间窗。
+  const startTime = new Date().setHours(0, 0, 0, 0)
+  const endTime = Date.now()
 
   const items = await chrome.history.search({
     text: query,
@@ -730,8 +820,15 @@ async function searchHistory(payload: Record<string, unknown>): Promise<Executio
   })
   return {
     success: true,
-    items: items.map((i) => ({ title: i.title, url: i.url })),
+    items: items.map((i) => ({
+      title: i.title,
+      url: i.url,
+      lastVisitTime: i.lastVisitTime,
+      visitCount: i.visitCount,
+    })),
     found: items.length,
+    // 时间窗 meta：让前端知道这是当天的结果，反馈卡片标题可以直接用 "今天" 标记
+    timeRange: { start: startTime, end: endTime, label: '今天' },
   }
 }
 
@@ -1036,7 +1133,13 @@ async function restoreSession(payload: Record<string, unknown>): Promise<Executi
 
 async function batchExecute(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const calls = payload.calls as Array<{ tool: string; args: Record<string, unknown> }>
-  if (!calls?.length) return { success: false, code: 'UNKNOWN_TYPE', message: 'batch calls 为空', suggestion: '请检查 calls 数组是否为空' }
+  if (!calls?.length)
+    return {
+      success: false,
+      code: 'UNKNOWN_TYPE',
+      message: 'batch calls 为空',
+      suggestion: '请检查 calls 数组是否为空',
+    }
 
   const results: ExecutionResult[] = []
   let succeeded = 0
@@ -1061,7 +1164,7 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
         message: e?.message || '步骤执行失败',
         index: i,
         tool: calls[i]?.tool,
-        suggestion: '请检查工具名称和参数是否正确'
+        suggestion: '请检查工具名称和参数是否正确',
       })
       failed++
     }
@@ -1076,9 +1179,10 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
       total: calls.length,
       succeeded,
       failed,
-      suggestion: failed === calls.length
-        ? '所有步骤都失败了，请检查参数或改用单步操作'
-        : `部分步骤成功，失败步骤的错误信息已返回`
+      suggestion:
+        failed === calls.length
+          ? '所有步骤都失败了，请检查参数或改用单步操作'
+          : `部分步骤成功，失败步骤的错误信息已返回`,
     }
   }
 

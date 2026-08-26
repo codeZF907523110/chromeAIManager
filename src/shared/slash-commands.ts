@@ -46,10 +46,10 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     slash: 'sort',
     intent: 'sort_tabs',
-    description: '排序标签页',
+    description: '排序标签页（默认按域名字母升序；可选 title | domain）',
     aliases: ['s'],
-    hasArg: true,
-    placeholder: 'domain | title',
+    hasArg: false,
+    placeholder: 'title | domain',
   },
   {
     slash: 'mute',
@@ -62,10 +62,10 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     slash: 'history',
     intent: 'search_history',
-    description: '搜索浏览历史',
+    description: '浏览历史（默认展示今天的记录；可传关键词过滤）',
     aliases: ['hi'],
-    hasArg: true,
-    placeholder: '关键词',
+    hasArg: false,
+    placeholder: '关键词(可选)',
   },
   {
     slash: 'pin',
@@ -161,6 +161,13 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     intent: 'list_groups',
     description: '列出所有标签分组',
     aliases: ['lg', '分组列表'],
+  },
+  {
+    slash: 'ungroup-all',
+    intent: 'ungroup_all',
+    description: '一键取消所有标签分组（保留标签本身）',
+    aliases: ['uga', '解组所有', '取消分组'],
+    hasArg: false,
   },
   {
     slash: 'group-domain',
@@ -370,35 +377,17 @@ export function matchSlashCommand(input: string): SlashMatchResult | SlashError 
 
   // 构建参数 slots
   const slots: Record<string, unknown> = {}
-  if (cmd.hasArg) {
-    // 对于需要参数但没有传入的情况：add_bookmark 等"参数可选"命令直接通过，
-    // 由 SW 端用默认值处理；其他命令给 MISSING_ARG 提示。
-    if (!args) {
-      if (cmd.intent === 'add_bookmark') {
-        // url 和 title 都可选：不传参直接走默认（添加当前页）
-        return { intent: cmd.intent, slots, cmd }
-      }
-      return {
-        intent: cmd.intent,
-        slots: {},
-        cmd,
-        error: `MISSING_ARG`,
-        hint: cmd.placeholder ? `需要参数: ${cmd.placeholder}` : '需要参数',
-      } as unknown as SlashMatchResult
-    } else {
-      buildSlots(cmd.intent, args, parts, slots)
-    }
+  // cmd.hasArg 控制 args 是否必传。sort_tabs 是参数可选：
+  //   - 不传：precompute 默认按 domain
+  //   - 传 domain / title：按指定键排序
+  if (cmd.hasArg && args) {
+    buildSlots(cmd.intent, args, slots)
   }
 
   return { intent: cmd.intent, slots, cmd }
 }
 
-function buildSlots(
-  intent: string,
-  args: string,
-  parts: string[],
-  slots: Record<string, unknown>
-): void {
+function buildSlots(intent: string, args: string, slots: Record<string, unknown>): void {
   switch (intent) {
     case 'add_bookmark': {
       // 不传参数 = 当前页面（url 留空，SW 端取当前活动标签）
@@ -424,6 +413,9 @@ function buildSlots(
     }
     case 'find_tab':
     case 'search_history':
+      // /history 参数可选：不传 = 默认展示今天的全部历史；传值 = 按关键词过滤
+      if (args.trim()) (slots as Record<string, string>).query = args
+      break
     case 'remove_bookmark':
     case 'enable_extension':
     case 'disable_extension':

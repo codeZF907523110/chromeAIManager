@@ -12,11 +12,7 @@
       <div class="bubble-content">
         <!-- 系统消息：长内容支持展开/收起 -->
         <template v-if="msg.type === 'system' && isLongContent">
-          <div
-            class="thinking-content"
-            :class="{ expanded: isExpanded }"
-            @click="toggleExpand"
-          >
+          <div class="thinking-content" :class="{ expanded: isExpanded }" @click="toggleExpand">
             <div class="thinking-text" v-html="processedText"></div>
           </div>
           <div class="expand-indicator" @click="toggleExpand">
@@ -372,6 +368,7 @@ function escapeHtml(text: string): string {
   border-collapse: collapse;
   margin: 8px 0;
   width: 100%;
+  table-layout: fixed;
 }
 
 .bubble :deep(th),
@@ -379,10 +376,31 @@ function escapeHtml(text: string): string {
   border: 1px solid var(--app-border);
   padding: 6px 10px;
   text-align: left;
+  vertical-align: top;
 }
 
 .bubble :deep(th) {
   background: rgba(0, 0, 0, 0.2);
+}
+
+/* history 表格列宽：时间列固定宽度，标题列自适应，链接列占剩余并可截断 */
+.bubble :deep(table th:nth-child(1)),
+.bubble :deep(table td:nth-child(1)) {
+  width: 56px;
+  white-space: nowrap;
+}
+.bubble :deep(table th:nth-child(3)),
+.bubble :deep(table td:nth-child(3)) {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+.bubble :deep(table td:nth-child(3) a) {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .screenshot-img {

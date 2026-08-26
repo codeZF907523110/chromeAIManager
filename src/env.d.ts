@@ -63,12 +63,14 @@ declare global {
     }
     windows: {
       getCurrent(options?: any): Promise<any>
+      getLastFocused(options?: any): Promise<any>
       getAll(options?: any): Promise<any[]>
       create(createProps?: any): Promise<any>
       update(windowId: number, updateInfo: any): Promise<any>
     }
     bookmarks: {
       getTree(): Promise<any[]>
+      getChildren(id: string): Promise<any[]>
       search(query: string | object): Promise<any[]>
       get(id: string): Promise<any[]>
       create(bookmark: any): Promise<any>
@@ -174,6 +176,11 @@ declare global {
       getAll(filter: any): Promise<any[]>
       remove(details: any): Promise<void>
     }
+    tabGroups: {
+      get(groupId: number): Promise<any>
+      update(groupId: number, updateProperties: any): Promise<any>
+      query(queryOptions?: any): Promise<any[]>
+    }
     sessions: {
       getRecentlyClosed(options?: any): Promise<any[]>
       restore(sessionId: string): Promise<any>
@@ -213,7 +220,14 @@ declare global {
       }
       interface GroupProperties {
         tabIds: number[]
-        createProperties?: { windowId?: number }
+        createProperties?: chrome.tabs.GroupCreateProperties
+        title?: string
+        color?: TabGroupColor
+        [key: string]: any
+      }
+      interface GroupCreateProperties {
+        windowId?: number
+        tabIds?: number[]
         title?: string
         color?: TabGroupColor
         [key: string]: any
