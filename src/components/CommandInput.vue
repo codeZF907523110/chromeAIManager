@@ -179,20 +179,9 @@ function handleKeydown(e: KeyboardEvent) {
     } else if (e.key === 'Escape') {
       showSlashPicker.value = false
     }
-  } else {
-    if (e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-      e.preventDefault()
-      const prev = navigateHistory(-1, inputValue.value)
-      if (prev !== null) inputValue.value = prev
-    } else if (e.key === 'ArrowDown' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-      e.preventDefault()
-      const next = navigateHistory(1, inputValue.value)
-      if (next !== null) inputValue.value = next
-    } else if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
   }
+  // 注意：移除了单独的 Enter 发送处理，必须手动点发送按钮才能发送
+  // 仅在 slash 选择器打开时 Enter 才生效，用于选中候选命令
 }
 
 function selectSlashCommand(cmd: SlashCommand) {

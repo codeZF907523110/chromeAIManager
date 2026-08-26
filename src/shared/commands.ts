@@ -106,6 +106,20 @@ export const COMMANDS: Command[] = [
     slots: {},
     swIntent: 'tabs_group_by_domain',
   },
+  {
+    intent: 'ungroup_all',
+    description: '一键取消所有标签分组（保留标签本身，支持勾选）',
+    dangerous: true, // 批量操作，要求二次确认
+    aiHidden: true,
+    slots: {
+      selectedGroupIds: {
+        type: 'number[]',
+        optional: true,
+        description: '从二次确认卡勾选后回传的子集分组 ID 列表',
+      },
+    },
+    swIntent: 'tabs_ungroup_all',
+  },
 
   // ==================== BOOKMARKS (7) ====================
   {

@@ -129,6 +129,8 @@ export interface AIOptions {
   jsonMode?: boolean
   /** 对话模式：'task' 任务执行（严格），'chat' 纯聊天（宽松） */
   mode?: 'task' | 'chat'
+  /** AbortSignal：用于用户点停止时立即中断当前 AI 请求 */
+  signal?: AbortSignal
 }
 
 // ──── AI 适配器接口 ────

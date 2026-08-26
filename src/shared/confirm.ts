@@ -103,6 +103,42 @@ export function generateConfirmPreview(
       }
     }
 
+    case 'ungroup_all': {
+      const groupedTabs = context.tabs.filter((t) => t.groupId !== undefined && t.groupId !== -1)
+      const groupIds = new Set(groupedTabs.map((t) => t.groupId))
+      if (groupIds.size === 0) {
+        // 没有分组：返回 null 走"无分组"提示
+        return null
+      }
+      // 收集每个分组的信息（id、标题、tab 数）
+      const groupInfos: Array<{ id: number; title: string; tabCount: number }> = []
+      for (const id of groupIds) {
+        const inGroup = groupedTabs.filter((t) => t.groupId === id)
+        // 取该分组第一个 tab 的 title 作为分组默认名（chrome.tabGroups.update 才能改 title）
+        const sample = inGroup[0]
+        groupInfos.push({
+          id,
+          title: sample?.title || `分组 ${id}`,
+          tabCount: inGroup.length,
+        })
+      }
+      // 按 tab 数倒序：用户最可能想取消的是大分组
+      groupInfos.sort((a, b) => b.tabCount - a.tabCount)
+
+      return {
+        title: `将取消 ${groupIds.size} 个标签分组`,
+        description: '所有标签本身保留，仅解除分组关系（可勾选要取消的分组）',
+        items: groupInfos.map((g) => ({
+          // 注意：这里 primary 显示 tab 的 title（chrome.tabGroups.update 才改 title）
+          // 后续客户端执行时再用 chrome.tabGroups.update 改不了已 ungroup 的分组，所以直接展示
+          primary: g.title,
+          secondary: `${g.tabCount} 个标签`,
+          tabId: g.id, // ← 复用 tabId 字段携带 groupId（确认卡 checkbox 机制）
+          selected: true,
+        })),
+      }
+    }
+
     case 'remove_bookmark': {
       const query = slots.query as string | undefined
       if (!query) return null
