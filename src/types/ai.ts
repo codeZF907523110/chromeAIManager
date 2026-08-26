@@ -2,6 +2,8 @@
  * AI 相关类型定义
  */
 
+import type { MessageBody } from './message-block'
+
 // ──── 消息类型 ────
 
 export interface ChatMessage {
@@ -11,7 +13,11 @@ export interface ChatMessage {
 
 export interface MessageLog {
   type: 'user' | 'system' | 'ai' | 'ai-chat' | 'error'
-  text: string
+  /**
+   * 消息正文：纯 markdown 或 markdown + 嵌入组件
+   * 见 src/types/message-block.ts
+   */
+  text: MessageBody
   image?: string // base64 data URL for screenshots
   video?: string // base64 data URL for video preview
   recordingFile?: { url: string; name: string; size?: number; preview?: string } // recording download card
@@ -58,7 +64,17 @@ export interface AIResponse {
   plan?: string
   predict?: string
   toolCall?: ToolCall // 兼容旧格式
-  reply?: string
+  /**
+   * AI 输出消息正文。
+   * - string：纯 markdown（被 wrapCatReply 加 cat 人设）
+   * - MessageBody：富文本（components 透传到 MessageBubble 挂载；不再加语气）
+   *
+   * 由 replyType 区分意图（不强制）：'plain' = string；'rich' = MessageBody。
+   * 不填时按 reply 运行时类型推断。
+   */
+  replyType?: 'plain' | 'rich'
+  reply?: string | MessageBody
+  /** 老兼容字段：纯文本时也常被模型填到 content；统一在调用点收敛 */
   content?: string
   step?: number // 步骤序号
   // exec_plan 相关字段

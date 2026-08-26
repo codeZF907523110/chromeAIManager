@@ -5,6 +5,7 @@
 import type { Command, Context, Lesson, PageStructure } from '../types'
 import { COMMANDS } from './commands'
 import { getCatSystemIntro } from './personality'
+import { aiUsableBlockManifest } from '../components/blocks/registry'
 
 // 过滤 AI 可用的命令
 const AI_VISIBLE_COMMANDS = COMMANDS.filter(
@@ -63,9 +64,25 @@ export function buildAgentSystemPrompt(context: Context): string {
 
   const pageBlock = context.pageStructure ? formatPageStructure(context.pageStructure) : ''
 
+  // 组件清单：仅当注册表内有 aiUsable 组件时注入
+  const blockManifest = aiUsableBlockManifest()
+  const blockBlock = blockManifest
+    ? '\n## 可用 UI 组件（Markdown 内嵌）\n' +
+      '你可以在 markdown 里写 `<tag data-id="<uuid>" />` 占位符来嵌入以下 Vue 组件；' +
+      'components 字段里给出对应 id 的组件实例。\n\n' +
+      blockManifest +
+      '\n\n规则：\n' +
+      '1. 仅引用上述已注册的组件，不要发明新标签名（未注册的会按普通文本展示）\n' +
+      '2. 占位符必须自闭合 `<tag ... />`，必须包含 `data-id` 属性\n' +
+      '3. 当你想表达表格、可点列表、操作按钮时优先使用组件；纯文字描述时直接 markdown\n\n' +
+      '输出 JSON 形态：`{ replyType: "rich", reply: { markdown: "...", components: [{ id, component, props }] } }`\n' +
+      '（纯文本回复仍可写 `replyType: "plain", reply: "..."`）\n'
+    : ''
+
   return (
     getCatSystemIntro() +
     '\n\n' +
+    blockBlock +
     '## 当前环境信息\n' +
     '当前标签页标题: ' +
     (context.activeTab?.title || '无标题') +

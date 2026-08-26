@@ -9,6 +9,9 @@ export type { AIProvider, AIConfig, AIModel } from './ai'
 export type { AIStatus, AIOptions } from './ai'
 export type { AIAdapter } from './ai'
 
+// 消息内容块
+export type { MessageBody, EmbeddedComponent } from './message-block'
+
 // Chrome API 相关类型
 export type { TabInfo, ActiveTab, BookmarkNode, WindowInfo } from './chrome'
 

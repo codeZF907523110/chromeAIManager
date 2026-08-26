@@ -33,7 +33,7 @@
       :title="pendingConfirm.title"
       :description="pendingConfirm.description"
       :items="pendingConfirm.items"
-      :on-confirm="pendingConfirm.onConfirm"
+      :on-confirm="pendingConfirm.onConfirm || (async () => {})"
       @cancel="pendingConfirm.onCancel"
     />
 
