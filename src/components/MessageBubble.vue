@@ -10,7 +10,23 @@
     </button>
     <div class="bubble" :class="`bubble-${msg.type}`">
       <div class="bubble-content">
-        <div v-html="processedText"></div>
+        <!-- 系统消息：长内容支持展开/收起 -->
+        <template v-if="msg.type === 'system' && isLongContent">
+          <div
+            class="thinking-content"
+            :class="{ expanded: isExpanded }"
+            @click="toggleExpand"
+          >
+            <div class="thinking-text" v-html="processedText"></div>
+          </div>
+          <div class="expand-indicator" @click="toggleExpand">
+            <ChevronDown v-if="!isExpanded" :size="12" />
+            <ChevronUp v-else :size="12" />
+            <span>{{ isExpanded ? '收起' : '展开' }}</span>
+          </div>
+        </template>
+        <!-- 其他消息：正常显示 -->
+        <div v-else v-html="processedText"></div>
         <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
         <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
         <div v-if="msg.recordingFile" class="recording-file-card">
@@ -35,11 +51,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { ElMessageBox } from 'element-plus'
+import { ElMessageBox, ElIcon } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
+import { ChevronDown, ChevronUp } from 'lucide-vue-next'
 import type { MessageLog } from '../types'
 
 const props = defineProps<{
@@ -50,6 +67,18 @@ const props = defineProps<{
 const emit = defineEmits<{
   delete: [index: number]
 }>()
+
+const isExpanded = ref(false)
+
+// 系统消息且内容长度超过阈值时，启用展开/收起
+const LONG_CONTENT_THRESHOLD = 150
+const isLongContent = computed(() => {
+  return props.msg.type === 'system' && props.msg.text.length > LONG_CONTENT_THRESHOLD
+})
+
+function toggleExpand() {
+  isExpanded.value = !isExpanded.value
+}
 
 async function handleDelete() {
   try {
@@ -81,6 +110,8 @@ watch(
     } else {
       processedText.value = escapeHtml(msg.text)
     }
+    // 重置展开状态
+    isExpanded.value = false
   },
   { immediate: true }
 )
@@ -126,6 +157,68 @@ function escapeHtml(text: string): string {
   }
 }
 
+.message-item:hover .delete-btn {
+  opacity: 1;
+}
+
+/* 长内容折叠 - 固定显示3行 */
+.thinking-content {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.thinking-content.expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+
+/* 展开/收起指示器 - 居中显示 */
+.expand-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 8px;
+  margin-top: 4px;
+  color: var(--app-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.expand-indicator:hover {
+  color: var(--app-text-secondary);
+  background: var(--app-picker-item-hover);
+}
+
+.expand-indicator svg {
+  transition: transform 0.2s ease;
+}
+
+.expand-indicator:hover svg {
+  transform: scale(1.1);
+}
+
+/* 收起状态的渐变遮罩 */
+.thinking-content:not(.expanded)::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  background: linear-gradient(to bottom, transparent, var(--app-bg-card));
+  pointer-events: none;
+}
+
+/* 用户消息样式 */
 .bubble-user {
   background: var(--app-bg-card);
   border: 1px solid var(--app-border);
@@ -153,15 +246,12 @@ function escapeHtml(text: string): string {
   height: 24px;
 }
 
-.message-item:hover .delete-btn {
-  opacity: 1;
-}
-
 .delete-btn:hover {
   color: var(--app-error);
   background: rgba(255, 100, 100, 0.1);
 }
 
+/* AI 聊天消息样式 */
 .bubble-ai-chat {
   background: var(--app-bg-card);
   border: 1px solid var(--app-border);
@@ -169,6 +259,7 @@ function escapeHtml(text: string): string {
   border-bottom-left-radius: 4px;
 }
 
+/* 系统消息样式 */
 .bubble-system {
   background: transparent;
   color: var(--app-text-secondary);

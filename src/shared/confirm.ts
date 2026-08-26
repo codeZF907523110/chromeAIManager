@@ -12,6 +12,10 @@ export interface ConfirmPreview {
   items: Array<{
     primary: string
     secondary: string
+    /** tabId，给 checkbox 多选用 */
+    tabId?: number
+    /** 初始是否勾选（默认 true = 即将关闭） */
+    selected?: boolean
   }>
 }
 
@@ -42,24 +46,45 @@ export function generateConfirmPreview(
       }
     }
 
-    case 'close_tabs_by_domain': {
-      const domain = (slots.domain || '').toString().toLowerCase()
-      if (!domain) return null
+    case 'close_tabs_by_url': {
+      // 纯 url/title 子串模糊匹配。
+      // 已删除 hostname 匹配，原因是：
+      //  - 和 mute_tabs_by_domain / unmute_tabs_by_domain 的"域名操作"语义重叠
+      //    vs "我想关包含这个子串的 URL"
+      // 命令命名为 close_tabs_by_url，语义明确为"按 URL 匹配关闭"。
+      const q = ((slots.query as string) || '').toString().toLowerCase().trim()
+      if (!q) return null
+
       const matching = context.tabs.filter((t) => {
-        try {
-          return new URL(t.url).hostname.includes(domain)
-        } catch {
-          return false
-        }
+        // pinned 标签与 SW 端语义保持一致：默认不列入"可关闭"清单。
+        if (!t.url || t.pinned) return false
+        const lowerUrl = t.url.toLowerCase()
+        const title = (t.title || '').toLowerCase()
+        return lowerUrl.includes(q) || title.includes(q)
       })
       if (matching.length === 0) return null
 
+      // 统计 pinned 被跳过的数量，提示给用户
+      const skippedPinned = context.tabs.filter((t) => {
+        if (!t.url || !t.pinned) return false
+        const lowerUrl = t.url.toLowerCase()
+        const title = (t.title || '').toLowerCase()
+        return lowerUrl.includes(q) || title.includes(q)
+      }).length
+
+      const description =
+        skippedPinned > 0
+          ? `匹配关键词: ${q}（${skippedPinned} 个固定标签已跳过）`
+          : `匹配关键词: ${q}`
+
       return {
         title: `将关闭 ${matching.length} 个标签页`,
-        description: `域名匹配: ${domain}`,
+        description,
         items: matching.map((t) => ({
           primary: t.title || t.url,
           secondary: t.url,
+          tabId: t.id,
+          selected: true,
         })),
       }
     }
@@ -79,8 +104,11 @@ export function generateConfirmPreview(
     }
 
     case 'remove_bookmark': {
-      const query = slots.query
+      const query = slots.query as string | undefined
       if (!query) return null
+      // Context 里没存书签详情，只有 bookmarkFolders 路径数组。
+      // 这里在 SW 端没有 bookmarks_observe_tree 之类的回查接口可用，
+      // 所以预览只能展示提示文本 + 用户提供的关键词，真正的勾选删除能力在 SW 端做。
       return {
         title: `将删除匹配 "${query}" 的书签`,
         description: '此操作不可撤销',

@@ -42,13 +42,21 @@ const MAX_PERSISTED_MESSAGES = MAX_MESSAGES_COUNT
 interface ConfirmItem {
   primary: string
   secondary: string
+  /** tabId，用于 checkbox 多选时携带回执。undefined 表示不可单独选中（如说明性条目） */
+  tabId?: number
+  /** 初始是否选中（默认 true 表示"即将关闭"） */
+  selected?: boolean
 }
 
 interface PendingConfirm {
   title: string
   description?: string
   items: ConfirmItem[]
-  onConfirm: () => Promise<void>
+  /**
+   * 当用户通过 checkbox 选择不同条目后再确认时，回调会接收到最终选中的 tabIds。
+   * 不传则表示"全选不可干预"，使用 items 中所有 tabId。
+   */
+  onConfirm?: (selectedTabIds: number[]) => Promise<void>
   onCancel?: () => void
 }
 
@@ -120,7 +128,7 @@ export function useAIEngine() {
               secondary: `${Math.round((Date.now() - data.timestamp) / 1000 / 60)} 分钟前`,
             },
           ],
-          onConfirm: async () => {
+          onConfirm: async (_selectedTabIds: number[]) => {
             planTracker.value = savedPlan
             lessons.value = savedLessons
             // 恢复对话上下文（agentLoop 中检查 conversationMessages 非空则复用）
@@ -239,18 +247,34 @@ export function useAIEngine() {
             temperature: isToolCall ? 0.1 : 1.2,
             maxTokens: 4096,
           })
+          // AI 响应已返回，再次检查是否被中途停止（网络请求发出后无法取消，但返回后可以中断处理）
+          if (activeLoopId.value !== loopId) {
+            console.log('[AI Commander] Agent loop stopped during AI call, aborting')
+            addMessage('system', '已停止当前任务')
+            cleanup()
+            return
+          }
           console.log('[AI Commander] Raw response:', raw?.slice(0, 500))
           console.log('[AI Commander] Raw response type:', typeof raw, 'length:', raw?.length)
         } catch (e: unknown) {
+          // 停止时可能抛出 AbortError 或其他中断异常，静默忽略
+          if (activeLoopId.value !== loopId) {
+            console.log('[AI Commander] Agent loop stopped during AI call (exception path)')
+            return
+          }
           const msg = e instanceof Error ? e.message : String(e)
-          addMessage('error', `AI 调用失败: ${msg}`)
+          if (msg === 'NO_AI_BACKEND') {
+            addMessage('system', 'AI 服务未配置，请在设置中添加 API Key 或使用 Gemini Nano')
+          } else {
+            addMessage('system', '抱歉，AI 服务暂时不可用，请稍后再试喵~')
+          }
           cleanup()
           return
         }
 
         if (!raw || raw.trim() === '') {
           console.error('[AI Commander] AI returned empty response!')
-          addMessage('error', 'AI 返回了空响应')
+          addMessage('system', '抱歉，AI 没有返回任何内容，请重新输入试试喵~')
           cleanup()
           return
         }
@@ -281,12 +305,9 @@ export function useAIEngine() {
         if (!json?.action) {
           jsonRetryCount++
           if (jsonRetryCount >= 2) {
-            const rawPreview = raw
-              ? raw.slice(0, 200) + (raw.length > 200 ? '...' : '')
-              : '(空响应)'
             addMessage(
-              'error',
-              `抱歉，我不太理解您的请求。请尝试用更完整、更具体的方式描述。\n\nAI 返回的内容（前200字符）：${rawPreview}`
+              'system',
+              '抱歉，我没有理解您的请求，能再详细说说吗喵？'
             )
             console.error('[AI Commander] AI failed to understand:', raw)
             cleanup()
@@ -396,7 +417,7 @@ export function useAIEngine() {
                 role: 'user',
                 content: `[阶段①中断] ${planResult.error}\n请提供所需数据后重新发起任务`,
               })
-              addMessage('error', `需要用户提供数据: ${planResult.error}`)
+              addMessage('system', `需要您提供一些信息才能继续，请告诉我更多信息喵~`)
               cleanup()
               return
             }
@@ -416,7 +437,7 @@ export function useAIEngine() {
             } else {
               messages.push({ role: 'assistant', content: raw })
               messages.push({ role: 'user', content: `[阶段②失败] ${planResult.error}` })
-              addMessage('error', `扫描失败: ${planResult.error}`)
+              addMessage('system', '扫描页面时遇到了一点问题，请再试一次喵~')
               cleanup()
               return
             }
@@ -592,7 +613,7 @@ export function useAIEngine() {
           toolName = json.toolCall.name
           toolArgs = json.toolCall.args || {}
         } else {
-          addMessage('error', `未知 action: ${json.action}`)
+          addMessage('system', '抱歉，这个操作我无法执行喵~')
           cleanup()
           return
         }
@@ -627,7 +648,7 @@ export function useAIEngine() {
           const detail = (result.detail || {}) as Record<string, unknown>
           const confirmItems =
             (Array.isArray(detail.children)
-              ? (detail.children as Array<{ title?: string; url?: string }>)
+              ? (detail.children as Array<{ title?: string; url?: string; id?: string | number }>)
               : []) || []
           const nodeId = detail.nodeId as string | undefined
           const title = detail.title as string | undefined
@@ -638,11 +659,26 @@ export function useAIEngine() {
               detail.childCount != null
                 ? `包含 ${detail.childCount} 个子项的文件夹 "${title || ''}"`
                 : undefined,
-            items: confirmItems.map((c) => ({
-              primary: c.title || c.url || '',
-              secondary: c.url || '',
-            })),
-            onConfirm: async () => {
+            items: confirmItems.map((c) => {
+              const numericId =
+                typeof c.id === 'number'
+                  ? c.id
+                  : typeof c.id === 'string'
+                    ? Number(c.id)
+                    : undefined
+              return {
+                primary: c.title || c.url || '',
+                secondary: c.url || '',
+                // numericId 为 NaN 或 0 时，tabId 留 undefined → 不可单独勾选
+                // （典型情况：history_remove 的 id 是 URL 字符串，转 Number 会是 NaN）
+                tabId:
+                  numericId !== undefined && Number.isFinite(numericId) && numericId > 0
+                    ? numericId
+                    : undefined,
+                selected: true,
+              }
+            }),
+            onConfirm: async (selectedTabIds: number[]) => {
               try {
                 console.log(
                   '[AI Commander] Confirm called, toolName:',
@@ -650,26 +686,48 @@ export function useAIEngine() {
                   'nodeId:',
                   nodeId,
                   'json.args:',
-                  JSON.stringify(json.args)
+                  JSON.stringify(json.args),
+                  'selected:',
+                  selectedTabIds
                 )
+                // 把用户勾选后的子集 ID 回传到 SW。
+                // children 的 id 可能是 string（书签节点、history URL）或 number（tabId）；
+                // 这里按 intent 类型归一化到对应字段，避免 SW 端做错类型转换。
+                //   - bookmarks_remove_node: selectedIds (string)
+                //   - history_remove: selectedUrls (string)
+                //   - tabs_remove: selectedTabIds 顶层数组直接复用（已经是 number[]）
+                const extraPayload: Record<string, unknown> = {}
+                if (toolName === 'history_remove') {
+                  extraPayload.selectedUrls = selectedTabIds.map((id) => String(id))
+                } else if (toolName === 'bookmarks_remove_node') {
+                  extraPayload.selectedIds = selectedTabIds
+                } else if (toolName === 'tabs_remove') {
+                  extraPayload.tabIds = selectedTabIds
+                } else {
+                  // 兜底：透传 selectedIds，让对应 SW 实现自行决定如何消费
+                  extraPayload.selectedIds = selectedTabIds
+                }
                 const confirmResult = await executeCommand(toolName, {
                   ...(json.args ?? {}),
                   nodeId,
                   force: true,
+                  ...extraPayload,
                 })
                 console.log('[AI Commander] Confirm result:', confirmResult)
                 if (confirmResult.success !== false) {
                   renderExecutionResult(toolName, confirmResult)
                 } else {
-                  addMessage('error', confirmResult.error || confirmResult.message || '操作失败')
+                  addMessage('system', '抱歉，这个操作没有成功喵~')
                 }
               } catch (e: unknown) {
-                addMessage('error', e instanceof Error ? e.message : String(e))
+                addMessage('system', '抱歉，执行过程中遇到了一点问题喵~')
               }
               cleanup()
             },
             onCancel: () => {
-              addMessage('system', `已取消删除 "${title || ''}"`)
+              // 用 ai-chat 通道返回"已取消"，让 AI 看起来在主动回应用户意图；
+              // system 通道虽然语义更准，但会让用户感觉"AI 没说话"，体验差。
+              addMessage('ai-chat', wrapCatReply('好嘞，已帮你取消啦~'))
               cleanup()
             },
           }
@@ -730,12 +788,36 @@ export function useAIEngine() {
         }
 
         if ((result.triggered || result.result !== undefined) && !result.error && !result.code) {
-          const postScan = await scanCurrentPage()
-          if (postScan?.elements?.length) {
-            messages.push({
-              role: 'system',
-              content: `[自动验证] 操作后页面状态(${postScan.totalCount || postScan.count}元素): ${JSON.stringify(postScan)}`,
-            })
+          // 根据工具类型进行针对性验证
+          if (toolName === 'tabs_move' || toolName === 'tabs_group_by_domain') {
+            // 标签页移动/分组后，验证新状态
+            const verifyResult = await executeCommand('tabs_observe', { maxResults: 10 })
+            const tabList = verifyResult.success ? (verifyResult as Record<string, unknown>).tabs : undefined
+            if (Array.isArray(tabList)) {
+              messages.push({
+                role: 'system',
+                content: `[验证] 标签页状态已更新，当前可见标签: ${tabList.length} 个`,
+              })
+            }
+          } else if (toolName === 'bookmarks_move_node' || toolName === 'bookmarks_create_node') {
+            // 书签操作后，验证新状态
+            const verifyResult = await executeCommand('bookmarks_observe_tree', { maxResults: 20 })
+            const nodeList = verifyResult.success ? (verifyResult as Record<string, unknown>).nodes : undefined
+            if (Array.isArray(nodeList)) {
+              messages.push({
+                role: 'system',
+                content: `[验证] 书签操作完成，当前书签节点: ${nodeList.length} 个`,
+              })
+            }
+          } else if (result.triggered || result.result !== undefined) {
+            // 其他操作，扫描页面状态
+            const postScan = await scanCurrentPage()
+            if (postScan?.elements?.length) {
+              messages.push({
+                role: 'system',
+                content: `[自动验证] 操作后页面状态(${postScan.totalCount || postScan.count}元素): ${JSON.stringify(postScan)}`,
+              })
+            }
           }
         }
 
@@ -752,12 +834,12 @@ export function useAIEngine() {
           `[${stepCount}] ${stepStatus} 💭 ${thought}\n    ${formatStepSummary(result, toolName)}`
         )
 
-        // 如果执行失败，添加错误消息供用户查看
+        // 如果执行失败，用友好提示告知用户
         if (result.code || result.error) {
           const errorMsg = result.code
-            ? `[${result.code}] ${result.message || '操作失败'}`
-            : result.error
-          addMessage('error', errorMsg as string)
+            ? `操作「${result.message || '失败'}」`
+            : `操作失败: ${result.error}`
+          addMessage('system', `抱歉，上一步执行遇到问题: ${errorMsg}喵~`)
         }
 
         // 更早压缩消息，避免系统 prompt（含页面 DOM）+ 历史消息超过 token 限制
@@ -774,10 +856,9 @@ export function useAIEngine() {
         addMessage('system', '思考中...')
       }
 
-      emitAIChat('已达到最大执行步数。任务可能未完成，请继续告诉我下一步。', true)
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      addMessage('error', `执行出错: ${msg}`)
+      emitAIChat('已达到最大执行步数（' + MAX_AGENT_STEPS + ' 步），任务可能未完成。请告诉我下一步该做什么喵~', true)
+    } catch {
+      addMessage('system', `抱歉，执行过程中遇到了问题喵~`)
       cleanup()
     }
   }
@@ -789,13 +870,20 @@ export function useAIEngine() {
 
     const result = matchSlashCommand(text)
     if (!result) {
+      // 不是斜杠命令：交给自然语言路径（不会到这里）
       return
     }
     if ('error' in result) {
-      addMessage(
-        'error',
-        `未知命令: "${text}"。可用命令: ${SLASH_COMMANDS.map((c) => '/' + c.slash).join(', ')}`
-      )
+      // 错误回执：必须用 ai-chat 通道，让用户感觉 AI 在主动回应；
+      // system 通道虽然语义更准，但会让用户觉得"AI 没说话"
+      if (result.error === 'MISSING_ARG' && result.hint) {
+        addMessage('ai-chat', wrapCatReply(result.hint))
+      } else {
+        addMessage(
+          'ai-chat',
+          wrapCatReply('没认出来这个命令呢，要不试试 /help 看看有哪些可用的？')
+        )
+      }
       return
     }
 
@@ -818,35 +906,56 @@ export function useAIEngine() {
 
     if (resolvedIntent === 'reset_context') {
       cleanup()
-      addMessage('system', '已清除全部上下文，可以重新开始对话')
+      addMessage('ai-chat', wrapCatReply('已清除全部上下文，可以重新开始对话啦~'))
       return
     }
 
     const cmd = getCommand(resolvedIntent)
     if (!cmd) {
-      addMessage('error', `未知意图: ${resolvedIntent}`)
+      // 已通过 matchSlashCommand 校验 intent 名，不会走到这里；但保留兜底
+      addMessage('ai-chat', wrapCatReply('没认出来这个命令呢，要不试试 /help 看看有哪些可用的？'))
       return
     }
 
     if (cmd.dangerous) {
       const context = await getContext()
       const preview = generateConfirmPreview(resolvedIntent, slotsAny, context)
-      if (preview) {
-        pendingConfirm.value = {
-          title: preview.title,
-          description: preview.description,
-          items: preview.items,
-          onConfirm: async () => {
-            await dispatchToSW(resolvedIntent, { ...slotsAny, force: true })
-            pendingConfirm.value = null // 执行完毕关闭确认卡
-          },
-          onCancel: () => {
-            addMessage('system', '操作已取消')
-          },
-        }
-      } else {
-        // 没有预览项时，直接执行（没有危险操作需要确认）
-        await dispatchToSW(resolvedIntent, slotsAny)
+      // 没有匹配到任何标签时，preview 为 null。
+      // 用 ai-chat 通道返回，让结果进入消息气泡流；AI 看起来像"正常回复"，
+      // 不会出现"AI 没反应"的错觉。
+      if (!preview) {
+        // 斜杠命令路径下 close_tabs_by_url 把 args 塞进了 slots.query（见 slash-commands.ts:432），
+        // 这里只读 query。domain 字段已废弃但保留兼容。
+        const keyword = (slotsAny.query as string) || '当前条件'
+        addMessage(
+          'ai-chat',
+          wrapCatReply(`没找到匹配 "${keyword}" 的标签呢，要不换个关键词试试？`)
+        )
+        return
+      }
+      pendingConfirm.value = {
+        title: preview.title,
+        description: preview.description,
+        items: preview.items,
+        onConfirm: async (selectedTabIds: number[]) => {
+          try {
+            if (selectedTabIds.length > 0) {
+              // 把用户最终选中的 tabIds 透传给 SW；SW 端有 tabIds 时不再按关键词重新匹配
+              await dispatchToSW(resolvedIntent, { ...slotsAny, force: true, tabIds: selectedTabIds })
+            } else {
+              await dispatchToSW(resolvedIntent, { ...slotsAny, force: true })
+            }
+          } finally {
+            // 不论成功失败都关闭确认卡，避免 SW 异常时弹窗卡住
+            pendingConfirm.value = null
+          }
+        },
+        onCancel: () => {
+          // 用 ai-chat 通道返回"已取消"，让 AI 看起来在主动回应用户意图；
+          // system 通道虽然语义更准，但会让用户感觉"AI 没说话"，体验差。
+          addMessage('ai-chat', wrapCatReply('好嘞，已帮你取消啦~'))
+          pendingConfirm.value = null // 关闭确认卡
+        },
       }
     } else {
       await dispatchToSW(resolvedIntent, slotsAny)
@@ -879,14 +988,14 @@ export function useAIEngine() {
       try {
         await handleSlashCommand(trimmedText)
       } catch (error) {
-        addMessage('error', error instanceof Error ? error.message : String(error))
+        addMessage('system', '抱歉，处理命令时遇到了问题喵~')
       }
     } else {
       addMessage('user', trimmedText)
       try {
         await handleNaturalLanguage(trimmedText)
       } catch (error) {
-        addMessage('error', error instanceof Error ? error.message : String(error))
+        addMessage('system', '抱歉，处理您的请求时遇到了问题喵~')
       }
     }
   }
@@ -916,7 +1025,10 @@ export function useAIEngine() {
     try {
       let payload = slots
       if (cmd.requiresPrecompute) {
-        payload = await precompute(intent, slots)
+        // 用 spread 合并：precompute 的字段（如 tabIds）覆盖 slots 同名 key，
+        // 但保留 slots 里的控制字段（如 force: true），否则 SW 端 DANGEROUS_INTENTS
+        // 会再次拦截并返回 NEEDS_CONFIRM，导致确认弹窗后标签仍不关闭。
+        payload = { ...slots, ...(await precompute(intent, slots)) }
       }
       console.log(
         '[AI Commander] Sending command:',
@@ -958,7 +1070,10 @@ export function useAIEngine() {
 
     let payload = slots
     if (cmd.requiresPrecompute) {
-      payload = await precompute(userIntent, slots)
+      // 用 spread 合并：precompute 的字段（如 tabIds）覆盖 slots 同名 key，
+      // 但保留 slots 里的控制字段（如 force: true），否则 SW 端 DANGEROUS_INTENTS
+      // 会再次拦截并返回 NEEDS_CONFIRM，导致确认弹窗后标签仍不关闭。
+      payload = { ...slots, ...(await precompute(userIntent, slots)) }
     }
 
     let response: ExecutionResult
@@ -968,7 +1083,7 @@ export function useAIEngine() {
         command: { intent: cmd.swIntent, payload },
       })) as ExecutionResult
     } catch (e: unknown) {
-      addMessage('error', `Service Worker 响应失败: ${e instanceof Error ? e.message : String(e)}`)
+      addMessage('system', '抱歉，Service Worker 暂时无法响应喵~')
       return { success: false, code: 'SW_ERROR', message: String(e) }
     }
     renderExecutionResult(userIntent, response)
@@ -986,28 +1101,6 @@ export function useAIEngine() {
     const activeTab = tabs.find((t) => t.active)
 
     switch (intent) {
-      case 'group_tabs': {
-        const pattern = slots.pattern?.toString().toLowerCase()
-        let filtered = tabs
-        if (pattern) {
-          filtered = tabs.filter((t) => {
-            try {
-              return (
-                new URL(t.url).hostname.includes(pattern) ||
-                (t.title || '').toLowerCase().includes(pattern)
-              )
-            } catch {
-              return false
-            }
-          })
-        }
-        return {
-          tabIds: filtered.map((t) => t.id),
-          title: slots.groupName as string,
-          color: slots.color as string,
-        }
-      }
-
       case 'close_duplicate_tabs': {
         const seen = new Map<string, number>()
         const dupIds: number[] = []
@@ -1020,7 +1113,12 @@ export function useAIEngine() {
         return { tabIds: dupIds }
       }
 
-      case 'close_tabs_by_domain':
+      // close_tabs_by_url：precompute 这里不做任何事，SW 端的 tabs_remove_by_url
+      // 自己按 query/domain/url 字段模糊匹配 tabs。这里必须返回 slots 原样，
+      // 让 force 等控制字段透传给 SW。
+      case 'close_tabs_by_url':
+        return slots
+
       case 'mute_tabs_by_domain':
       case 'unmute_tabs_by_domain':
       case 'discard_tabs': {
@@ -1077,11 +1175,6 @@ export function useAIEngine() {
 
       case 'reload_tab':
         return { tabId: activeTab?.id, reload: true }
-
-      case 'rename_group': {
-        if (!activeTab || activeTab.groupId === -1) return {}
-        return { groupId: activeTab.groupId, title: slots.name as string }
-      }
 
       case 'remove_bookmark': {
         if (!slots.query) return {}
@@ -1506,11 +1599,18 @@ export function useAIEngine() {
   function renderExecutionResult(intent: string, response: unknown) {
     const result = response as ExecutionResult
     if (result.success === false && result.code) {
-      addMessage('error', `[${result.code}] ${result.message || '操作失败'}`)
+      // 失败提示：用 ai-chat 通道，让用户感觉 AI 在主动回应，
+      // 而不是冷冰冰的系统消息
+      const message = result.message || '失败'
+      const suggestion = result.suggestion ? `（${result.suggestion}）` : ''
+      addMessage(
+        'ai-chat',
+        wrapCatReply(`抱歉，操作 "${message}" 失败喵${suggestion ? ' ' + suggestion : ''}`)
+      )
       return
     }
     if (result.error) {
-      addMessage('error', result.error as string)
+      addMessage('ai-chat', wrapCatReply('抱歉，操作失败了喵~'))
       return
     }
 
@@ -1533,27 +1633,57 @@ export function useAIEngine() {
     let text = '操作完成'
 
     // intent 感知覆盖
-    if (intent === 'sort_tabs' && r.moved) text = `已按域名排序 ${r.moved} 个标签`
+    if (intent === 'find_tab') {
+      const tabs = (r.tabs as Array<{ title?: string; url: string }>) || []
+      if (tabs.length === 0) text = `没有找到匹配的标签页`
+      else
+        text = `找到 ${tabs.length} 个匹配标签:\n${tabs
+          .map((t) => `  ${t.title || t.url}\n    ${t.url}`)
+          .join('\n')}`
+    } else if (intent === 'list_groups') {
+      const groups = (r.groups as Array<{ title?: string; tabs: unknown[] }>) || []
+      if (groups.length === 0) text = '当前没有标签分组'
+      else text = `找到 ${groups.length} 个分组`
+    } else if (intent === 'group_by_domain') {
+      // SW 返回 groupsCreated（创建分组数）和 groupedTabs（被分组的标签数）
+      const groupsCreated = (r.groupsCreated as number) ?? 0
+      if (groupsCreated === 0) {
+        text = (r.message as string) || '没有需要分组的同域名标签'
+      } else {
+        text = `已按域名自动分组：创建 ${groupsCreated} 个分组，覆盖 ${r.groupedTabs || 0} 个标签`
+      }
+    } else if (intent === 'sort_tabs' && r.moved) text = `已按域名排序 ${r.moved} 个标签`
     else if (intent === 'pin_tab') {
       const tab = r.tab as { pinned?: boolean } | undefined
       text = tab?.pinned ? '已固定标签' : '已取消固定'
     } else if (intent === 'reload_tab') text = '已刷新'
-    else if (intent === 'rename_group') text = r.title ? `已重命名分组: ${r.title}` : '已重命名分组'
     else if (intent === 'duplicate_tab') text = '标签已复制'
     else if (intent === 'mute_tabs_by_domain' && r.tab) text = '已静音'
     else if (intent === 'unmute_tabs_by_domain' && r.tab) text = '已取消静音'
     else if (intent === 'discard_tabs' && r.tab) text = '已休眠'
-    else if (intent === 'remove_bookmark') text = '已删除书签'
+    else if (intent === 'remove_bookmark') {
+      // SW 端在勾选子集删除时返回 removed: N；单节点删除没有 removed，按 1 处理
+      const removed = (r.removed as number) ?? 1
+      text = `已删除 ${removed} 个书签`
+    }
     else if (intent === 'clear_cookies') text = 'Cookie 已清理'
     else if (intent === 'close_duplicate_tabs' && r.removed) text = `已关闭 ${r.removed} 个重复标签`
-    else if (intent === 'close_tabs_by_domain' && r.removed) text = `已关闭 ${r.removed} 个标签`
+    else if (intent === 'close_tabs_by_url') {
+      // 没有匹配标签时 SW 返回 removed: 0 + message，r.removed 为 0 走通用兜底会失真
+      text = r.removed ? `已关闭 ${r.removed} 个标签` : (r.message as string) || '没有可关闭的标签'
+    }
     else if (intent === 'close_other_tabs' && r.removed) text = `已关闭 ${r.removed} 个标签`
+    else if (intent === 'history_remove') {
+      // 子集删除时 SW 返回 deleted: N；按时间段删除时也可能带 deleted
+      const deleted = (r.deleted as number) ?? 0
+      text = deleted > 0 ? `已删除 ${deleted} 条历史记录` : '没有可删除的历史记录'
+    }
     // 通用结果类型
     else if (r.closed) text = `已为你关闭 ${r.closed} 个标签页`
     else if (r.focused) text = `已切换到: ${(r.focused as { title?: string }).title || ''}`
     else if (r.found && r.bookmarks)
       text = `为你找到 ${r.found} 个书签:\n${(r.bookmarks as Array<{ title: string; url: string }>).map((b) => `  ${b.title} — ${b.url}`).join('\n')}`
-    else if (r.items)
+    else if (r.items && intent === 'search_history')
       text = `为你找到 ${r.found || (r.items as unknown[]).length} 条历史记录:\n${(
         r.items as Array<{
           lastVisitTime?: number
@@ -1600,9 +1730,12 @@ export function useAIEngine() {
     else if (r.reloaded) text = '已刷新'
     else if (r.duplicated) text = '标签已复制'
     else if (r.removed) text = `已删除 ${r.removed} 个书签`
+    else if (r.bookmark) {
+      // 区分"当前页"和"指定 url"两种模式，让用户能直观看到添加结果
+      const bm = r.bookmark as { title?: string; url?: string }
+      text = bm.url ? `已添加书签: ${bm.title || bm.url}\n  ${bm.url}` : '已添加书签'
+    }
     else if (r.storageRemoved) text = `已删除存储键 "${r.storageRemoved}"`
-    else if (r.bookmark)
-      text = `已添加书签: ${(r.bookmark as { title: string; folder?: string }).title}${r.bookmark && (r.bookmark as { folder?: string }).folder ? ` → ${(r.bookmark as { folder?: string }).folder}` : ''}`
     else if (r.opened) text = `已打开: ${r.opened}`
     else if (r.reordered) text = `已将 "${r.reordered}" 调整到第 ${r.index} 位`
     else if (r.moved && r.to) text = `已将 "${r.moved}" 移动到 ${r.to}`
@@ -1683,7 +1816,7 @@ export function useAIEngine() {
         addMessage('ai-chat', text)
       }
     },
-    addErrorMessage: (text) => addMessage('error', text),
+    addErrorMessage: (text) => addMessage('system', text),
   })
 
   // 重要：sidepanel 卸载/HMR 时强制清理所有录制资源，避免僵尸 stream 占用视频通道

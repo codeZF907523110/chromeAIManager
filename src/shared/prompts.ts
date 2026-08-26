@@ -102,15 +102,19 @@ export function buildAgentSystemPrompt(context: Context): string {
     '- browser_navigate_back: 后退\n' +
     '- browser_navigate_forward: 前进\n' +
     '- browser_reload: 刷新页面\n' +
-    '- browser_tab_list: 列出所有标签页\n' +
-    '- browser_tab_new: 新建标签页\n' +
-    '- browser_tab_select: 切换标签页\n' +
-    '- browser_tab_close: 关闭标签页\n' +
-    '- done: 任务完成\n' +
-    '- ask: 需要用户确认或输入\n' +
-    '- chat: 纯对话（不操作浏览器），args 中必须包含 reply 字段，例如 {"action":"chat","args":{"reply":"你的回复内容"}}\n\n' +
+    '- done: 任务完成，在 args 中传入 reply 字段输出最终回复\n' +
+    '- ask: 需要用户确认或输入，在 args 中传入 reply 字段\n' +
+    '- chat: 纯对话（不操作浏览器），args 中必须包含 reply 字段，例如 {"action":"chat","args":{"reply":"你的回复内容"}}\n' +
+    '- batch: 批量执行多个独立操作，一次性发送。格式：{"action":"batch","args":{"calls":[{"tool":"tabs_update","args":{"tabId":1,"active":true}},{"tool":"tabs_remove","args":{"tabId":2}}]}}\n  注意：batch 只适用于简单的独立操作（如移动标签、更新属性等），不适用于需要 DOM 元素引用的操作（如点击、输入）。batch 操作失败率高，优先使用单步操作。\n\n' +
     '## 书签操作注意事项\n' +
-    '删除书签前必须先调用 bookmarks_observe_tree 获取书签列表，从返回结果的 id 字段获取 nodeId，然后再调用 bookmarks_remove_node。\n\n' +
+    '1. 删除书签前必须先调用 bookmarks_observe_tree 获取书签列表，从返回结果的 id 字段获取 nodeId，然后再调用 bookmarks_remove_node。\n' +
+    '2. 移动书签使用 bookmarks_move_node，参数 nodeId 为字符串类型（如 "123"），index 为数字类型（从 0 开始）。\n' +
+    '3. 创建书签使用 bookmarks_create_node，nodeType 为 "bookmark" 时需要传入 url 参数。\n' +
+    '4. 书签节点 ID 是字符串类型，标签页 ID 是数字类型，不要混淆。\n\n' +
+    '## 标签页操作注意事项\n' +
+    '1. 标签页 ID 是数字类型，如 123，不要加引号。\n' +
+    '2. 移动标签页使用 tabs_move，参数 tabIds 为数组，index 为目标位置（从 0 开始）。\n' +
+    '3. 按域名自动分组使用 tabs_group_by_domain。\n\n' +
     '## 输出格式\n\n你必须且只能输出一个合法的 JSON 对象。不要输出任何其他内容（不要有 ``` json 代码块、不要有解释、不要有空行）。\n\n{\n  "thought": "推理过程（用中文写，描述你的分析思路）",\n  "action": "工具名",\n  "args": { /* 工具参数 */ },\n  "predict": "预期这一步执行后发生什么",\n  "step": 步骤序号\n}\n\n## 操作原则\n\n' +
     '1. 每次只输出一个 action。看到结果再决定下一步。\n' +
     '2. thought 写清推理。"我看到 X，所以做 Y，预期发生 Z"。\n' +
@@ -126,9 +130,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '12. 如果 ref 失效（返回 REF_INVALID），重新扫描页面获取新的 ref。\n' +
     '13. 登录等敏感操作需要用户确认。\n' +
     '14. 对书签、标签、窗口等结构化资源，先用只读工具获取真实 id/path，再执行写操作。\n' +
-    '15. 用户未明确要求时，不要自行创建、打开、删除对象。\n' +
-    '16. **颜色参数**：tabs_group 的 color 只能是 `blue`, `cyan`, `green`, `grey`, `orange`, `pink`, `purple`, `red`, `yellow`。\n' +
-    '17. **分组命名**：tabs_group 创建新分组时必须同时传 title 参数。\n\n' +
+    '15. 用户未明确要求时，不要自行创建、打开、删除对象。\n\n' +
     '## 其他可用命令\n\n' +
     tools +
     tabsBlock +

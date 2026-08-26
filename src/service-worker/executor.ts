@@ -8,6 +8,7 @@ import type { ExecutionResult } from '../types/execution'
 
 const DANGEROUS_INTENTS = new Set([
   'tabs_remove',
+  'tabs_remove_by_url',
   'bookmarks_remove_node',
   'history_remove',
   'cookies_remove',
@@ -50,10 +51,8 @@ export async function executeCommand(
       return await moveTabs(payload)
     case 'tabs_remove':
       return await removeTabs(payload)
-    case 'tabs_group':
-      return await groupTabs(payload)
-    case 'tabs_ungroup':
-      return await ungroupTabs(payload)
+    case 'tabs_remove_by_url':
+      return await removeTabsByUrl(payload)
     case 'tabs_observe_groups':
       return await observeGroups()
     case 'tabs_group_by_domain':
@@ -204,8 +203,86 @@ async function checkDangerousConfirm(
     success: false,
     code: 'NEEDS_CONFIRM',
     message: `确认执行 "${intent}" 操作？此操作不可撤销。`,
-    detail: { intent, payload, nodeId: payload.nodeId, title: payload.title },
+    // 填充 children 字段，让前端确认卡可以展示可勾选的子项列表。
+    // 各 intent 的子项计算逻辑不同：
+    //   - bookmarks_remove_node: 文件夹下的直接子节点（书签 + 子文件夹）
+    //   - tabs_remove: 用户传入的 tabIds 对应的标签列表（前端已计算）
+    detail: {
+      intent,
+      payload,
+      nodeId: payload.nodeId,
+      title: payload.title,
+      children: await buildConfirmChildren(intent, payload),
+    },
   }
+}
+
+/**
+ * 为二次确认卡构建 children 列表。每条形如 { id, title, url }，
+ * 前端会映射为带 checkbox 的可勾选项。
+ * 不支持的 intent 返回 undefined，前端按"无 children"处理。
+ */
+async function buildConfirmChildren(
+  intent: string,
+  payload: Record<string, unknown>
+): Promise<Array<{ id: string | number; title?: string; url?: string }> | undefined> {
+  try {
+    if (intent === 'bookmarks_remove_node') {
+      // 文件夹删除场景：列出直接子项让用户勾选
+      const nodeId = payload.nodeId as string | undefined
+      if (!nodeId) return undefined
+      try {
+        // 先校验节点存在且是文件夹（getChildren 对非文件夹 id 也会抛 NotFoundError）
+        const nodes = await chrome.bookmarks.get(nodeId)
+        const node = nodes[0]
+        if (!node || !node.children) {
+          // 节点不是文件夹（叶子书签），没有"子项"可勾选
+          return undefined
+        }
+        const children = await chrome.bookmarks.getChildren(nodeId)
+        return children.map((c) => ({
+          id: c.id,
+          title: c.title,
+          url: c.url,
+        }))
+      } catch (e: unknown) {
+        // 节点不存在或 chrome.bookmarks 抛错时返回 undefined，
+        // 让前端走"无 children"路径——避免错误冒泡阻塞二次确认流程。
+        console.warn('[buildConfirmChildren] 读取书签节点失败:', nodeId, e)
+        return undefined
+      }
+    }
+    if (intent === 'tabs_remove') {
+      // 批量删除标签：列出入参 tabIds 对应的标签信息
+      const tabIds = Array.isArray(payload.tabIds) ? (payload.tabIds as number[]) : []
+      if (!tabIds.length) return undefined
+      const tabs = await Promise.all(tabIds.map((id) => chrome.tabs.get(id).catch(() => null)))
+      return tabs
+        .filter((t): t is chrome.tabs.Tab => !!t && t.id !== undefined)
+        .map((t) => ({
+          id: t.id as number,
+          title: t.title,
+          url: t.url,
+        }))
+    }
+    if (intent === 'history_remove' && payload.query) {
+      // 历史删除场景：按 query 搜索得到候选 URL 列表
+      const items = await chrome.history.search({
+        text: payload.query as string,
+        maxResults: 20,
+      })
+      return items
+        .filter((it) => !!it.url)
+        .map((it) => ({
+          id: it.url as string,
+          title: it.title,
+          url: it.url,
+        }))
+    }
+  } catch (e) {
+    console.warn('[buildConfirmChildren] 获取 children 失败:', e)
+  }
+  return undefined
 }
 
 // ──── TABS 实现 ────
@@ -269,13 +346,32 @@ async function updateTab(payload: Record<string, unknown>): Promise<ExecutionRes
 }
 
 async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const tabIds = payload.tabIds as number[] | undefined
+  // 统一处理 tabIds，支持字符串数组或数字数组
+  const tabIds = (payload.tabIds as unknown[])
+    ? (payload.tabIds as unknown[]).map((id: unknown) => Number(id)).filter((id: number) => !isNaN(id))
+    : undefined
   const index = payload.index as number
+
   if (!tabIds?.length) {
-    return { success: false, code: 'INVALID_PARAMS', message: '缺少 tabIds 参数' }
+    // 没有指定 tabIds，移动当前活动标签
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签', suggestion: '请先打开一个标签页' }
+    const tabs = await chrome.tabs.move([active.id], { index })
+    return { success: true, moved: Array.isArray(tabs) ? tabs.length : 1, tabId: active.id, newIndex: index }
   }
-  const tabs = await chrome.tabs.move(tabIds, { index })
-  return { success: true, moved: Array.isArray(tabs) ? tabs.length : 1 }
+
+  try {
+    const tabs = await chrome.tabs.move(tabIds, { index })
+    return { success: true, moved: Array.isArray(tabs) ? tabs.length : 1, tabIds, newIndex: index }
+  } catch (err: unknown) {
+    const e = err as { message?: string }
+    return {
+      success: false,
+      code: 'MOVE_FAILED',
+      message: e?.message || '移动标签失败',
+      suggestion: '请检查 tabIds 是否有效，标签页可能已被关闭'
+    }
+  }
 }
 
 async function removeTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -290,28 +386,34 @@ async function removeTabs(payload: Record<string, unknown>): Promise<ExecutionRe
   return { success: true, removed: tabIds.length }
 }
 
-async function groupTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const tabIds = payload.tabIds as number[]
-  const groupProps: chrome.tabs.GroupProperties = { tabIds }
-  if (payload.groupId !== undefined) groupProps.groupId = payload.groupId as number
-  if (payload.title) groupProps.title = payload.title as string
-  if (payload.color) groupProps.color = payload.color as chrome.tabs.TabGroupColor
-  const groupId = await chrome.tabs.group(groupProps)
-  return { success: true, groupedTabs: tabIds.length, groupId, title: payload.title }
-}
+async function removeTabsByUrl(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // 纯 url/title 子串模糊匹配。已删除 hostname 匹配，与前端 close_tabs_by_url 一致。
+  const q = ((payload.query as string) || '').toLowerCase().trim()
+  if (!q) return { success: false, code: 'INVALID_PARAMS', message: '缺少匹配关键词' }
 
-async function ungroupTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const tabIds = payload.tabIds as number[] | undefined
-  if (tabIds?.length) {
-    await chrome.tabs.ungroup(tabIds)
-    return { success: true }
+  // 优先用前端勾选过的 tabIds；勾选列表为空再回退到自动匹配
+  const explicitTabIds = Array.isArray(payload.tabIds) ? (payload.tabIds as number[]) : []
+  let tabIds: number[]
+  if (explicitTabIds.length > 0) {
+    tabIds = explicitTabIds.filter((id) => typeof id === 'number')
+  } else {
+    const tabs = await chrome.tabs.query({})
+    tabIds = tabs
+      .filter((t) => {
+        if (t.id === undefined || t.pinned) return false
+        if (!t.url) return false
+        const lowerUrl = t.url.toLowerCase()
+        const title = (t.title || '').toLowerCase()
+        return lowerUrl.includes(q) || title.includes(q)
+      })
+      .map((t) => t.id)
   }
-  const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
-  if (active.groupId !== -1) {
-    await chrome.tabs.ungroup([active.id])
+
+  if (!tabIds.length) {
+    return { success: true, removed: 0, message: '没有匹配该关键词的标签' }
   }
-  return { success: true }
+  await chrome.tabs.remove(tabIds)
+  return { success: true, removed: tabIds.length }
 }
 
 async function observeGroups(): Promise<ExecutionResult> {
@@ -332,26 +434,63 @@ async function observeGroups(): Promise<ExecutionResult> {
   return { success: true, groups: Array.from(groupMap.entries()).map(([id, g]) => ({ id, ...g })) }
 }
 
-async function groupByDomain(): Promise<ExecutionResult> {
-  const tabs = await chrome.tabs.query({ currentWindow: true })
-  if (!tabs.length) return { success: false, code: 'NO_TABS_FOUND', message: '当前窗口没有标签' }
-  const domainMap = new Map<string, number[]>()
+async function groupByDomain(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // 支持两种作用范围：当前窗口（默认）或所有窗口
+  const allWindows = payload.allWindows === true
+  const tabs = allWindows
+    ? await chrome.tabs.query({})
+    : await chrome.tabs.query({ currentWindow: true })
+  if (!tabs.length) return { success: false, code: 'NO_TABS_FOUND', message: '没有可分组的标签' }
+
+  // 按 hostname 分组
+  const domainMap = new Map<string, { tabIds: number[]; windowId: number }>()
   for (const tab of tabs) {
     if (!tab.url || tab.url.startsWith('chrome://') || !tab.id) continue
+    // pinned 标签不参与自动分组
+    if (tab.pinned) continue
     try {
       const d = new URL(tab.url).hostname
-      if (!domainMap.has(d)) domainMap.set(d, [])
-      domainMap.get(d)!.push(tab.id)
+      if (!d) continue
+      if (!domainMap.has(d)) {
+        domainMap.set(d, { tabIds: [], windowId: tab.windowId })
+      }
+      domainMap.get(d)!.tabIds.push(tab.id)
     } catch {
       /* ignore */
     }
   }
-  for (const [, ids] of domainMap) {
-    if (ids.length > 1) {
-      await chrome.tabs.group({ tabIds: ids, createProperties: { windowId: tabs[0].windowId } })
+
+  // 统计实际分了几组
+  let groupCount = 0
+  let groupedTabCount = 0
+  for (const [domain, { tabIds, windowId }] of domainMap) {
+    if (tabIds.length > 1) {
+      try {
+        await chrome.tabs.group({
+          tabIds,
+          createProperties: { windowId, title: domain },
+        })
+        groupCount++
+        groupedTabCount += tabIds.length
+      } catch (e: unknown) {
+        console.warn('[groupByDomain] 创建分组失败:', domain, e)
+      }
     }
   }
-  return { success: true }
+
+  if (groupCount === 0) {
+    return {
+      success: true,
+      groupsCreated: 0,
+      message: '没有找到需要分组的同域名标签（单个标签不分组）',
+    }
+  }
+  return {
+    success: true,
+    groupsCreated: groupCount,
+    groupedTabs: groupedTabCount,
+    message: `已创建 ${groupCount} 个分组，共 ${groupedTabCount} 个标签`,
+  }
 }
 
 // ──── BOOKMARKS 实现 ────
@@ -404,11 +543,29 @@ async function observeBookmarks(payload: Record<string, unknown>): Promise<Execu
 }
 
 async function moveBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const nodeId = String(payload.nodeId || '')
+  if (!nodeId) {
+    return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId 参数', suggestion: '请先调用 bookmarks_observe_tree 获取书签列表，从返回结果中获取 nodeId' }
+  }
+
   const moveProps: chrome.bookmarks.MoveProperties = { index: 0 }
-  if (payload.parentId !== undefined) moveProps.parentId = payload.parentId as string
+  if (payload.parentId !== undefined) {
+    moveProps.parentId = String(payload.parentId)
+  }
   moveProps.index = (payload.index as number) ?? 0
-  const node = await chrome.bookmarks.move(payload.nodeId as string, moveProps)
-  return { success: true, node }
+
+  try {
+    const node = await chrome.bookmarks.move(nodeId, moveProps)
+    return { success: true, node, moved: true, newIndex: node.index }
+  } catch (err: unknown) {
+    const e = err as { message?: string }
+    return {
+      success: false,
+      code: 'BOOKMARK_MOVE_FAILED',
+      message: e?.message || '移动书签失败',
+      suggestion: '请检查 nodeId 是否正确，或尝试先获取书签列表确认节点存在'
+    }
+  }
 }
 
 async function createBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -444,21 +601,77 @@ async function openBookmark(payload: Record<string, unknown>): Promise<Execution
 }
 
 async function removeBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  if (!payload.nodeId) {
+  // 支持两种粒度：
+  // 1) 单节点删除：payload.nodeId 为字符串（文件夹或书签 id）
+  // 2) 子集删除：payload.selectedIds 是从 NEEDS_CONFIRM 二次确认回传的 id 数组，
+  //    用于"只删除文件夹下我勾选的那几个子项"。注意：selectedIds 中的字符串会保留原始字符串 id（书签 API 是 string）。
+  const nodeId = payload.nodeId as string | undefined
+  const selectedIds = Array.isArray(payload.selectedIds) ? (payload.selectedIds as unknown[]) : []
+
+  if (selectedIds.length > 0) {
+    // 子集删除：忽略 nodeId，按勾选列表逐个删除
+    // 兼容前端传来的 number（如 Number('100')=100）和 string 两种 id 形态，
+    // 转字符串时过滤掉 NaN / 0 / 空字符串等无效值，避免传给 chrome.bookmarks.remove('NaN')
+    const idsToRemove = selectedIds
+      .map((id) => (typeof id === 'number' ? id : Number(id)))
+      .filter((id): id is number => Number.isFinite(id) && id > 0)
+      .map((id) => String(id))
+    for (const id of idsToRemove) {
+      try {
+        await chrome.bookmarks.remove(id)
+      } catch (e: unknown) {
+        // 单个失败不影响其他；记录但继续
+        console.warn('[removeBookmark] 删除失败:', id, e)
+      }
+    }
+    if (!idsToRemove.length) {
+      return {
+        success: false,
+        code: 'INVALID_PARAMS',
+        message: '所选项目没有有效的 id',
+      }
+    }
+    return { success: true, removed: idsToRemove.length }
+  }
+
+  if (!nodeId) {
     return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId' }
   }
-  await chrome.bookmarks.remove(payload.nodeId as string)
+  await chrome.bookmarks.remove(nodeId)
   return { success: true }
 }
 
 async function addCurrentPageBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (!tab?.url || tab.url.startsWith('chrome://')) {
-    return { success: false, code: 'PAGE_BLOCKED', message: '无法为特殊页面添加书签' }
+  const url = payload.url as string | undefined
+  const title = payload.title as string | undefined
+  let targetUrl: string
+  let targetTitle: string
+
+  if (url) {
+    // 显式指定 url：以 payload 为主
+    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('javascript:')) {
+      return { success: false, code: 'PAGE_BLOCKED', message: '无法为特殊页面添加书签' }
+    }
+    try {
+      new URL(url)
+    } catch {
+      return { success: false, code: 'INVALID_PARAMS', message: 'URL 格式无效' }
+    }
+    targetUrl = url
+    targetTitle = title || url
+  } else {
+    // 未指定 url：使用当前活动标签
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab?.url || tab.url.startsWith('chrome://')) {
+      return { success: false, code: 'PAGE_BLOCKED', message: '无法为特殊页面添加书签' }
+    }
+    targetUrl = tab.url
+    targetTitle = title || tab.title || targetUrl
   }
+
   const bookmark = await chrome.bookmarks.create({
-    title: (payload.title as string) || tab.title,
-    url: tab.url,
+    title: targetTitle,
+    url: targetUrl,
   })
   return { success: true, bookmark }
 }
@@ -523,7 +736,26 @@ async function searchHistory(payload: Record<string, unknown>): Promise<Executio
 }
 
 async function removeHistory(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // 支持两种粒度：
+  // 1) 单次删除：payload.timeRange（如 'today' / 'week' / 'all'）+ 可选 payload.query
+  // 2) 子集删除：payload.selectedUrls 是从 NEEDS_CONFIRM 二次确认回传的 url 列表，
+  //    用于"只删除搜索结果中我勾选的那几个"。
   const range = payload.timeRange as string
+  const selectedUrls = Array.isArray(payload.selectedUrls)
+    ? (payload.selectedUrls as unknown[]).map((u) => String(u)).filter(Boolean)
+    : []
+
+  if (selectedUrls.length > 0) {
+    for (const url of selectedUrls) {
+      try {
+        await chrome.history.deleteUrl(url)
+      } catch (e: unknown) {
+        console.warn('[removeHistory] 删除失败:', url, e)
+      }
+    }
+    return { success: true, deleted: selectedUrls.length }
+  }
+
   if (range === 'all') {
     await chrome.history.deleteAll()
     return { success: true }
@@ -804,14 +1036,53 @@ async function restoreSession(payload: Record<string, unknown>): Promise<Executi
 
 async function batchExecute(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const calls = payload.calls as Array<{ tool: string; args: Record<string, unknown> }>
-  if (!calls?.length) return { success: false, code: 'UNKNOWN_TYPE', message: 'batch calls 为空' }
+  if (!calls?.length) return { success: false, code: 'UNKNOWN_TYPE', message: 'batch calls 为空', suggestion: '请检查 calls 数组是否为空' }
 
-  const results: unknown[] = []
-  for (const call of calls) {
-    const r = await executeCommand(call.tool, call.args)
-    results.push(r)
+  const results: ExecutionResult[] = []
+  let succeeded = 0
+  let failed = 0
+
+  for (let i = 0; i < calls.length; i++) {
+    try {
+      const call = calls[i]
+      const r = await executeCommand(call.tool, call.args)
+      results.push(r)
+      if (r.success) {
+        succeeded++
+      } else {
+        failed++
+        console.error(`[batch] Step ${i} failed:`, r.message || r.code)
+      }
+    } catch (err: unknown) {
+      const e = err as { message?: string }
+      results.push({
+        success: false,
+        code: 'BATCH_STEP_ERROR',
+        message: e?.message || '步骤执行失败',
+        index: i,
+        tool: calls[i]?.tool,
+        suggestion: '请检查工具名称和参数是否正确'
+      })
+      failed++
+    }
   }
-  return { success: true, results, total: calls.length }
+
+  if (failed > 0) {
+    return {
+      success: false,
+      code: 'BATCH_PARTIAL_FAILURE',
+      message: `${succeeded} 成功，${failed} 失败`,
+      results,
+      total: calls.length,
+      succeeded,
+      failed,
+      suggestion: failed === calls.length
+        ? '所有步骤都失败了，请检查参数或改用单步操作'
+        : `部分步骤成功，失败步骤的错误信息已返回`
+    }
+  }
+
+  return { success: true, results, total: calls.length, succeeded }
 }
 
 // ──── BROWSER DOM 操作（Playwright MCP 兼容）────

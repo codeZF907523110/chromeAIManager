@@ -3,14 +3,31 @@
     <div class="confirm-card-title">{{ title }}</div>
     <div v-if="description" class="confirm-card-desc">{{ description }}</div>
     <div v-if="items.length" class="confirm-card-items">
-      <div v-for="(item, i) in items" :key="i" class="confirm-card-item">
+      <label v-for="(item, i) in items" :key="i" class="confirm-card-item">
+        <input
+          v-if="item.tabId !== undefined"
+          type="checkbox"
+          :checked="localItems[i]?.selected !== false"
+          :disabled="loading"
+          class="confirm-card-checkbox"
+          @change="toggleItem(i, ($event.target as HTMLInputElement).checked)"
+        />
         <span class="primary">{{ item.primary }}</span>
         <span class="secondary">{{ item.secondary }}</span>
-      </div>
+      </label>
+    </div>
+    <div v-if="selectableCount > 0" class="confirm-card-summary">
+      已选 {{ selectedCount }} / {{ selectableCount }}
+      <button class="btn-link" :disabled="loading" @click="toggleAll(false)">全不选</button>
+      <button class="btn-link" :disabled="loading" @click="toggleAll(true)">全选</button>
     </div>
     <div class="confirm-card-actions">
       <button class="btn-cancel" :disabled="loading" @click="handleCancel">取消</button>
-      <button class="btn-confirm" :disabled="loading" @click="handleConfirm">
+      <button
+        class="btn-confirm"
+        :disabled="loading || selectableCount > 0 && selectedCount === 0"
+        @click="handleConfirm"
+      >
         {{ loading ? '执行中...' : '确认执行' }}
       </button>
     </div>
@@ -18,13 +35,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
+
+interface Item {
+  primary: string
+  secondary: string
+  tabId?: number
+  selected?: boolean
+}
 
 const props = defineProps<{
   title: string
   description?: string
-  items: Array<{ primary: string; secondary: string }>
-  onConfirm: () => Promise<void>
+  items: Item[]
+  onConfirm: (selectedTabIds: number[]) => Promise<void>
 }>()
 
 const emit = defineEmits<{
@@ -33,10 +57,42 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 
+// 本地维护 items 选中状态，避免直接 mutate props
+const localItems = ref<Item[]>(props.items.map((it) => ({ ...it })))
+const selectableCount = computed(() => localItems.value.filter((it) => it.tabId !== undefined).length)
+const selectedCount = computed(
+  () => localItems.value.filter((it) => it.tabId !== undefined && it.selected !== false).length
+)
+
+// 如果父组件重新传 items（例如任务恢复场景），同步本地状态
+watch(
+  () => props.items,
+  (newItems) => {
+    localItems.value = newItems.map((it) => ({ ...it }))
+  }
+)
+
+function toggleItem(index: number, checked: boolean) {
+  // 整体替换为新对象，确保 Vue 响应式追踪到变化
+  localItems.value = localItems.value.map((it, i) =>
+    i === index ? { ...it, selected: checked } : it
+  )
+}
+
+function toggleAll(checked: boolean) {
+  // 整体替换为新对象数组，确保 checkbox 重新渲染
+  localItems.value = localItems.value.map((it) =>
+    it.tabId !== undefined ? { ...it, selected: checked } : it
+  )
+}
+
 async function handleConfirm() {
   loading.value = true
   try {
-    await props.onConfirm()
+    const selectedTabIds = localItems.value
+      .filter((it) => it.tabId !== undefined && it.selected !== false)
+      .map((it) => it.tabId as number)
+    await props.onConfirm(selectedTabIds)
   } catch (e: unknown) {
     console.error('[AI管家] 确认操作失败:', e)
     emit('cancel')
@@ -77,19 +133,26 @@ function handleCancel() {
 .confirm-card-items {
   max-height: 200px;
   overflow-y: auto;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .confirm-card-item {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   padding: 6px 0;
   border-bottom: 1px solid var(--app-border-light);
   font-size: 12px;
+  cursor: pointer;
 }
 
 .confirm-card-item:last-child {
   border-bottom: none;
+}
+
+.confirm-card-checkbox {
+  flex-shrink: 0;
+  cursor: pointer;
 }
 
 .confirm-card-item .primary {
@@ -104,6 +167,30 @@ function handleCancel() {
 .confirm-card-item .secondary {
   color: var(--app-text-muted);
   flex-shrink: 0;
+}
+
+.confirm-card-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  margin-bottom: 8px;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--app-text-secondary);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 11px;
+  text-decoration: underline;
+}
+
+.btn-link:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .confirm-card-actions {
