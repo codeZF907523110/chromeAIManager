@@ -34,11 +34,6 @@
       <!-- 工具栏 -->
       <div class="toolbar">
         <div class="toolbar-right">
-          <!-- 停止按钮（AI 思考中显示） -->
-          <button v-if="isRunning" class="stop-btn" title="停止生成" @click="emit('stop')">
-            <StopCircle :size="16" />
-          </button>
-
           <!-- 模型选择 -->
           <el-dropdown trigger="click" @command="handleSelectModel">
             <span class="model-dropdown-link">
@@ -62,8 +57,18 @@
             <Mic :size="16" />
           </button>
 
-          <!-- 发送按钮（思考中禁用） -->
-          <button class="send-btn" :disabled="isRunning || !inputValue.trim()" @click="handleSend">
+          <!-- 停止按钮（AI 思考中显示） -->
+          <button v-if="isRunning" class="stop-btn" title="停止生成" @click="emit('stop')">
+            <StopCircle :size="16" />
+          </button>
+
+          <!-- 发送按钮（思考中隐藏） -->
+          <button
+            v-else
+            class="send-btn"
+            :disabled="!inputValue.trim()"
+            @click="handleSend"
+          >
             <ArrowUp :size="16" />
           </button>
         </div>

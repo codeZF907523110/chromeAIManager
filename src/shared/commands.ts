@@ -10,7 +10,7 @@ export const COMMANDS: Command[] = [
   // ==================== TABS (9) ====================
   {
     intent: 'tabs_observe',
-    description: '查询标签页列表。可用 query、domain 过滤，默认返回当前窗口所有标签',
+    description: '查询标签页列表。可用 query、domain 过滤，默认返回当前窗口所有标签。返回结果包含 id(数字)、title、url、active、pinned、muted、discarded 等字段',
     dangerous: false,
     slots: {
       query: { type: 'string', optional: true, description: '搜索关键词' },
@@ -50,10 +50,10 @@ export const COMMANDS: Command[] = [
   {
     intent: 'tabs_update',
     description:
-      '更新标签页属性。tabId 为空则操作当前标签。可更新 url、active、muted、pinned、discarded；reload=true 刷新页面',
+      '更新标签页属性。tabId 为空则操作当前标签。可更新 url、active、muted、pinned、discarded；reload=true 刷新页面。注意：tabId 是数字类型',
     dangerous: false,
     slots: {
-      tabId: { type: 'number', optional: true, description: '目标标签 ID' },
+      tabId: { type: 'number', optional: true, description: '目标标签 ID (数字)' },
       url: { type: 'string', optional: true, description: '更新 URL' },
       active: { type: 'boolean', optional: true, description: '是否激活' },
       muted: { type: 'boolean', optional: true, description: '是否静音' },
@@ -65,10 +65,10 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'tabs_move',
-    description: '移动标签页位置。tabIds 为空移动当前标签，index 为目标位置(0-based)',
+    description: '移动标签页位置。tabIds 为空移动当前标签，index 为目标位置(0-based)。返回结果包含 id、index 字段用于验证',
     dangerous: false,
     slots: {
-      tabIds: { type: 'array', optional: true, description: '标签 ID 数组' },
+      tabIds: { type: 'array', optional: true, description: '标签 ID 数组，元素为数字' },
       index: { type: 'number', description: '目标位置 (0-based)' },
     },
     swIntent: 'tabs_move',
@@ -85,40 +85,6 @@ export const COMMANDS: Command[] = [
       },
     },
     swIntent: 'tabs_remove',
-  },
-  {
-    intent: 'tabs_group',
-    description: '创建或更新标签分组。tabIds 指定要分组的标签，title 和 color 用于更新组属性',
-    dangerous: false,
-    slots: {
-      tabIds: { type: 'array', description: '标签 ID 数组' },
-      groupId: { type: 'number', optional: true, description: '已有分组 ID' },
-      title: { type: 'string', optional: true, description: '分组标题' },
-      groupName: {
-        type: 'string',
-        optional: true,
-        description: '分组名称（与 title 同义，支持别名）',
-      },
-      color: {
-        type: 'string',
-        optional: true,
-        description: '分组颜色（blue/cyan/green/grey/orange/pink/purple/red/yellow）',
-      },
-    },
-    swIntent: 'tabs_group',
-  },
-  {
-    intent: 'tabs_ungroup',
-    description: '取消标签分组。tabIds 为空取消所有分组',
-    dangerous: false,
-    slots: {
-      tabIds: {
-        type: 'array',
-        optional: true,
-        description: '要取消分组的标签 ID 数组',
-      },
-    },
-    swIntent: 'tabs_ungroup',
   },
   {
     intent: 'tabs_observe_groups',
@@ -144,7 +110,7 @@ export const COMMANDS: Command[] = [
   // ==================== BOOKMARKS (7) ====================
   {
     intent: 'bookmarks_observe_tree',
-    description: '观察完整书签树结构，返回节点 id/title/type/parentId/index/path/url/childCount',
+    description: '观察完整书签树结构，返回节点数组，每个节点包含 id(字符串)、title、type(folder|bookmark)、parentId(字符串)、index、path(完整路径)、url、childCount 等字段',
     dangerous: false,
     slots: {
       query: { type: 'string', optional: true, description: '可选过滤关键词' },
@@ -168,24 +134,24 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'bookmarks_move_node',
-    description: '按 nodeId 移动书签节点。指定 parentId/index/beforeId',
+    description: '按 nodeId 移动书签节点。nodeId 是字符串类型。移动成功后返回新位置信息',
     dangerous: false,
     slots: {
-      nodeId: { type: 'string', description: '要移动的节点 id' },
+      nodeId: { type: 'string', description: '要移动的节点 id (字符串)' },
       parentId: {
         type: 'string',
         optional: true,
-        description: '目标父节点 id',
+        description: '目标父节点 id (字符串)' ,
       },
       index: {
         type: 'number',
         optional: true,
-        description: '目标位置 (0-based)',
+        description: '目标位置 (0-based)' ,
       },
       beforeId: {
         type: 'string',
         optional: true,
-        description: '插入到哪个节点前面',
+        description: '插入到哪个节点前面 (字符串)' ,
       },
     },
     swIntent: 'bookmarks_move_node',
@@ -241,7 +207,12 @@ export const COMMANDS: Command[] = [
     description: '按 nodeId 删除书签或文件夹',
     dangerous: true,
     slots: {
-      nodeId: { type: 'string', description: '要删除的书签/文件夹节点 id' },
+      nodeId: { type: 'string', description: '要删除的书签/文件夹节点 id', optional: true },
+      selectedIds: {
+        type: 'string[]',
+        description: '从二次确认卡勾选后回传的子集 id 列表',
+        optional: true,
+      },
     },
     swIntent: 'bookmarks_remove_node',
   },
@@ -329,6 +300,11 @@ export const COMMANDS: Command[] = [
         type: 'string',
         optional: true,
         description: '仅删除匹配关键词的记录',
+      },
+      selectedUrls: {
+        type: 'string[]',
+        optional: true,
+        description: '从二次确认卡勾选后回传的子集 URL 列表',
       },
     },
     swIntent: 'history_remove',
@@ -632,15 +608,15 @@ export const COMMANDS: Command[] = [
     swIntent: 'tabs_remove',
   },
   {
-    intent: 'close_tabs_by_domain',
-    description: '关闭指定域名的所有标签页',
+    intent: 'close_tabs_by_url',
+    description: '按 URL 子串或关键词模糊匹配关闭标签',
     dangerous: true,
     aiHidden: true,
     requiresPrecompute: true,
     slots: {
-      domain: { type: 'string', description: '域名' },
+      query: { type: 'string', description: 'URL 子串或关键词（匹配 url/title）' },
     },
-    swIntent: 'tabs_remove',
+    swIntent: 'tabs_remove_by_url',
   },
   {
     intent: 'mute_tabs_by_domain',
@@ -674,31 +650,6 @@ export const COMMANDS: Command[] = [
       order: { type: 'string', optional: true, description: 'domain | title' },
     },
     swIntent: 'tabs_move',
-  },
-  {
-    intent: 'group_tabs',
-    description: '创建标签组',
-    dangerous: false,
-    aiHidden: true,
-    requiresPrecompute: true,
-    slots: {
-      groupName: { type: 'string', description: '标签组名称' },
-      pattern: {
-        type: 'string',
-        optional: true,
-        description: '域名或关键词匹配',
-      },
-      color: { type: 'string', optional: true, description: '组颜色' },
-    },
-    swIntent: 'tabs_group',
-  },
-  {
-    intent: 'ungroup_tabs',
-    description: '取消标签分组',
-    dangerous: false,
-    aiHidden: true,
-    slots: {},
-    swIntent: 'tabs_ungroup',
   },
   {
     intent: 'pin_tab',
@@ -775,22 +726,17 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'group_by_domain',
-    description: '按域名将标签页分组',
+    description: '按域名自动分组同域名的标签页（不含 pinned）',
     dangerous: false,
     aiHidden: true,
-    slots: {},
-    swIntent: 'tabs_group_by_domain',
-  },
-  {
-    intent: 'rename_group',
-    description: '重命名当前标签所在分组',
-    dangerous: false,
-    aiHidden: true,
-    requiresPrecompute: true,
     slots: {
-      name: { type: 'string', description: '新分组名称' },
+      allWindows: {
+        type: 'boolean',
+        optional: true,
+        description: 'true=所有窗口；默认只处理当前窗口',
+      },
     },
-    swIntent: 'tabs_group',
+    swIntent: 'tabs_group_by_domain',
   },
   {
     intent: 'reopen_closed_tab',

@@ -22,33 +22,19 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     placeholder: '关键词',
   },
   {
-    slash: 'close-domain',
-    intent: 'close_tabs_by_domain',
-    description: '关闭指定域名的所有标签',
-    aliases: ['cdd'],
+    slash: 'close-url',
+    intent: 'close_tabs_by_url',
+    description: '按 URL 子串或关键词模糊匹配并关闭标签（支持勾选）',
+    aliases: ['cu'],
     hasArg: true,
-    placeholder: '域名 (如 github.com)',
+    placeholder: 'URL 子串或关键词',
   },
   {
     slash: 'bookmark',
     intent: 'add_bookmark',
-    description: '添加当前页为书签',
+    description: '添加书签（默认添加当前页）',
     aliases: ['bm', '收藏'],
-    hasArg: false,
-  },
-  {
-    slash: 'group',
-    intent: 'group_tabs',
-    description: '创建标签分组',
-    aliases: ['g', '分组'],
     hasArg: true,
-    placeholder: '组名 [域名/关键词]',
-  },
-  {
-    slash: 'ungroup',
-    intent: 'ungroup_tabs',
-    description: '取消所有标签分组',
-    aliases: ['ug', '解组'],
   },
   {
     slash: 'reopen',
@@ -69,7 +55,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     slash: 'mute',
     intent: 'mute_tabs_by_domain',
     description: '静音指定域名标签',
-    aliases: ['m'],
+    aliases: ['m', '静音'],
     hasArg: true,
     placeholder: '域名',
   },
@@ -99,7 +85,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     slash: 'close-other',
     intent: 'close_other_tabs',
     description: '关闭其他标签（保留当前）',
-    aliases: ['co', '保留当前'],
+    aliases: ['保留当前'],
   },
   {
     slash: 'duplicate',
@@ -135,7 +121,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     slash: 'unmute',
     intent: 'unmute_tabs_by_domain',
     description: '取消静音指定域名标签',
-    aliases: ['um', '取消静音'],
+    aliases: ['取消静音'],
     hasArg: true,
     placeholder: '域名',
   },
@@ -171,24 +157,17 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     placeholder: 'URL (可选)',
   },
   {
-    slash: 'group-by-domain',
-    intent: 'group_by_domain',
-    description: '按域名将所有标签页分组',
-    aliases: ['gbd', '域名分组'],
-  },
-  {
     slash: 'list-groups',
     intent: 'list_groups',
     description: '列出所有标签分组',
     aliases: ['lg', '分组列表'],
   },
   {
-    slash: 'rename-group',
-    intent: 'rename_group',
-    description: '重命名标签分组',
-    aliases: ['rg', '重命名组'],
-    hasArg: true,
-    placeholder: '新名称',
+    slash: 'group-domain',
+    intent: 'group_by_domain',
+    description: '按域名自动分组（同域名标签归到一组，不含 pinned）',
+    aliases: ['gbd', '域名分组', '分组域名'],
+    hasArg: false,
   },
   {
     slash: 'theme',
@@ -234,7 +213,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     slash: 'clear-cookies',
     intent: 'clear_cookies',
     description: '清除域名下的 Cookie',
-    aliases: ['cc', '清Cookie'],
+    aliases: ['清Cookie'],
     hasArg: true,
     placeholder: '域名',
   },
@@ -336,7 +315,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     slash: 'clear-chat',
     intent: 'clear_chat',
     description: '清空所有回话记录',
-    aliases: ['cc', '清空'],
+    aliases: ['清空'],
   },
   {
     slash: 'reset',
@@ -350,6 +329,8 @@ interface SlashMatchResult {
   intent: string
   slots: Record<string, unknown>
   cmd: SlashCommand
+  error?: string
+  hint?: string
 }
 
 interface SlashError {
@@ -389,8 +370,24 @@ export function matchSlashCommand(input: string): SlashMatchResult | SlashError 
 
   // 构建参数 slots
   const slots: Record<string, unknown> = {}
-  if (cmd.hasArg && args) {
-    buildSlots(cmd.intent, args, parts, slots)
+  if (cmd.hasArg) {
+    // 对于需要参数但没有传入的情况：add_bookmark 等"参数可选"命令直接通过，
+    // 由 SW 端用默认值处理；其他命令给 MISSING_ARG 提示。
+    if (!args) {
+      if (cmd.intent === 'add_bookmark') {
+        // url 和 title 都可选：不传参直接走默认（添加当前页）
+        return { intent: cmd.intent, slots, cmd }
+      }
+      return {
+        intent: cmd.intent,
+        slots: {},
+        cmd,
+        error: `MISSING_ARG`,
+        hint: cmd.placeholder ? `需要参数: ${cmd.placeholder}` : '需要参数',
+      } as unknown as SlashMatchResult
+    } else {
+      buildSlots(cmd.intent, args, parts, slots)
+    }
   }
 
   return { intent: cmd.intent, slots, cmd }
@@ -403,6 +400,28 @@ function buildSlots(
   slots: Record<string, unknown>
 ): void {
   switch (intent) {
+    case 'add_bookmark': {
+      // 不传参数 = 当前页面（url 留空，SW 端取当前活动标签）
+      // 传 https://xxx = 把指定 URL 加入书签
+      // 传 "标题 URL" = 标题在前、URL 在后（第一个空格分隔）
+      const argsText = args.trim()
+      if (!argsText) {
+        // 不传参数：不设置 url，让 SW 端走"当前页"分支
+        break
+      }
+      if (/^https?:\/\//i.test(argsText)) {
+        ;(slots as Record<string, string>).url = argsText
+      } else if (argsText.includes(' ')) {
+        // "标题 URL" 形式：前半为 title、后半为 url
+        const idx = argsText.indexOf(' ')
+        ;(slots as Record<string, string>).title = argsText.slice(0, idx).trim()
+        ;(slots as Record<string, string>).url = argsText.slice(idx + 1).trim()
+      } else {
+        // 只有一个非 URL 参数：当作 title（url 留空走当前页）
+        ;(slots as Record<string, string>).title = argsText
+      }
+      break
+    }
     case 'find_tab':
     case 'search_history':
     case 'remove_bookmark':
@@ -411,7 +430,12 @@ function buildSlots(
     case 'uninstall_extension':
       ;(slots as Record<string, string>).query = args
       break
-    case 'close_tabs_by_domain':
+    case 'close_tabs_by_url': {
+      // 关闭命令的输入是 URL 子串或任意关键词，直接塞进 query。
+      // SW 端按 url/title 子串匹配（不再匹配 hostname，避免和 mute_tabs_by_domain 语义重叠）。
+      ;(slots as Record<string, string>).query = args
+      break
+    }
     case 'mute_tabs_by_domain':
     case 'unmute_tabs_by_domain':
     case 'get_cookies':
@@ -427,17 +451,13 @@ function buildSlots(
     case 'sort_tabs':
       ;(slots as Record<string, string>).order = args
       break
-    case 'zoom_tab':
-      ;(slots as Record<string, string>).direction = args
-      break
-    case 'rename_group':
-      ;(slots as Record<string, string>).name = args
-      break
-    case 'group_tabs': {
-      const [groupName, ...patternParts] = parts.slice(1)
-      ;(slots as Record<string, string>).groupName = groupName || '新分组'
-      if (patternParts.length > 0)
-        (slots as Record<string, string>).pattern = patternParts.join(' ')
+    case 'zoom_tab': {
+      const validDirs = ['in', 'out', 'reset']
+      const dir = args.toLowerCase()
+      if (!validDirs.includes(dir)) {
+        return
+      }
+      ;(slots as Record<string, string>).direction = dir
       break
     }
     case 'reload_tab':
@@ -451,7 +471,13 @@ function buildSlots(
       else (slots as Record<string, string>).domain = args
       break
     case 'screenshot':
-      if (args) (slots as Record<string, string>).query = args
+      // screenshot 命令不需要 query 参数，传了也会忽略
+      // 实际截图由 chrome.tabs API 处理当前活动标签
+      break
+    case 'find_tab':
+      // find_tab 的 query 必须非空
+      if (!args.trim()) return
+      ;(slots as Record<string, string>).query = args
       break
     case 'get_theme':
       if (args) {
@@ -466,7 +492,17 @@ function buildSlots(
       if (args) (slots as Record<string, string>).family = args
       break
     case 'new_window':
-      if (args) (slots as Record<string, string>).url = args
+      if (args) {
+        // 验证 URL 格式和受保护页面
+        const url = args.trim()
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+          return
+        }
+        if (url.startsWith('chrome://')) {
+          return
+        }
+        ;(slots as Record<string, string>).url = url
+      }
       break
     case 'list_extensions':
       if (args) (slots as Record<string, string>).query = args
