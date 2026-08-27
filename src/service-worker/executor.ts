@@ -733,8 +733,22 @@ async function removeBookmark(payload: Record<string, unknown>): Promise<Executi
   if (!nodeId) {
     return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId' }
   }
+  // 删除前先拿到节点信息，回传 removedNode 让前端能反馈"删了哪个书签"；
+  // 如果是文件夹，统计子项数，让用户看到真实影响范围。
+  let removedNode: chrome.bookmarks.BookmarkTreeNode | undefined
+  let totalRemoved = 1
+  try {
+    const nodes = await chrome.bookmarks.get(nodeId)
+    removedNode = nodes[0]
+    if (removedNode && !removedNode.url && Array.isArray(removedNode.children)) {
+      // 文件夹：1（folder 本身）+ 子项数
+      totalRemoved = 1 + removedNode.children.length
+    }
+  } catch {
+    // 拿不到节点信息不影响删除，继续
+  }
   await chrome.bookmarks.remove(nodeId)
-  return { success: true }
+  return { success: true, removedNode, removed: totalRemoved }
 }
 
 async function addCurrentPageBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -1014,18 +1028,43 @@ async function updateFontFamily(payload: Record<string, unknown>): Promise<Execu
 // ──── COOKIES 实现 ────
 
 async function observeCookies(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const domain = payload.domain as string
+  let domain = (payload.domain as string | undefined)?.trim()
   if (!domain) {
-    return { success: false, code: 'INVALID_PARAMS', message: '域名不能为空' }
+    // /cookies 无参 → 取当前活动 tab 的 url → 域名
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab?.url) {
+      return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
+    }
+    try {
+      domain = new URL(tab.url).hostname
+    } catch {
+      return {
+        success: false,
+        code: 'INVALID_PARAMS',
+        message: '当前页面不是合法 URL',
+      }
+    }
   }
   const cookies = await chrome.cookies.getAll({ domain })
   return { success: true, cookies, found: cookies.length, domain }
 }
 
 async function removeCookies(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const domain = payload.domain as string
+  let domain = (payload.domain as string | undefined)?.trim()
   if (!domain) {
-    return { success: false, code: 'INVALID_PARAMS', message: '域名不能为空' }
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab?.url) {
+      return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
+    }
+    try {
+      domain = new URL(tab.url).hostname
+    } catch {
+      return {
+        success: false,
+        code: 'INVALID_PARAMS',
+        message: '当前页面不是合法 URL',
+      }
+    }
   }
   const cookies = await chrome.cookies.getAll({ domain })
   for (const c of cookies) {
@@ -1066,17 +1105,161 @@ async function removeExtension(payload: Record<string, unknown>): Promise<Execut
 
 // ──── PERMISSIONS 实现 ────
 
-async function observePermissions(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  return { success: true, domain: payload.domain || '' }
+/**
+ * Chrome contentSettings 支持的权限类型子集。
+ *
+ * 这里列出常见可观察的设置项；不全则拿不到值，Markdown 工厂会显示空表格。
+ * 字段顺序即表格列顺序。
+ *
+ * legalSettings：每个 resourceId 在 chrome.contentSettings.set 时合法的 setting 值。
+ * 当用户传入 'default'（或任何不在白名单里的值），我们拒绝写入而不是直接传给 API 报错。
+ */
+const OBSERVABLE_PERMISSION_TYPES: Array<{
+  key: string
+  label: string
+  /** contentSettings API 中的 resourceId */
+  resourceId: string
+  /** chrome.contentSettings.set 接受的合法 setting 值 */
+  legalSettings: readonly string[]
+}> = [
+  { key: 'cookies', label: 'Cookie', resourceId: 'cookies', legalSettings: ['allow', 'block'] },
+  {
+    key: 'javascript',
+    label: 'JavaScript',
+    resourceId: 'javascript',
+    legalSettings: ['allow', 'block'],
+  },
+  { key: 'popups', label: '弹窗', resourceId: 'popups', legalSettings: ['allow', 'block'] },
+  {
+    key: 'notifications',
+    label: '通知',
+    resourceId: 'notifications',
+    legalSettings: ['allow', 'block', 'ask'],
+  },
+  { key: 'images', label: '图片', resourceId: 'images', legalSettings: ['allow', 'block'] },
+  {
+    key: 'microphone',
+    label: '麦克风',
+    resourceId: 'microphone',
+    legalSettings: ['allow', 'block', 'ask'],
+  },
+  {
+    key: 'camera',
+    label: '摄像头',
+    resourceId: 'camera',
+    legalSettings: ['allow', 'block', 'ask'],
+  },
+  {
+    key: 'location',
+    label: '位置',
+    resourceId: 'location',
+    legalSettings: ['allow', 'block', 'ask'],
+  },
+]
+
+/** chrome.contentSettings.get 的返回结构（只用到 setting 字段） */
+interface ContentSettingResult {
+  setting?: string
 }
 
+/**
+ * 查询某个域名在主框架下的所有可观察权限。
+ *
+ * /site-perms 无参时取当前活动 tab 的 hostname；带域名直接用。
+ * chrome.contentSettings.get 返回值以单域名 primaryPattern 匹配（不覆盖子域名），
+ * 与"站点权限"概念一致。
+ *
+ * secondaryPattern 在权限类 resourceId（popups / camera / location 等）上
+ * 表示"哪些第三方 subframe 能用这个权限"，对单域名查询无意义，省略以匹配更广义的设置。
+ */
+async function observePermissions(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  let domain = (payload.domain as string | undefined)?.trim()
+  if (!domain) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab?.url) {
+      return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
+    }
+    try {
+      domain = new URL(tab.url).hostname
+    } catch {
+      return { success: false, code: 'INVALID_PARAMS', message: '当前页面不是合法 URL' }
+    }
+  }
+
+  const entries: Array<Record<string, unknown>> = []
+  for (const t of OBSERVABLE_PERMISSION_TYPES) {
+    try {
+      const result = (await chrome.contentSettings.get({
+        primaryPattern: `https://${domain}/*`,
+        resourceIdentifier: { id: t.resourceId },
+      })) as ContentSettingResult
+      entries.push({
+        key: t.key,
+        label: t.label,
+        value: result?.setting || 'default',
+      })
+    } catch {
+      // 单个权限查询失败时跳过该行；其它权限仍可观察
+      entries.push({ key: t.key, label: t.label, value: 'default' })
+    }
+  }
+
+  return { success: true, domain, permissions: entries, found: entries.length }
+}
+
+/**
+ * 设置指定域名的某个权限。
+ *
+ * 三道校验：
+ *  1. domain 必须有值
+ *  2. setting 必须是 OBSERVABLE_PERMISSION_TYPES 里注册的 resourceId
+ *  3. value 必须在该 resourceId 的 legalSettings 范围内（'default' 不合法——
+ *     想重置为默认应让用户不传或传 'allow'/'block' 之一，由 Chrome 自身管理）
+ *
+ * 校验失败返回 success:false 让 useAIEngine 走 ai-chat 错误提示通道。
+ */
 async function updatePermissions(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  return { success: true, domain: payload.domain, setting: payload.setting, value: payload.value }
+  const domain = (payload.domain as string | undefined)?.trim()
+  const setting = payload.setting as string | undefined
+  const value = payload.value as string | undefined
+
+  if (!domain) {
+    return { success: false, code: 'INVALID_PARAMS', message: '缺少域名' }
+  }
+  const type = OBSERVABLE_PERMISSION_TYPES.find((t) => t.resourceId === setting)
+  if (!type) {
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: `不支持的权限类型: ${setting}`,
+      suggestion: `支持的类型: ${OBSERVABLE_PERMISSION_TYPES.map((t) => t.key).join(', ')}`,
+    }
+  }
+  if (!value || !type.legalSettings.includes(value)) {
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: `${type.label} 的 value 必须是 ${type.legalSettings.join(' | ')}`,
+      suggestion: '不支持 "default"（如需重置，请传 allow 或 block）',
+    }
+  }
+
+  await chrome.contentSettings.set({
+    primaryPattern: `https://${domain}/*`,
+    resourceIdentifier: { id: type.resourceId },
+    setting: value,
+  })
+  return { success: true, domain, setting: type.key, value }
 }
 
 // ──── STORAGE 实现 ────
 
 async function getStorage(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // /storage-get 无 key → 返回扩展 storage.local 全量；带 key → 单值
+  if (!payload.key) {
+    const all = await chrome.storage.local.get(null)
+    return { success: true, value: all }
+  }
   const result = await chrome.storage.local.get(payload.key as string)
   return {
     success: true,

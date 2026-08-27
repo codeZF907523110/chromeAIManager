@@ -14,6 +14,7 @@ import type { Component } from 'vue'
 import HistoryTable from './HistoryTable.vue'
 import TabList from './TabList.vue'
 import ActionButtonGroup from './ActionButtonGroup.vue'
+import DataTable from './DataTable.vue'
 
 export interface BlockEntry {
   component: Component
@@ -49,6 +50,15 @@ export const blockRegistry: Map<string, BlockEntry> = new Map([
       component: ActionButtonGroup,
       aiUsable: true,
       description: '操作按钮组，点击触发命令。props: { buttons: Array<{ label, intent, args? }> }',
+    },
+  ],
+  [
+    'data-table',
+    {
+      component: DataTable,
+      aiUsable: true,
+      description:
+        '通用数据表格。props: { columns: Array<{ key, title, width?, ellipsis?, format? }>, rows: Array<Record<string, unknown>>, empty?: string }',
     },
   ],
 ])

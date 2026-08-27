@@ -18,6 +18,13 @@ export interface MessageLog {
    * 见 src/types/message-block.ts
    */
   text: MessageBody
+  /**
+   * 消息唯一 id。前端生成，用于 IndexedDB 去重与按 id 删除。
+   * 第一版始终存在；不持久化的临时消息允许缺失（极少情况，例如来自 recordingExecutor 的纯下载卡）。
+   */
+  id?: string
+  /** 时间戳，用于排序与历史上限裁剪；默认 Date.now()。 */
+  createdAt?: number
   image?: string // base64 data URL for screenshots
   video?: string // base64 data URL for video preview
   recordingFile?: { url: string; name: string; size?: number; preview?: string } // recording download card

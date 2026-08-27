@@ -47,11 +47,8 @@ export function generateConfirmPreview(
     }
 
     case 'close_tabs_by_url': {
-      // 纯 url/title 子串模糊匹配。
-      // 已删除 hostname 匹配，原因是：
-      //  - 和 mute_tabs_by_domain / unmute_tabs_by_domain 的"域名操作"语义重叠
-      //    vs "我想关包含这个子串的 URL"
-      // 命令命名为 close_tabs_by_url，语义明确为"按 URL 匹配关闭"。
+      // 纯 url/title 子串模糊匹配。命令命名为 close_tabs_by_url，
+      // 语义明确为"按 URL 匹配关闭"。
       const q = ((slots.query as string) || '').toString().toLowerCase().trim()
       if (!q) return null
 
@@ -85,20 +82,6 @@ export function generateConfirmPreview(
           secondary: t.url,
           tabId: t.id,
           selected: true,
-        })),
-      }
-    }
-
-    case 'close_other_tabs': {
-      const activeTab = context.tabs.find((t) => t.active === true)
-      const toClose = context.tabs.filter((t) => !t.pinned && (!activeTab || t.id !== activeTab.id))
-      if (toClose.length === 0) return null
-      return {
-        title: `将关闭 ${toClose.length} 个标签页（保留当前）`,
-        description: activeTab ? `保留: ${activeTab.title || activeTab.url}` : '',
-        items: toClose.slice(0, 10).map((t) => ({
-          primary: t.title || t.url,
-          secondary: t.url,
         })),
       }
     }

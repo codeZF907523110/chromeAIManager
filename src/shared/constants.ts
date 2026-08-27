@@ -92,7 +92,8 @@ export const MAX_AGENT_STEPS = 100
 export const STEP_TIMEOUT_MS = 10000
 export const TOTAL_TASK_TIMEOUT_MS = 120000
 export const MAX_CONSECUTIVE_FAILURES = 3
-export const MAX_MESSAGES_COUNT = 30
+/** 聊天记录默认容量上限（IndexedDB 写入时自动 trim） */
+export const DEFAULT_MAX_MESSAGES = 100
 
 // ──── 默认模型配置 ────
 
