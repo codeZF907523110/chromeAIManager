@@ -10,7 +10,8 @@ export const COMMANDS: Command[] = [
   // ==================== TABS (9) ====================
   {
     intent: 'tabs_observe',
-    description: '查询标签页列表。可用 query、domain 过滤，默认返回当前窗口所有标签。返回结果包含 id(数字)、title、url、active、pinned、muted、discarded 等字段',
+    description:
+      '查询标签页列表。可用 query、domain 过滤，默认返回当前窗口所有标签。返回结果包含 id(数字)、title、url、active、pinned、muted、discarded 等字段',
     dangerous: false,
     slots: {
       query: { type: 'string', optional: true, description: '搜索关键词' },
@@ -65,7 +66,8 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'tabs_move',
-    description: '移动标签页位置。tabIds 为空移动当前标签，index 为目标位置(0-based)。返回结果包含 id、index 字段用于验证',
+    description:
+      '移动标签页位置。tabIds 为空移动当前标签，index 为目标位置(0-based)。返回结果包含 id、index 字段用于验证',
     dangerous: false,
     slots: {
       tabIds: { type: 'array', optional: true, description: '标签 ID 数组，元素为数字' },
@@ -124,7 +126,8 @@ export const COMMANDS: Command[] = [
   // ==================== BOOKMARKS (7) ====================
   {
     intent: 'bookmarks_observe_tree',
-    description: '观察完整书签树结构，返回节点数组，每个节点包含 id(字符串)、title、type(folder|bookmark)、parentId(字符串)、index、path(完整路径)、url、childCount 等字段',
+    description:
+      '观察完整书签树结构，返回节点数组，每个节点包含 id(字符串)、title、type(folder|bookmark)、parentId(字符串)、index、path(完整路径)、url、childCount 等字段',
     dangerous: false,
     slots: {
       query: { type: 'string', optional: true, description: '可选过滤关键词' },
@@ -155,17 +158,17 @@ export const COMMANDS: Command[] = [
       parentId: {
         type: 'string',
         optional: true,
-        description: '目标父节点 id (字符串)' ,
+        description: '目标父节点 id (字符串)',
       },
       index: {
         type: 'number',
         optional: true,
-        description: '目标位置 (0-based)' ,
+        description: '目标位置 (0-based)',
       },
       beforeId: {
         type: 'string',
         optional: true,
-        description: '插入到哪个节点前面 (字符串)' ,
+        description: '插入到哪个节点前面 (字符串)',
       },
     },
     swIntent: 'bookmarks_move_node',
@@ -443,10 +446,14 @@ export const COMMANDS: Command[] = [
   // ==================== COOKIES (2) ====================
   {
     intent: 'cookies_observe',
-    description: '查询指定域名的 Cookie',
+    description: '查询指定域名的 Cookie（无参则取当前页面域名）',
     dangerous: false,
     slots: {
-      domain: { type: 'string', optional: true, description: '域名' },
+      domain: {
+        type: 'string',
+        optional: true,
+        description: '域名；缺省时取当前活动标签的域名',
+      },
     },
     swIntent: 'cookies_observe',
   },
@@ -527,10 +534,14 @@ export const COMMANDS: Command[] = [
   // ==================== STORAGE (3) ====================
   {
     intent: 'storage_get',
-    description: '读取扩展存储中的键值',
+    description: '读取扩展存储键值（无 key 列出全部）',
     dangerous: false,
     slots: {
-      key: { type: 'string', description: '存储键名' },
+      key: {
+        type: 'string',
+        optional: true,
+        description: '存储键名；缺省时返回整个 storage.local',
+      },
     },
     swIntent: 'storage_get',
   },
@@ -633,28 +644,6 @@ export const COMMANDS: Command[] = [
     swIntent: 'tabs_remove_by_url',
   },
   {
-    intent: 'mute_tabs_by_domain',
-    description: '静音指定域名标签',
-    dangerous: false,
-    aiHidden: true,
-    requiresPrecompute: true,
-    slots: {
-      domain: { type: 'string', description: '域名' },
-    },
-    swIntent: 'tabs_update',
-  },
-  {
-    intent: 'unmute_tabs_by_domain',
-    description: '取消静音指定域名标签',
-    dangerous: false,
-    aiHidden: true,
-    requiresPrecompute: true,
-    slots: {
-      domain: { type: 'string', description: '域名' },
-    },
-    swIntent: 'tabs_update',
-  },
-  {
     intent: 'sort_tabs',
     description: '按域名/标题排序当前窗口标签',
     dangerous: false,
@@ -675,30 +664,6 @@ export const COMMANDS: Command[] = [
     swIntent: 'tabs_update',
   },
   {
-    intent: 'reload_tab',
-    description: '刷新当前标签页',
-    dangerous: false,
-    aiHidden: true,
-    requiresPrecompute: true,
-    slots: {
-      all: {
-        type: 'boolean',
-        optional: true,
-        description: '刷新窗口内所有标签',
-      },
-    },
-    swIntent: 'tabs_update',
-  },
-  {
-    intent: 'close_other_tabs',
-    description: '关闭当前窗口内除当前标签外的其他标签',
-    dangerous: true,
-    aiHidden: true,
-    requiresPrecompute: true,
-    slots: {},
-    swIntent: 'tabs_remove',
-  },
-  {
     intent: 'duplicate_tab',
     description: '复制当前标签页',
     dangerous: false,
@@ -706,29 +671,6 @@ export const COMMANDS: Command[] = [
     requiresPrecompute: true,
     slots: {},
     swIntent: 'tabs_create',
-  },
-  {
-    intent: 'move_tab',
-    description: '移动标签到指定位置',
-    dangerous: false,
-    aiHidden: true,
-    slots: {
-      index: { type: 'number', description: '目标位置 (1-based)' },
-      fromTabId: { type: 'number', optional: true, description: '源标签 ID' },
-    },
-    swIntent: 'tabs_move',
-  },
-  {
-    intent: 'discard_tabs',
-    description: '休眠标签页释放内存',
-    dangerous: false,
-    aiHidden: true,
-    requiresPrecompute: true,
-    slots: {
-      domain: { type: 'string', optional: true, description: '域名' },
-      all: { type: 'boolean', optional: true, description: '休眠全部' },
-    },
-    swIntent: 'tabs_update',
   },
   {
     intent: 'list_groups',
@@ -810,86 +752,6 @@ export const COMMANDS: Command[] = [
     swIntent: 'windows_create',
   },
   {
-    intent: 'open_downloads',
-    description: '打开下载管理页面',
-    dangerous: false,
-    aiHidden: true,
-    slots: {},
-    swIntent: 'downloads_open',
-  },
-  {
-    intent: 'zoom_tab',
-    description: '缩放当前页面',
-    dangerous: false,
-    aiHidden: true,
-    slots: {
-      direction: { type: 'string', description: 'in | out | reset' },
-    },
-    swIntent: 'zoom',
-  },
-  {
-    intent: 'get_theme',
-    description: '查看当前主题模式与颜色设置',
-    dangerous: false,
-    aiHidden: true,
-    slots: {},
-    swIntent: 'theme_observe',
-  },
-  {
-    intent: 'set_theme',
-    description: '设置主题模式（light/dark/device）或主题颜色（blue/gray/pink等或#RRGGBB）',
-    dangerous: false,
-    aiHidden: true,
-    slots: {
-      mode: {
-        type: 'string',
-        optional: true,
-        description: 'light | dark | device',
-      },
-      color: { type: 'string', optional: true, description: '颜色名或#RRGGBB' },
-    },
-    swIntent: 'theme_update',
-  },
-  {
-    intent: 'get_font_size',
-    description: '查看当前浏览器字号设置',
-    dangerous: false,
-    aiHidden: true,
-    slots: {},
-    swIntent: 'font_size_observe',
-  },
-  {
-    intent: 'set_font_size',
-    description: '设置浏览器字号（特小/小/中/大/特大）',
-    dangerous: false,
-    aiHidden: true,
-    slots: {
-      size: {
-        type: 'string',
-        description: 'very_small | small | medium | large | very_large',
-      },
-    },
-    swIntent: 'font_size_update',
-  },
-  {
-    intent: 'get_font_family',
-    description: '查看当前浏览器字体设置',
-    dangerous: false,
-    aiHidden: true,
-    slots: {},
-    swIntent: 'font_family_observe',
-  },
-  {
-    intent: 'set_font_family',
-    description: '设置浏览器字体（如 微软雅黑、Arial 等），会自动检测是否支持',
-    dangerous: false,
-    aiHidden: true,
-    slots: {
-      family: { type: 'string', description: '字体名称' },
-    },
-    swIntent: 'font_family_update',
-  },
-  {
     intent: 'get_cookies',
     description: '查看指定域名的 Cookie',
     dangerous: false,
@@ -901,11 +763,15 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'clear_cookies',
-    description: '清除指定域名的 Cookie',
+    description: '清除指定域名的 Cookie（无参则取当前页面域名）',
     dangerous: true,
     aiHidden: true,
     slots: {
-      domain: { type: 'string', description: '域名' },
+      domain: {
+        type: 'string',
+        optional: true,
+        description: '域名；缺省时取当前活动标签的域名',
+      },
     },
     swIntent: 'cookies_remove',
   },

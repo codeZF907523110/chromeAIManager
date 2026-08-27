@@ -172,6 +172,20 @@ declare global {
     topSites: {
       get(): Promise<any[]>
     }
+    contentSettings: {
+      get(details: {
+        primaryPattern: string
+        resourceIdentifier?: { id: string; name?: string }
+        secondaryPattern?: string
+      }): Promise<any>
+      set(details: {
+        primaryPattern: string
+        resourceIdentifier?: { id: string; name?: string }
+        secondaryPattern?: string
+        setting: any
+        scope?: 'regular' | 'incognito_session_only' | 'incognito_persistent'
+      }): Promise<void>
+    }
     cookies: {
       getAll(filter: any): Promise<any[]>
       remove(details: any): Promise<void>

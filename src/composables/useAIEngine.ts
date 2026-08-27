@@ -22,11 +22,11 @@ import {
   STEP_TIMEOUT_MS,
   TOTAL_TASK_TIMEOUT_MS,
   MAX_CONSECUTIVE_FAILURES,
-  MAX_MESSAGES_COUNT,
 } from '../shared/constants'
 import { getCommand } from '../shared/commands'
 import { SLASH_COMMANDS, matchSlashCommand } from '../shared/slash-commands'
 import { generateConfirmPreview } from '../shared/confirm'
+import { messageStore } from '../shared/message-store'
 import { AIEngine } from '../shared/ai/engine'
 import { buildAgentSystemPrompt } from '../shared/prompts'
 import { repairJSON } from '../shared/json-repair'
@@ -36,9 +36,6 @@ import { useSettings } from './useSettings'
 import { createRecordingExecutor } from '../recording/executor'
 
 const SESSION_KEY = 'ai_commander_session'
-const MESSAGE_LOG_KEY = 'ai_message_log'
-
-const MAX_PERSISTED_MESSAGES = MAX_MESSAGES_COUNT
 
 // ConfirmItem 和 PendingConfirm 是内部配置类型，保留本地定义
 interface ConfirmItem {
@@ -152,64 +149,14 @@ export function useAIEngine() {
   /**
    * 加载持久化的消息
    */
-  /**
-   * 把持久化记录反序列化为 MessageLog。
-   *
-   * 兼容两种历史形态：
-   *   - 老数据 text: string（无 markdown / components）
-   *   - 新数据 text: MessageBody = { markdown, components? }
-   *
-   * 损坏或形状不符的记录降级为 system + 空 markdown 气泡，避免组件渲染崩。
-   */
-  function normalizePersistedMessage(raw: unknown): MessageLog | null {
-    if (!raw || typeof raw !== 'object') return null
-    const m = raw as Partial<MessageLog> & { text?: unknown }
-    let text: MessageBody
-    if (typeof m.text === 'string') {
-      text = { markdown: m.text }
-    } else if (
-      m.text &&
-      typeof m.text === 'object' &&
-      'markdown' in (m.text as object) &&
-      typeof (m.text as { markdown: unknown }).markdown === 'string'
-    ) {
-      text = m.text as MessageBody
-    } else {
-      return null
-    }
-    if (!text.markdown.trim() && !m.image && !m.video && !m.recordingFile) return null
-    const validTypes: MessageLog['type'][] = ['user', 'system', 'ai', 'ai-chat', 'error']
-    const type = validTypes.includes(m.type as MessageLog['type'])
-      ? (m.type as MessageLog['type'])
-      : 'system'
-    return { type, text, image: m.image, video: m.video, recordingFile: m.recordingFile }
-  }
-
   async function loadPersistedMessages() {
     try {
-      const result = (await chrome.storage.local.get(MESSAGE_LOG_KEY)) as Record<string, unknown>
-      const persisted = result[MESSAGE_LOG_KEY] as unknown[] | undefined
-      if (persisted && Array.isArray(persisted)) {
-        messageLog.value = persisted
-          .slice(-MAX_PERSISTED_MESSAGES)
-          .map(normalizePersistedMessage)
-          .filter((message): message is MessageLog => message !== null)
+      const items = await messageStore.list()
+      if (items.length > 0) {
+        messageLog.value = items
       }
-    } catch {
-      // ignore
-    }
-  }
-
-  /**
-   * 保存消息到存储
-   */
-  async function persistMessages() {
-    try {
-      await chrome.storage.local.set({
-        [MESSAGE_LOG_KEY]: messageLog.value.slice(-MAX_PERSISTED_MESSAGES),
-      })
     } catch (e: unknown) {
-      console.warn('[AI管家] 持久化消息失败:', e instanceof Error ? e.message : String(e))
+      console.warn('[AI管家] 加载消息失败:', e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -924,12 +871,9 @@ export function useAIEngine() {
     const { intent, slots } = result
     const slotsAny = slots as Record<string, unknown>
     let resolvedIntent = intent
-    if (intent === 'get_theme' && (slotsAny.mode || slotsAny.color)) resolvedIntent = 'set_theme'
-    if (intent === 'get_font_size' && slotsAny.size) resolvedIntent = 'set_font_size'
-    if (intent === 'get_font_family' && slotsAny.family) resolvedIntent = 'set_font_family'
 
     if (resolvedIntent === 'show_help') {
-      addMessage('system', formatHelp())
+      addMessage('ai-chat', wrapCatReply(formatHelp()))
       return
     }
 
@@ -1173,35 +1117,6 @@ export function useAIEngine() {
       case 'close_tabs_by_url':
         return slots
 
-      case 'mute_tabs_by_domain':
-      case 'unmute_tabs_by_domain':
-      case 'discard_tabs': {
-        const domain = (slots.domain?.toString() || '').toLowerCase()
-        let matches = tabs
-        if (slots.all) {
-          matches = tabs.filter((t) => !t.pinned)
-        } else if (domain) {
-          matches = tabs.filter((t) => {
-            try {
-              return new URL(t.url).hostname.includes(domain)
-            } catch {
-              return false
-            }
-          })
-        }
-        const params: Record<string, unknown> = { tabId: matches[0]?.id }
-        if (intent === 'mute_tabs_by_domain') params.muted = true
-        if (intent === 'unmute_tabs_by_domain') params.muted = false
-        if (intent === 'discard_tabs') params.discarded = true
-        return params
-      }
-
-      case 'close_other_tabs': {
-        return {
-          tabIds: tabs.filter((t) => t.id !== activeTab?.id && !t.pinned).map((t) => t.id),
-        }
-      }
-
       // ungroup_all：把 tabs 按 groupId 分桶，SW 端只把用户勾选的那几个分组带过去
       case 'ungroup_all': {
         const selectedGroupIds = Array.isArray(slots.selectedGroupIds)
@@ -1257,9 +1172,6 @@ export function useAIEngine() {
         }
         return { tabId: activeTab.id, pinned: !isPinned }
       }
-
-      case 'reload_tab':
-        return { tabId: activeTab?.id, reload: true }
 
       case 'remove_bookmark': {
         if (!slots.query) return {}
@@ -1495,44 +1407,81 @@ export function useAIEngine() {
     recordingFile?: MessageLog['recordingFile']
   ): void {
     const body = normalizeBody(text)
-    console.log(
-      '[AI Commander] addMessage called, type:',
+    const msg: MessageLog = {
       type,
-      'markdown length:',
-      body.markdown.length,
-      'components:',
-      body.components?.length ?? 0
-    )
-    messageLog.value.push({ type, text: body, image, video, recordingFile })
-    if (isInitialized.value) {
-      persistMessages()
+      id: crypto.randomUUID(),
+      createdAt: Date.now(),
+      text: body,
+      image,
+      video,
+      recordingFile,
+    }
+    messageLog.value.push(msg)
+    void persistMessage(msg)
+  }
+
+  /**
+   * 追加单条消息到 IndexedDB。
+   * - 错误仅记录，不抛到 UI
+   * - 失败时插一条 system 警告，让用户知道"消息没存上"
+   */
+  async function persistMessage(msg: MessageLog): Promise<void> {
+    try {
+      await messageStore.append(msg)
+    } catch (e: unknown) {
+      console.warn('[AI管家] 持久化消息失败:', e instanceof Error ? e.message : String(e))
+      addMessage(
+        'system',
+        `⚠ 上一条消息保存失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
+      )
     }
   }
 
-  function clearMessages(): void {
+  async function clearMessages(): Promise<void> {
+    // 先清 IndexedDB，成功后再清内存；避免磁盘残留导致下次启动数据"复活"
+    if (isInitialized.value) {
+      try {
+        await messageStore.clear()
+      } catch (e: unknown) {
+        console.warn('[AI管家] 清空消息失败:', e instanceof Error ? e.message : String(e))
+        addMessage(
+          'system',
+          `⚠ 清空聊天记录失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
+        )
+        return
+      }
+    }
     messageLog.value = []
-    if (isInitialized.value) {
-      persistMessages()
-    }
   }
 
-  function deleteMessage(index: number): void {
-    if (index >= 0 && index < messageLog.value.length) {
-      // 删除整条会话：从用户消息开始，删除所有后续消息直到下一个用户消息
-      let deleteCount = 0
-      for (let i = index; i < messageLog.value.length; i++) {
-        const msg = messageLog.value[i]
-        // 如果遇到用户消息，停止删除（不删除后续的用户消息）
-        if (i > index && msg.type === 'user') {
-          break
-        }
-        deleteCount++
+  async function deleteMessage(index: number): Promise<void> {
+    if (index < 0 || index >= messageLog.value.length) return
+    // 先找出要删的消息和对应 id
+    let deleteCount = 0
+    const removedIds: string[] = []
+    for (let i = index; i < messageLog.value.length; i++) {
+      const msg = messageLog.value[i]
+      // 如果遇到用户消息，停止删除（不删除后续的用户消息）
+      if (i > index && msg.type === 'user') {
+        break
       }
-      messageLog.value.splice(index, deleteCount)
-      if (isInitialized.value) {
-        persistMessages()
+      deleteCount++
+      if (msg.id) removedIds.push(msg.id)
+    }
+    // 先删 IndexedDB，成功后再 splice 内存；失败保留磁盘+内存一致
+    if (isInitialized.value && removedIds.length > 0) {
+      try {
+        await messageStore.removeMany(removedIds)
+      } catch (e: unknown) {
+        console.warn('[AI管家] 删除消息失败:', e instanceof Error ? e.message : String(e))
+        addMessage(
+          'system',
+          `⚠ 删除消息失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
+        )
+        return
       }
     }
+    messageLog.value.splice(index, deleteCount)
   }
 
   function cleanup() {
@@ -1686,13 +1635,24 @@ export function useAIEngine() {
   }
 
   function formatHelp(): string {
-    return (
-      '可用命令:\n\n' +
-      SLASH_COMMANDS.map(
-        (c) =>
-          `  /${c.slash}${c.hasArg ? ' <' + (c.placeholder || '参数') + '>' : ''}  —  ${c.description}`
-      ).join('\n')
-    )
+    // markdown 表格：命令 / 别名 / 参数 / 说明
+    // - 表格里的 `|` 必须转义为 `\|`
+    // - aliases 拼接多个别名，便于一眼看到
+    const lines: string[] = [
+      '可用命令：',
+      '',
+      '| 命令 | 别名 | 参数 | 说明 |',
+      '| --- | --- | --- | --- |',
+    ]
+    for (const c of SLASH_COMMANDS) {
+      const cmd = `/${c.slash}`
+      const aliases =
+        c.aliases && c.aliases.length > 0 ? c.aliases.map((a) => `/${a}`).join('、') : '-'
+      const arg = c.hasArg ? `<${c.placeholder || '参数'}>` : '-'
+      const desc = c.description.replace(/\|/g, '\\|').replace(/\n/g, ' ')
+      lines.push(`| \`${cmd}\` | ${aliases} | \`${arg}\` | ${desc} |`)
+    }
+    return lines.join('\n')
   }
 
   function formatSlashCommands(): string {
@@ -1863,20 +1823,64 @@ export function useAIEngine() {
       addMessage('ai-chat', { markdown: wrapCatReply(pinned ? '已固定标签' : '已取消固定') })
       return
     }
-    if (intent === 'reload_tab') {
-      addMessage('ai-chat', { markdown: wrapCatReply('已刷新当前标签') })
+    if (intent === 'duplicate_tab') {
+      const title = (r.tab as { title?: string } | undefined)?.title
+      const url = (r.tab as { url?: string } | undefined)?.url
+      const label = title || url
+      addMessage('ai-chat', {
+        markdown: wrapCatReply(label ? `已复制标签：${label}` : '已复制当前标签'),
+      })
       return
     }
-    if (intent === 'mute_tabs_by_domain') {
-      addMessage('ai-chat', { markdown: wrapCatReply('已静音匹配的标签') })
+    if (intent === 'tabs_create') {
+      const title = (r.tab as { title?: string } | undefined)?.title
+      const url = (r.tab as { url?: string } | undefined)?.url
+      const label = title || url
+      addMessage('ai-chat', {
+        markdown: wrapCatReply(label ? `已创建标签：${label}` : '已创建标签'),
+      })
       return
     }
-    if (intent === 'unmute_tabs_by_domain') {
-      addMessage('ai-chat', { markdown: wrapCatReply('已取消匹配标签的静音') })
+    if (intent === 'add_bookmark') {
+      const bm = r.bookmark as { title?: string; url?: string } | undefined
+      const label = bm?.title || bm?.url
+      addMessage('ai-chat', {
+        markdown: wrapCatReply(label ? `已添加书签：${label}` : '已添加书签'),
+      })
       return
     }
-    if (intent === 'discard_tabs') {
-      addMessage('ai-chat', { markdown: wrapCatReply('已休眠匹配的标签') })
+    if (intent === 'remove_bookmark') {
+      const node = r.removedNode as
+        { title?: string; url?: string; children?: unknown[] } | undefined
+      const label = node?.title || node?.url
+      const removed = typeof r.removed === 'number' ? r.removed : 1
+      // 文件夹删除时 SW 端会把"folder 本身 + 子项"合并到 removed
+      const isFolder = node && !node.url && Array.isArray(node?.children)
+      addMessage('ai-chat', {
+        markdown: wrapCatReply(
+          label && isFolder && removed > 1
+            ? `已删除文件夹：${label}（含 ${removed} 项）`
+            : label
+              ? `已删除书签：${label}`
+              : `已删除 ${removed} 个书签`
+        ),
+      })
+      return
+    }
+    if (intent === 'set_theme') {
+      const tr = r as Record<string, unknown>
+      const mode = tr.themeMode as string | undefined
+      const color = tr.themeColor as string | undefined
+      if (color) {
+        addMessage('ai-chat', { markdown: wrapCatReply(`已设置主题颜色：${color}`) })
+      } else if (mode) {
+        const label: Record<string, string> = { light: '浅色', dark: '深色', device: '跟随设备' }
+        addMessage('ai-chat', {
+          markdown: wrapCatReply(`已设置主题模式：${label[mode] || mode}`),
+        })
+      } else {
+        addMessage('ai-chat', { markdown: wrapCatReply('已设置主题') })
+      }
       return
     }
 
@@ -2041,7 +2045,6 @@ export function useAIEngine() {
     dispatchToSW,
     getContext,
     scanCurrentPage,
-    persistMessages,
     cleanup,
     mdToHtml,
     renderExecutionResult,

@@ -235,7 +235,6 @@ const {
   commandInputValue,
   pendingConfirm,
   renderExecutionResult,
-  persistMessages,
   deleteMessage,
 } = useAIEngine()
 
@@ -362,8 +361,7 @@ onBeforeUnmount(() => {
 function saveSession() {
   try {
     sessionStorage.setItem('lastInput', commandInput.value)
-    // 强制同步保存消息日志，防止浏览器关闭时消息丢失
-    persistMessages()
+    // IndexedDB 已按消息粒度写入，无需统一 save
   } catch {
     /* empty */
   }
