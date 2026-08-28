@@ -23,6 +23,7 @@ import * as tabGroups from './tab-groups'
 import * as downloads from './downloads'
 import * as sessions from './sessions'
 import * as browsingData from './browsing-data'
+import * as notifications from './notifications'
 
 /** SW 工具 handler 签名：接收参数，返回 ExecutionResult */
 export type Handler = (args: Record<string, unknown>) => Promise<ExecutionResult>
@@ -67,17 +68,28 @@ export const REGISTRY: Record<string, Handler> = {
   screenshot: navigation.screenshot,
   zoom: navigation.zoom,
   downloads_search: downloads.search,
+  downloads_download: downloads.download,
   downloads_cancel: downloads.cancel,
   downloads_show: downloads.show,
+  downloads_open: downloads.open,
+  downloads_erase: downloads.erase,
+  downloads_remove_file: downloads.removeFile,
   // ─── STORAGE / SESSIONS ───
   storage_get: storage.get,
   storage_set: storage.set,
   storage_remove: storage.remove,
+  storage_area_get: storage.areaGet,
+  storage_area_set: storage.areaSet,
+  storage_area_remove: storage.areaRemove,
+  storage_area_clear: storage.areaClear,
   sessions_restore: storage.restoreSession,
   sessions_observe: sessions.observe,
   sessions_restore_by_id: sessions.restore,
   browsing_data_settings: browsingData.settings,
   browsing_data_remove: browsingData.remove,
+  notifications_create: notifications.create,
+  notifications_clear: notifications.clear,
+  notifications_list: notifications.list,
   theme_observe: themeFont.observeTheme,
   theme_update: themeFont.updateTheme,
   font_size_observe: themeFont.observeFontSize,

@@ -362,13 +362,9 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       if (args.trim()) (slots as Record<string, string>).domain = args
       break
     case 'storage_get':
-      // /storage-get 无 key 时返回全量
-      if (args.trim()) (slots as Record<string, string>).key = args
-      break
     case 'storage_remove':
-      // /storage-remove 必须带 key
-      if (!args.trim()) return
-      ;(slots as Record<string, string>).key = args
+      // /storage-get 与 /storage-remove 的参数是 key
+      if (args.trim()) (slots as Record<string, string>).key = args.trim()
       break
     case 'delete_history':
       // /clear-history 必带时间范围

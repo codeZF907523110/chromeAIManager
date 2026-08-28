@@ -28,7 +28,27 @@ declare global {
     children?: BookmarkNode[]
   }
 
+  interface StorageArea {
+    get(keys?: string | string[] | object | null): Promise<object>
+    set(items: object): Promise<void>
+    remove(keys?: string | string[]): Promise<void>
+    clear(): Promise<void>
+  }
+
+  interface StorageArea {
+    get(keys?: string | string[] | object | null): Promise<object>
+    set(items: object): Promise<void>
+    remove(keys?: string | string[]): Promise<void>
+    clear(): Promise<void>
+  }
+
   const chrome: {
+    storage: {
+      local: StorageArea
+      session: StorageArea
+      sync: StorageArea
+      managed: Pick<StorageArea, 'get'>
+    }
     runtime: {
       sendMessage(message: any): Promise<any>
       onMessage: {
@@ -45,7 +65,6 @@ declare global {
       getContexts(options: any): Promise<any[]>
       getURL(path: string): string
       getManifest(): { version: string }
-      id?: string
     }
     tabs: {
       query(query: any): Promise<any[]>
@@ -107,6 +126,15 @@ declare global {
         remove(keys?: string | string[]): Promise<void>
         clear(): Promise<void>
       }
+      sync: {
+        get(keys?: string | string[] | object | null): Promise<object>
+        set(items: object): Promise<void>
+        remove(keys?: string | string[]): Promise<void>
+        clear(): Promise<void>
+      }
+      managed: {
+        get(keys?: string | string[] | object | null): Promise<object>
+      }
       onChanged: {
         addListener(callback: (changes: object, area: string) => void): void
         removeListener(callback: (changes: object, area: string) => void): void
@@ -139,6 +167,8 @@ declare global {
     }
     downloads: {
       download(options: any): Promise<number>
+      open(downloadId: number): Promise<void>
+      removeFile(downloadId: number): Promise<void>
       search(query: any): Promise<any[]>
       cancel(downloadId: number): Promise<void>
       erase(query: any): Promise<number>

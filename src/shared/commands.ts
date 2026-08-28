@@ -398,6 +398,31 @@ export const COMMANDS: Command[] = [
     swIntent: 'sessions_restore_by_id',
   },
   {
+    intent: 'notifications_create',
+    description: '创建浏览器通知',
+    dangerous: false,
+    slots: {
+      title: { type: 'string', description: '通知标题' },
+      message: { type: 'string', description: '通知内容' },
+      iconUrl: { type: 'string', optional: true, description: '图标 URL' },
+    },
+    swIntent: 'notifications_create',
+  },
+  {
+    intent: 'notifications_clear',
+    description: '清除浏览器通知',
+    dangerous: true,
+    slots: { notificationId: { type: 'string', description: '通知 ID' } },
+    swIntent: 'notifications_clear',
+  },
+  {
+    intent: 'notifications_list',
+    description: '查询当前通知 ID 列表',
+    dangerous: false,
+    slots: {},
+    swIntent: 'notifications_list',
+  },
+  {
     intent: 'browsing_data_settings',
     description: '查看浏览数据清理能力和支持的数据类型',
     dangerous: false,
@@ -441,6 +466,31 @@ export const COMMANDS: Command[] = [
     swIntent: 'screenshot',
   },
 
+  {
+    intent: 'downloads_download',
+    description: '下载指定的 http/https URL',
+    dangerous: false,
+    slots: {
+      url: { type: 'string', description: '下载 URL' },
+      filename: { type: 'string', optional: true, description: '相对文件名' },
+      saveAs: { type: 'boolean', optional: true, description: '是否显示另存为' },
+    },
+    swIntent: 'downloads_download',
+  },
+  {
+    intent: 'downloads_open',
+    description: '打开下载管理页面',
+    dangerous: false,
+    slots: {},
+    swIntent: 'downloads_open',
+  },
+  {
+    intent: 'downloads_erase',
+    description: '从下载记录中删除下载项',
+    dangerous: true,
+    slots: { downloadId: { type: 'number', description: '下载 ID' } },
+    swIntent: 'downloads_erase',
+  },
   {
     intent: 'downloads_search',
     description: '查询下载记录（返回状态、URL和文件名等摘要）',
@@ -677,7 +727,44 @@ export const COMMANDS: Command[] = [
     swIntent: 'storage_remove',
   },
 
-  // ==================== SESSIONS (1) ====================
+  {
+    intent: 'storage_area_get',
+    description: '读取指定 storage area 的数据；managed 仅支持读取',
+    dangerous: false,
+    slots: {
+      area: { type: 'string', optional: true, description: 'local | session | sync | managed' },
+      key: { type: 'string', optional: true, description: '键名，不传则读取全部' },
+    },
+    swIntent: 'storage_area_get',
+  },
+  {
+    intent: 'storage_area_set',
+    description: '写入 local/session/sync storage 数据',
+    dangerous: false,
+    slots: {
+      area: { type: 'string', optional: true, description: 'local | session | sync' },
+      key: { type: 'string', description: '键名' },
+      value: { type: 'any', description: '值' },
+    },
+    swIntent: 'storage_area_set',
+  },
+  {
+    intent: 'storage_area_remove',
+    description: '删除 local/session/sync storage 数据',
+    dangerous: true,
+    slots: {
+      area: { type: 'string', optional: true, description: 'local | session | sync' },
+      key: { type: 'string', description: '键名' },
+    },
+    swIntent: 'storage_area_remove',
+  },
+  {
+    intent: 'storage_area_clear',
+    description: '清空 local/session/sync storage 数据',
+    dangerous: true,
+    slots: { area: { type: 'string', optional: true, description: 'local | session | sync' } },
+    swIntent: 'storage_area_clear',
+  },
   {
     intent: 'sessions_restore',
     description: '恢复最近关闭的标签页',

@@ -71,7 +71,13 @@ export async function zoom(payload: Record<string, unknown>): Promise<ExecutionR
   return { success: true, zoomFactor }
 }
 
-/** 打开下载管理页面（前端 navigation） */
+/** 打开下载管理页面。 */
 export async function downloadsOpen(): Promise<ExecutionResult> {
-  return { success: true, navigated: 'chrome://downloads' }
+  const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tab = await chrome.tabs.create({
+    url: 'chrome://downloads',
+    windowId: active?.windowId,
+    active: true,
+  })
+  return { success: true, navigated: 'chrome://downloads', tab }
 }

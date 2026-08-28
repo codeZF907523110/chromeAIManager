@@ -1,62 +1,97 @@
-/**
- * 扩展存储 + 会话恢复 SW 命令实现
- * 对应 swIntent: storage_get / storage_set / storage_remove / sessions_restore
- */
-
 import type { ExecutionResult } from '../../types/execution'
 
-/** 读取扩展 storage.local（无 key 返回全量） */
+type StorageAreaName = 'local' | 'session' | 'sync' | 'managed'
+
+/** 获取可用的 storage area；managed 只读。 */
+function getArea(name: StorageAreaName): StorageArea {
+  return chrome.storage[name] as StorageArea
+}
+
+/** 校验并返回 storage area 名称。 */
+function parseArea(value: unknown): StorageAreaName | null {
+  return typeof value === 'string' && ['local', 'session', 'sync', 'managed'].includes(value)
+    ? (value as StorageAreaName)
+    : null
+}
+
+/** 读取指定 storage area 的一个 key 或全部键值。 */
+export async function areaGet(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const area = parseArea(payload.area) ?? 'local'
+  const key = payload.key
+  if (key !== undefined && typeof key !== 'string') {
+    return { success: false, code: 'INVALID_PARAMS', message: 'key 必须是字符串' }
+  }
+  const value = await getArea(area).get(key === undefined || key === '' ? null : key)
+  return { success: true, area, key: key || undefined, value }
+}
+
+/** 写入 local/session/sync storage；managed area 不允许写入。 */
+export async function areaSet(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const area = parseArea(payload.area) ?? 'local'
+  if (area === 'managed') {
+    return { success: false, code: 'READ_ONLY_AREA', message: 'managed storage 只读' }
+  }
+  if (typeof payload.key !== 'string' || !payload.key.trim()) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'key 必须是非空字符串' }
+  }
+  await getArea(area).set({ [payload.key]: payload.value })
+  return { success: true, area, key: payload.key, value: payload.value }
+}
+
+/** 删除 local/session/sync storage 中的 key；managed area 不允许删除。 */
+export async function areaRemove(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const area = parseArea(payload.area) ?? 'local'
+  if (area === 'managed') {
+    return { success: false, code: 'READ_ONLY_AREA', message: 'managed storage 只读' }
+  }
+  if (typeof payload.key !== 'string' || !payload.key.trim()) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'key 必须是非空字符串' }
+  }
+  await getArea(area).remove(payload.key)
+  return { success: true, area, key: payload.key }
+}
+
+/** 清空 local/session/sync storage；managed area 不允许清空。 */
+export async function areaClear(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const area = parseArea(payload.area) ?? 'local'
+  if (area === 'managed') {
+    return { success: false, code: 'READ_ONLY_AREA', message: 'managed storage 只读' }
+  }
+  await getArea(area).clear()
+  return { success: true, area, cleared: true }
+}
+
+/** 保留原有 storage_get 行为，避免斜杠命令回归。 */
 export async function get(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  if (!payload.key) {
-    const all = await chrome.storage.local.get(null)
-    return { success: true, value: all }
-  }
-  const result = await chrome.storage.local.get(payload.key as string)
-  return {
-    success: true,
-    key: payload.key,
-    value: (result as Record<string, unknown>)[payload.key as string],
-  }
+  return areaGet({ area: 'local', ...payload })
 }
 
-/** 写入扩展存储键值对 */
+/** 保留原有 storage_set 行为，避免斜杠命令回归。 */
 export async function set(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  await chrome.storage.local.set({ [payload.key as string]: payload.value })
-  return { success: true, key: payload.key, value: payload.value }
+  return areaSet({ area: 'local', ...payload })
 }
 
-/** 删除扩展存储键 */
+/** 保留原有 storage_remove 行为，避免斜杠命令回归。 */
 export async function remove(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  await chrome.storage.local.remove(payload.key as string)
-  return { success: true, key: payload.key }
+  return areaRemove({ area: 'local', ...payload })
 }
 
-/** 恢复最近关闭的标签（可选 query 过滤） */
 export async function restoreSession(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const sessions = await chrome.sessions.getRecentlyClosed({ maxResults: 20 })
-  const query = (payload.query as string)?.toLowerCase()
-
-  if (!sessions.length)
+  const query = typeof payload.query === 'string' ? payload.query.toLowerCase() : undefined
+  const match = query
+    ? sessions.find((session) => {
+        const tab = session.tab
+        return (
+          !!tab &&
+          ((tab.title || '').toLowerCase().includes(query) ||
+            (tab.url || '').toLowerCase().includes(query))
+        )
+      })
+    : sessions.find((session) => !!session.tab?.sessionId)
+  if (!match?.tab?.sessionId) {
     return { success: false, code: 'NO_TABS_FOUND', message: '没有可恢复的标签' }
-
-  if (query) {
-    for (const s of sessions) {
-      if (s.tab?.sessionId) {
-        const match =
-          (s.tab.title || '').toLowerCase().includes(query) ||
-          (s.tab.url || '').toLowerCase().includes(query)
-        if (match) {
-          await chrome.sessions.restore(s.tab.sessionId)
-          return { success: true, restored: s.tab.title }
-        }
-      }
-    }
   }
-
-  const first = sessions.find((s) => s.tab?.sessionId) || sessions[0]
-  if (first.tab?.sessionId) {
-    await chrome.sessions.restore(first.tab.sessionId)
-    return { success: true, restored: first.tab.title }
-  }
-  return { success: false, error: 'NO_RECOVERABLE_TABS' }
+  await chrome.sessions.restore(match.tab.sessionId)
+  return { success: true, restored: match.tab.title }
 }
