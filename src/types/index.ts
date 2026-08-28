@@ -4,7 +4,7 @@
 
 // AI 相关类型
 export type { ChatMessage, MessageLog } from './ai'
-export type { AIResponse, ToolCall } from './ai'
+export type { AIPlan, PlanItem, PlanItemResult, PlanExecutionReport } from './ai'
 export type { AIProvider, AIConfig, AIModel } from './ai'
 export type { AIStatus, AIOptions } from './ai'
 export type { AIAdapter } from './ai'
@@ -20,8 +20,7 @@ export type { CommandSlot, Command } from './command'
 export type { SlashCommand, SlashCommandMatch } from './command'
 
 // 上下文相关类型
-export type { PageElement, Iframe, PageStructure } from './context'
-export type { Lesson, PlanStep, PlanTracker, SessionData, Context } from './context'
+export type { Context } from './context'
 
 // 执行结果相关类型
 export type { ExecutionResult, ExecuteCommandPayload } from './execution'

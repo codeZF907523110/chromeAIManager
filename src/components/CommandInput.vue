@@ -75,20 +75,22 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Mic, ArrowUp, StopCircle } from 'lucide-vue-next'
-import { useAIEngine } from '../composables/useAIEngine'
 import { useCommandHistory } from '../composables/useCommandHistory'
 import { SLASH_COMMANDS } from '../shared/slash-commands'
-import type { SlashCommand } from '../types'
+import type { AIModel, SlashCommand } from '../types'
 
 const props = defineProps<{
   modelValue: string
   isRunning: boolean
+  models: readonly AIModel[]
+  currentModelName: string
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'submit'): void
   (e: 'stop'): void
+  (e: 'select-model', modelId: string): void
 }>()
 
 defineExpose({
@@ -97,7 +99,6 @@ defineExpose({
   },
 })
 
-const { models, getActiveModel, selectModel } = useAIEngine()
 const { addToHistory, navigateHistory } = useCommandHistory()
 
 const inputValue = computed({
@@ -105,10 +106,7 @@ const inputValue = computed({
   set: (val: string) => emit('update:modelValue', val),
 })
 
-const currentModelName = computed(() => {
-  const model = getActiveModel()
-  return model?.name || '选择模型'
-})
+const currentModelName = computed(() => props.currentModelName)
 
 const textareaRef = ref<HTMLTextAreaElement>()
 
@@ -221,7 +219,7 @@ function handleSend() {
 }
 
 async function handleSelectModel(modelId: string) {
-  await selectModel(modelId)
+  emit('select-model', modelId)
 }
 </script>
 

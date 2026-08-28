@@ -2,8 +2,6 @@
  * 执行结果相关类型定义
  */
 
-// ──── 执行结果类型 ────
-
 export interface ExecutionResult {
   success?: boolean
   code?: string
@@ -21,3 +19,7 @@ export interface ExecuteCommandPayload {
   intent: string
   payload: Record<string, unknown>
 }
+
+// ──── Plan-First 协议（re-export 自 shared/ai/plan-types）─────
+
+export type { PlanItemResult, PlanExecutionReport } from '../shared/ai/plan-types'

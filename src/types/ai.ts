@@ -30,85 +30,9 @@ export interface MessageLog {
   recordingFile?: { url: string; name: string; size?: number; preview?: string } // recording download card
 }
 
-// ──── AI 响应类型 ────
+// ──── AI Plan-First 协议（替代旧 AIResponse）─────
 
-export interface ToolCall {
-  name: string
-  args: Record<string, unknown>
-}
-
-export interface AIResponse {
-  thought?: string
-  action:
-    | 'browser_snapshot'
-    | 'browser_click'
-    | 'browser_type'
-    | 'browser_select_option'
-    | 'browser_hover'
-    | 'browser_press_key'
-    | 'browser_check'
-    | 'browser_uncheck'
-    | 'browser_fill_form'
-    | 'browser_wait_for'
-    | 'browser_take_screenshot'
-    | 'browser_navigate'
-    | 'browser_navigate_back'
-    | 'browser_navigate_forward'
-    | 'browser_reload'
-    | 'browser_tab_list'
-    | 'browser_tab_new'
-    | 'browser_tab_select'
-    | 'browser_tab_close'
-    | 'exec_tool'
-    | 'execute'
-    | 'done'
-    | 'ask'
-    | 'scan'
-    | 'chat'
-    | 'exec_plan'
-    | 'askUserResponse'
-  args?: Record<string, unknown> // 扁平格式参数（方案 B）
-  plan?: string
-  predict?: string
-  toolCall?: ToolCall // 兼容旧格式
-  /**
-   * AI 输出消息正文。
-   * - string：纯 markdown（被 wrapCatReply 加 cat 人设）
-   * - MessageBody：富文本（components 透传到 MessageBubble 挂载；不再加语气）
-   *
-   * 由 replyType 区分意图（不强制）：'plain' = string；'rich' = MessageBody。
-   * 不填时按 reply 运行时类型推断。
-   */
-  replyType?: 'plain' | 'rich'
-  reply?: string | MessageBody
-  /** 老兼容字段：纯文本时也常被模型填到 content；统一在调用点收敛 */
-  content?: string
-  step?: number // 步骤序号
-  // exec_plan 相关字段
-  intent?: {
-    goal: string
-    type: string
-    requiredData: string[]
-    dataStatus: Record<string, string>
-    precondition: string
-    status: string
-    missingDataKeys?: string[]
-  }
-  steps?: Array<{
-    id: number
-    goal: string
-    action: { name: string; args: Record<string, unknown> }
-    type: 'EXECUTE' | 'ASK_USER'
-    expectState: string
-    fallback?: { description: string; code: string; verify: string }
-    userDataKey?: string
-    userDataPrompt?: string
-  }>
-  planStatus?: 'READY' | 'PARTIAL'
-  // askUserResponse 相关字段
-  userDataKey?: string
-  userDataValue?: unknown
-}
+export type { AIPlan, PlanItem, PlanItemResult, PlanExecutionReport } from '../shared/ai/plan-types'
 
 // ──── AI 提供商类型 ────
 

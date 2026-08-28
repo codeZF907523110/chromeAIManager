@@ -2,24 +2,31 @@
  * 上下文收集器 — 收集浏览器当前状态
  */
 
+import type { TabInfo, BookmarkNode } from '../types'
+
 export async function collectContext(
   options: { mode?: string; query?: string } = {}
 ): Promise<Record<string, unknown>> {
-  const { mode = 'detailed', query = '' } = options
+  const { mode = 'detailed' } = options
 
-  const [allTabs, bookmarks, currentWindow] = await Promise.all([
+  const [tabsResult, bookmarksResult, windowResult, groupsResult] = await Promise.allSettled([
     chrome.tabs.query({}),
     chrome.bookmarks.getTree(),
     chrome.windows.getCurrent({ populate: true }),
+    chrome.tabGroups.query({}),
   ])
+  const allTabs = tabsResult.status === 'fulfilled' ? tabsResult.value : []
+  const bookmarks = bookmarksResult.status === 'fulfilled' ? bookmarksResult.value : []
+  const currentWindow = windowResult.status === 'fulfilled' ? windowResult.value : null
+  const groups = groupsResult.status === 'fulfilled' ? groupsResult.value : []
 
-  const activeTab = currentWindow.tabs?.find((t: TabInfo) => t.active) || null
+  const activeTab = currentWindow?.tabs?.find((t: TabInfo) => t.active) || null
 
   if (mode === 'summary') {
-    return buildSummary(allTabs, activeTab, bookmarks)
+    return buildSummary(allTabs, activeTab, bookmarks, groups)
   }
 
-  return buildDetailed(allTabs, activeTab, bookmarks, query)
+  return buildDetailed(allTabs, activeTab, bookmarks, groups)
 }
 
 // ──── 摘要模式 ────
@@ -27,17 +34,24 @@ export async function collectContext(
 function buildSummary(
   tabs: TabInfo[],
   activeTab: TabInfo | null,
-  bookmarks: BookmarkNode[]
+  bookmarks: BookmarkNode[],
+  groups: Array<{
+    id: number
+    title?: string
+    color?: string
+    collapsed?: boolean
+    windowId?: number
+  }>
 ): Record<string, unknown> {
   const domainCounts = new Map<string, number>()
-  const groups = new Map<number, number>()
+  const groupCounts = new Map<number, number>()
 
   for (const t of tabs) {
     if (!t.url || t.url.startsWith('chrome://')) continue
     const domain = extractDomain(t.url)
     domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1)
     if (t.groupId !== -1) {
-      groups.set(t.groupId, (groups.get(t.groupId) || 0) + 1)
+      groupCounts.set(t.groupId, (groupCounts.get(t.groupId) || 0) + 1)
     }
   }
 
@@ -49,7 +63,8 @@ function buildSummary(
       .sort((a, b) => b[1] - a[1])
       .slice(0, 20)
       .map(([domain, count]) => ({ domain, count })),
-    groupCount: groups.size,
+    groupCount: groupCounts.size,
+    groups,
     bookmarkFolders: extractFolders(bookmarks),
     timestamp: Date.now(),
   }
@@ -61,48 +76,22 @@ function buildDetailed(
   tabs: TabInfo[],
   activeTab: TabInfo | null,
   bookmarks: BookmarkNode[],
-  query: string
+  groups: Array<{
+    id: number
+    title?: string
+    color?: string
+    collapsed?: boolean
+    windowId?: number
+  }>
 ): Record<string, unknown> {
-  const MAX_TABS = 120
-
-  let filteredTabs = tabs
-  if (query) {
-    const q = query.toLowerCase()
-    filteredTabs = tabs.filter(
-      (t: TabInfo) =>
-        t.url &&
-        !t.url.startsWith('chrome://') &&
-        ((t.title || '').toLowerCase().includes(q) || (t.url || '').toLowerCase().includes(q))
-    )
-  }
-
-  let tabsInfo: ReturnType<typeof formatTab>[]
-  let truncated = false
-
-  if (filteredTabs.length > MAX_TABS) {
-    truncated = true
-    const activeWindowId = activeTab?.windowId
-    const currentWin = filteredTabs.filter((t) => t.windowId === activeWindowId)
-    const others = filteredTabs.filter((t) => t.windowId !== activeWindowId)
-
-    const quotaCurrent = Math.floor(MAX_TABS * 0.6)
-    const quotaOthers = MAX_TABS - Math.min(currentWin.length, quotaCurrent)
-
-    tabsInfo = [...currentWin.slice(0, quotaCurrent), ...others.slice(0, quotaOthers)].map(
-      formatTab
-    )
-  } else {
-    tabsInfo = filteredTabs.map(formatTab)
-  }
-
+  const tabsInfo = tabs.map(formatTab)
   return {
     mode: 'detailed',
     tabCount: tabsInfo.length,
-    totalTabCount: tabs.length,
     activeTab: activeTab ? { id: activeTab.id, title: activeTab.title, url: activeTab.url } : null,
     tabs: tabsInfo,
+    groups,
     bookmarkFolders: extractFolders(bookmarks),
-    _truncated: truncated,
     timestamp: Date.now(),
   }
 }
@@ -118,7 +107,7 @@ function formatTab(t: TabInfo): TabInfo {
     active: t.active,
     groupId: t.groupId ?? -1,
     index: t.index,
-    muted: false,
+    muted: t.muted,
   }
 }
 

@@ -8,9 +8,7 @@ import type { AIModel } from '../types'
 export const MSG_GET_CONTEXT = 'GET_CONTEXT'
 export const MSG_GET_BOOKMARKS = 'GET_BOOKMARKS'
 export const MSG_EXECUTE = 'EXECUTE'
-
-// Service Worker → Side Panel
-export const MSG_EXECUTE_RESULT = 'EXECUTE_RESULT'
+export const MSG_EXECUTE_PLAN = 'EXECUTE_PLAN'
 
 // Recording (Side Panel ↔ Service Worker ↔ Offscreen)
 export const MSG_RECORDING_START = 'RECORDING_START'
@@ -88,10 +86,6 @@ export type LegacyErrorCode = (typeof LEGACY_ERRORS)[keyof typeof LEGACY_ERRORS]
 // ──── 系统常量 ────
 
 export const MAX_ELEMENT_TEXT_LENGTH = 200
-export const MAX_AGENT_STEPS = 100
-export const STEP_TIMEOUT_MS = 10000
-export const TOTAL_TASK_TIMEOUT_MS = 120000
-export const MAX_CONSECUTIVE_FAILURES = 3
 /** 聊天记录默认容量上限（IndexedDB 写入时自动 trim） */
 export const DEFAULT_MAX_MESSAGES = 100
 

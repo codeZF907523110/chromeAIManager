@@ -274,6 +274,7 @@ export function matchSlashCommand(input: string): SlashMatchResult | SlashError 
 
   const parts = trimmed.slice(1).split(/\s+/)
   const cmdName = parts[0].toLowerCase()
+  if (!cmdName) return { error: 'UNKNOWN_SLASH', raw: trimmed }
   const args = parts.slice(1).join(' ')
 
   // 1. 精确匹配
@@ -378,7 +379,7 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       ;(slots as Record<string, string>).order = args
       break
     case 'screenshot':
-      // screenshot 命令不需要 query 参数，传了也会忽略
+      if (args.trim()) (slots as Record<string, string>).query = args.trim()
       break
     case 'new_window':
       if (args) {

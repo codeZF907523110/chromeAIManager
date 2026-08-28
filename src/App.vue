@@ -25,7 +25,11 @@
     </header>
 
     <!-- 消息列表 -->
-    <MessageList :messages="state.messageLog" @delete="deleteMessage" />
+    <MessageList
+      :messages="state.messageLog"
+      :on-dispatch-action="(intent, args) => dispatchToSW(intent, args || {})"
+      @delete="deleteMessage"
+    />
 
     <!-- 确认卡片 -->
     <ConfirmCard
@@ -195,9 +199,12 @@
     <CommandInput
       ref="commandInputRef"
       v-model="commandInput"
-      :is-running="!!state.activeLoopId"
+      :is-running="isPlanRunning"
+      :models="models"
+      :current-model-name="getActiveModel()?.name || '选择模型'"
       @submit="handleSubmit"
       @stop="handleStop"
+      @select-model="selectModel"
     />
   </div>
 </template>
@@ -211,6 +218,7 @@ import CommandInput from './components/CommandInput.vue'
 import ConfirmCard from './components/ConfirmCard.vue'
 import { useAIEngine } from './composables/useAIEngine'
 import { useSettings } from './composables/useSettings'
+import { isRunning } from './composables/usePlanRunner'
 import type { AIModel, AIProvider } from './types'
 
 type SettingsPage = 'home' | 'models' | 'about'
@@ -232,11 +240,18 @@ const {
   updateModel,
   deleteModel,
   setDefaultModel,
+  selectModel,
+  getActiveModel,
+  dispatchToSW,
   commandInputValue,
   pendingConfirm,
-  renderExecutionResult,
   deleteMessage,
 } = useAIEngine()
+
+const isPlanRunning = ref(isRunning())
+const pollTimer = window.setInterval(() => {
+  isPlanRunning.value = isRunning()
+}, 200)
 
 const { themeMode, setThemeMode } = useSettings()
 
@@ -312,13 +327,6 @@ function getProviderLabel(provider: AIProvider): string {
 // 上次发送的命令（用于连续去重，成功提交后清零以允许非连续重复）
 let lastSubmittedText = ''
 
-// chrome.runtime 消息监听器（需在 onBeforeUnmount 中清理）
-const msgListener = (msg: { type?: string; intent?: string; response?: unknown }) => {
-  if (msg.type === 'EXECUTE_RESULT' && msg.intent) {
-    renderExecutionResult(msg.intent, msg.response)
-  }
-}
-
 // 提交命令
 async function handleSubmit() {
   const text = commandInput.value
@@ -348,14 +356,11 @@ onMounted(async () => {
   }
   // beforeunload 保存输入草稿
   window.addEventListener('beforeunload', saveSession)
-
-  // 监听 SW 主动推送的执行结果
-  chrome.runtime.onMessage.addListener(msgListener)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', saveSession)
-  chrome.runtime.onMessage.removeListener(msgListener)
+  window.clearInterval(pollTimer)
 })
 
 function saveSession() {

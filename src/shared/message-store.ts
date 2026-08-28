@@ -230,13 +230,12 @@ async function setMaxInDB(db: IDBDatabase, n: number): Promise<void> {
  * 删除最早的多余记录，保持总数不超过 max
  */
 async function trimOldest(db: IDBDatabase, max: number): Promise<void> {
-  if (max <= 0) return
   const tx = db.transaction(STORE_MESSAGES, 'readwrite')
   const store = tx.objectStore(STORE_MESSAGES)
   const index = store.index('createdAt')
   const all = await promisifyRequest<PersistedMessage[]>(index.getAll())
-  if (all.length <= max) return
-  const toDelete = all.slice(0, all.length - max)
+  if (max < 0) return
+  const toDelete = all.length > max ? all.slice(0, all.length - max) : []
   for (const m of toDelete) {
     store.delete(m.id)
   }

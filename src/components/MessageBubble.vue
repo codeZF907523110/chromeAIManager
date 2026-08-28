@@ -63,14 +63,17 @@ import { ref, watch, computed, onBeforeUnmount, nextTick, createApp, type App as
 import { ElMessageBox, ElIcon } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
 import { ChevronDown, ChevronUp } from 'lucide-vue-next'
-import type { MessageLog } from '../types'
+import type { MessageLog, ExecutionResult } from '../types'
 import { renderMarkdown } from '../composables/useMarkdown'
-import { useAIEngine } from '../composables/useAIEngine'
 import { blockRegistry } from './blocks/registry'
 
 const props = defineProps<{
   msg: MessageLog
   index: number
+  onDispatchAction?: (
+    intent: string,
+    args?: Record<string, unknown>
+  ) => Promise<ExecutionResult | null> | void
 }>()
 
 const emit = defineEmits<{
@@ -83,11 +86,8 @@ const emit = defineEmits<{
  * 嵌入组件（ActionButtonGroup）通过 props.onAction(intent, args) 派发。
  */
 function dispatchAction(intent: string, args?: Record<string, unknown>): void {
-  // 通过统一 dispatchToSW 入口执行并渲染命令结果，避免按钮只执行不反馈。
-  void aiEngine.dispatchToSW(intent, args ?? {})
+  void props.onDispatchAction?.(intent, args ?? {})
 }
-
-const aiEngine = useAIEngine()
 
 const isExpanded = ref(false)
 

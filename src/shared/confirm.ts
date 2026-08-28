@@ -5,6 +5,7 @@
 
 import { findDuplicateGroups } from '../service-worker/utils/tab-matcher'
 import type { Context } from '../types'
+import type { AIPlan } from './ai/plan-types'
 
 export interface ConfirmPreview {
   title: string
@@ -17,6 +18,50 @@ export interface ConfirmPreview {
     /** 初始是否勾选（默认 true = 即将关闭） */
     selected?: boolean
   }>
+}
+
+/**
+ * 危险操作二次确认后，把用户勾选结果归一化到 plan 重发 payload
+ *
+ * children 的 id 可能是 string（书签节点 / history URL）或 number（tabId）；
+ * 按 tool 类型归一化到对应字段，避免 SW 端做错类型转换。
+ *
+ * 规则（与旧 useAIEngine.ts:673-683 完全一致）：
+ *   - history_remove → selectedUrls (string[])
+ *   - bookmarks_remove_node → selectedIds (number[])
+ *   - tabs_remove / tabs_remove_by_url → tabIds (number[])
+ *   - 其他 → 透传 selectedIds
+ */
+export function buildReconfirmPayload(
+  originalPlan: AIPlan,
+  confirmItem: { id: string; tool: string },
+  selectedIds: Array<string | number>
+): AIPlan {
+  const tool = confirmItem.tool
+  return {
+    thought: originalPlan.thought,
+    plan: originalPlan.plan?.map((it) => {
+      if (it.id !== confirmItem.id) return it
+      const extra: Record<string, unknown> = { force: true }
+      if (tool === 'history_remove') {
+        extra.selectedUrls = selectedIds.map((id) => String(id))
+      } else if (tool === 'bookmarks_remove_node') {
+        extra.selectedIds = selectedIds
+          .map((id) => (typeof id === 'number' ? id : Number(id)))
+          .filter((id): id is number => Number.isFinite(id) && id > 0)
+      } else if (tool === 'tabs_remove' || tool === 'tabs_remove_by_url') {
+        extra.tabIds = selectedIds
+          .map((id) => (typeof id === 'number' ? id : Number(id)))
+          .filter((id): id is number => Number.isInteger(id) && id >= 0)
+      } else {
+        extra.selectedIds = selectedIds
+      }
+      return {
+        ...it,
+        args: { ...it.args, ...extra },
+      }
+    }),
+  }
 }
 
 /**

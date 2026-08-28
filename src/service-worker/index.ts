@@ -7,12 +7,16 @@ import {
   MSG_GET_CONTEXT,
   MSG_GET_BOOKMARKS,
   MSG_EXECUTE,
+  MSG_EXECUTE_PLAN,
   MSG_RECORDING_START,
   MSG_RECORDING_STOP,
   MSG_RECORDING_RESULT,
 } from '../shared/constants'
 import { collectContext } from './context-collector'
-import { executeCommand } from './executor'
+import { dispatchTool } from './handlers'
+import { executePlan } from './plan-runner'
+import type { AIPlan } from '../shared/ai/plan-types'
+
 const OFFSCREEN_URL = 'offscreen/recorder.html'
 
 // ──── 消息路由 ────
@@ -26,10 +30,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 async function handleMessage(message: {
   type: string
-  command?: { intent: string; payload: unknown }
+  command?: { intent?: string; plan?: AIPlan; payload?: unknown }
   options?: unknown
 }): Promise<unknown> {
   const { type } = message
+
+  if (type === MSG_EXECUTE) {
+    const intent = message.command?.intent
+    const payload = message.command?.payload
+    if (typeof intent !== 'string' || !intent.trim()) {
+      return { success: false, code: 'INVALID_PARAMS', message: '缺少有效的 intent' }
+    }
+    if (!isPlainObject(payload)) {
+      return { success: false, code: 'INVALID_PARAMS', message: 'payload 必须是对象' }
+    }
+    return await dispatchTool(intent, payload)
+  }
 
   if (type === MSG_GET_CONTEXT) {
     return await collectContext(message.options as { mode?: string; query?: string })
@@ -39,9 +55,13 @@ async function handleMessage(message: {
     return await handleGetBookmarks(message.options as { query?: string })
   }
 
-  if (type === MSG_EXECUTE) {
-    const { intent, payload } = message.command!
-    return await executeCommand(intent, payload as Record<string, unknown>)
+  // ─── 新增：plan 路径（自然语言）───
+  if (type === MSG_EXECUTE_PLAN) {
+    const plan = message.command?.plan as AIPlan | undefined
+    if (!plan || !Array.isArray(plan.plan)) {
+      return { success: false, code: 'INVALID_PARAMS', message: 'plan 必须包含 plan 数组' }
+    }
+    return await executePlan(plan)
   }
 
   // ──── 录制协调 ────
@@ -57,6 +77,13 @@ async function handleMessage(message: {
   }
 
   return { error: `Unknown message type: ${type}` }
+}
+
+/** 判断值是否为可安全传给 handler 的普通对象。 */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
 }
 
 // ──── Offscreen Document 管理 ────

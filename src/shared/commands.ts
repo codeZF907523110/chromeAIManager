@@ -49,6 +49,20 @@ export const COMMANDS: Command[] = [
     swIntent: 'tabs_create',
   },
   {
+    intent: 'tabs_reload',
+    description: '重新加载指定或当前活动标签页',
+    dangerous: false,
+    slots: { tabId: { type: 'number', optional: true, description: '目标标签 ID' } },
+    swIntent: 'tabs_reload',
+  },
+  {
+    intent: 'tabs_duplicate',
+    description: '复制指定或当前活动标签页',
+    dangerous: false,
+    slots: { tabId: { type: 'number', optional: true, description: '目标标签 ID' } },
+    swIntent: 'tabs_duplicate',
+  },
+  {
     intent: 'tabs_update',
     description:
       '更新标签页属性。tabId 为空则操作当前标签。可更新 url、active、muted、pinned、discarded；reload=true 刷新页面。注意：tabId 是数字类型',
@@ -90,16 +104,58 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'tabs_observe_groups',
-    description: '列出标签分组信息',
+    description: '查询真实标签组及其成员，返回 groupId、title、color、collapsed、windowId、tabIds',
     dangerous: false,
     slots: {
-      maxResults: {
-        type: 'number',
-        optional: true,
-        description: '最大返回数量',
-      },
+      windowId: { type: 'number', optional: true, description: '窗口 ID' },
+      collapsed: { type: 'boolean', optional: true, description: '是否折叠' },
+      color: { type: 'string', optional: true, description: '标签组颜色' },
+      title: { type: 'string', optional: true, description: '标签组标题' },
+      maxResults: { type: 'number', optional: true, description: '最大数量' },
     },
-    swIntent: 'tabs_observe_groups',
+    swIntent: 'tab_groups_query',
+  },
+  {
+    intent: 'tab_groups_create',
+    description: '将指定标签页创建为新的标签组，可设置标题和颜色',
+    dangerous: false,
+    slots: {
+      tabIds: { type: 'number[]', description: '标签页 ID 数组' },
+      title: { type: 'string', optional: true, description: '标签组标题' },
+      color: { type: 'string', optional: true, description: '标签组颜色' },
+    },
+    swIntent: 'tab_groups_create',
+  },
+  {
+    intent: 'tab_groups_update',
+    description: '更新标签组标题、颜色或折叠状态',
+    dangerous: false,
+    slots: {
+      groupId: { type: 'number', description: '标签组 ID' },
+      title: { type: 'string', optional: true, description: '标题' },
+      color: { type: 'string', optional: true, description: '颜色' },
+      collapsed: { type: 'boolean', optional: true, description: '是否折叠' },
+    },
+    swIntent: 'tab_groups_update',
+  },
+  {
+    intent: 'tab_groups_move_tabs',
+    description: '将指定标签页加入已有标签组',
+    dangerous: false,
+    slots: {
+      groupId: { type: 'number', description: '标签组 ID' },
+      tabIds: { type: 'number[]', description: '标签页 ID 数组' },
+    },
+    swIntent: 'tab_groups_move_tabs',
+  },
+  {
+    intent: 'tab_groups_ungroup_tabs',
+    description: '将指定标签页移出标签组',
+    dangerous: false,
+    slots: {
+      tabIds: { type: 'number[]', description: '标签页 ID 数组' },
+    },
+    swIntent: 'tab_groups_ungroup_tabs',
   },
   {
     intent: 'tabs_group_by_domain',
@@ -327,7 +383,38 @@ export const COMMANDS: Command[] = [
     swIntent: 'history_remove',
   },
 
-  // ==================== NAVIGATION (2) ====================
+  {
+    intent: 'sessions_observe',
+    description: '查询最近关闭的标签页和窗口',
+    dangerous: false,
+    slots: { maxResults: { type: 'number', optional: true, description: '返回数量，1-100' } },
+    swIntent: 'sessions_observe',
+  },
+  {
+    intent: 'sessions_restore_by_id',
+    description: '按 sessionId 恢复最近关闭的标签页或窗口',
+    dangerous: false,
+    slots: { sessionId: { type: 'string', description: '会话 ID' } },
+    swIntent: 'sessions_restore_by_id',
+  },
+  {
+    intent: 'browsing_data_settings',
+    description: '查看浏览数据清理能力和支持的数据类型',
+    dangerous: false,
+    slots: {},
+    swIntent: 'browsing_data_settings',
+  },
+
+  {
+    intent: 'browsing_data_remove',
+    description: '清理指定时间范围内的浏览数据（必须明确数据类型和范围）',
+    dangerous: true,
+    slots: {
+      since: { type: 'number', description: '起始时间戳' },
+      dataToRemove: { type: 'object', description: '要清理的数据类型对象' },
+    },
+    swIntent: 'browsing_data_remove',
+  },
   {
     intent: 'navigate',
     description: '导航到指定 URL。受保护页面(chrome://等)会被拒绝',
@@ -348,11 +435,36 @@ export const COMMANDS: Command[] = [
     dangerous: false,
     slots: {
       tabId: { type: 'number', optional: true, description: '目标标签 ID' },
+      query: { type: 'string', optional: true, description: '按标题或 URL 匹配标签' },
     },
+    requiresPrecompute: true,
     swIntent: 'screenshot',
   },
 
-  // ==================== PAGE (2) ====================
+  {
+    intent: 'downloads_search',
+    description: '查询下载记录（返回状态、URL和文件名等摘要）',
+    dangerous: false,
+    slots: {
+      query: { type: 'string', optional: true, description: '搜索关键词' },
+      limit: { type: 'number', optional: true, description: '返回数量，1-100' },
+    },
+    swIntent: 'downloads_search',
+  },
+  {
+    intent: 'downloads_cancel',
+    description: '取消指定下载任务',
+    dangerous: true,
+    slots: { downloadId: { type: 'number', description: '下载 ID' } },
+    swIntent: 'downloads_cancel',
+  },
+  {
+    intent: 'downloads_show',
+    description: '在下载页面显示指定下载任务',
+    dangerous: false,
+    slots: { downloadId: { type: 'number', description: '下载 ID' } },
+    swIntent: 'downloads_show',
+  },
   {
     intent: 'zoom',
     description: '缩放当前页面。direction: in|out|reset',
@@ -597,29 +709,79 @@ export const COMMANDS: Command[] = [
   },
 
   // ==================== BATCH (1) ====================
-  {
-    intent: 'batch',
-    description: '批量执行多个工具调用，一次性返回所有结果。适合同类操作的合并执行',
-    dangerous: false,
-    slots: {
-      calls: {
-        type: 'array',
-        description: "子调用数组，每项 { tool: '工具名', args: {...} }",
-      },
-    },
-    swIntent: 'batch',
-  },
+  // batch 已在 Plan-First 架构中废弃（AI 只会输出 plan 数组，不会调 batch）
+  // 如需批量执行，让 AI 合并同类操作为单个 tool 的多参数形式即可。
 
-  // ==================== 向后兼容：斜杠命令（对 AI 隐藏） ====================
+  {
+    intent: 'reload_tab',
+    description: '刷新当前标签页或当前窗口全部标签页',
+    dangerous: false,
+    aiHidden: true,
+    requiresPrecompute: true,
+    slots: { all: { type: 'boolean', optional: true, description: '是否刷新当前窗口全部标签页' } },
+    swIntent: 'tabs_update',
+  },
+  {
+    intent: 'move_tab',
+    description: '将标签页移动到指定位置（位置从 1 开始）',
+    dangerous: false,
+    aiHidden: true,
+    requiresPrecompute: true,
+    slots: {
+      index: { type: 'number', description: '目标位置（1-based）' },
+      fromTabId: { type: 'number', optional: true, description: '源标签 ID' },
+    },
+    swIntent: 'tabs_move',
+  },
+  {
+    intent: 'close_tabs_by_domain',
+    description: '关闭当前窗口指定域名的所有标签页',
+    dangerous: true,
+    aiHidden: true,
+    requiresPrecompute: true,
+    slots: { domain: { type: 'string', description: '域名' } },
+    swIntent: 'tabs_remove',
+  },
+  {
+    intent: 'mute_tabs_by_domain',
+    description: '静音当前窗口指定域名的所有标签页',
+    dangerous: false,
+    aiHidden: true,
+    requiresPrecompute: true,
+    slots: { domain: { type: 'string', description: '域名' } },
+    swIntent: 'tabs_update',
+  },
+  {
+    intent: 'unmute_tabs_by_domain',
+    description: '取消静音当前窗口指定域名的所有标签页',
+    dangerous: false,
+    aiHidden: true,
+    requiresPrecompute: true,
+    slots: { domain: { type: 'string', description: '域名' } },
+    swIntent: 'tabs_update',
+  },
+  {
+    intent: 'discard_tabs',
+    description: '休眠当前窗口的非活动标签页',
+    dangerous: false,
+    aiHidden: true,
+    requiresPrecompute: true,
+    slots: {
+      domain: { type: 'string', optional: true, description: '域名' },
+      all: { type: 'boolean', optional: true, description: '是否处理全部非活动标签页' },
+    },
+    swIntent: 'tabs_update',
+  },
   {
     intent: 'find_tab',
     description: '根据关键词查找标签页并聚焦',
     dangerous: false,
     aiHidden: true,
+    requiresPrecompute: true,
     slots: {
       query: { type: 'string', description: '搜索关键词' },
     },
-    swIntent: 'tabs_observe',
+    swIntent: 'tabs_update',
   },
   {
     intent: 'close_duplicate_tabs',
@@ -876,195 +1038,6 @@ export const COMMANDS: Command[] = [
       query: { type: 'string', description: '书签关键词' },
     },
     swIntent: 'bookmarks_remove_node',
-  },
-
-  // ==================== TASK_PLAN (1) ====================
-  {
-    intent: 'task_plan',
-    description:
-      '任务规划执行器。五阶段流程：①分析意图（识别任务类型和必需数据）→ ②扫描DOM（获取页面结构）→ ③规划流程（AI 拆解步骤）→ ④执行+审查（每步验证，失败重试）→ ⑤最终审查（确认任务完成）。action 指定当前阶段操作',
-    dangerous: false,
-    slots: {
-      action: {
-        type: 'string',
-        description:
-          '阶段操作：analyze（分析意图）| scan（扫描DOM）| setPlan（设置步骤序列）| executeStep（执行下一步）| provideData（填入用户数据）| finalReview（最终审查）| abort（中断任务）| getState（查询状态）',
-      },
-      userText: {
-        type: 'string',
-        optional: true,
-        description: '用户目标描述，用于 analyze 阶段',
-      },
-      providedData: {
-        type: 'object',
-        optional: true,
-        description: '用户已提供的数据键值对，用于 analyze 阶段',
-      },
-      steps: {
-        type: 'array',
-        optional: true,
-        description: '操作步骤序列，用于 setPlan 阶段',
-      },
-      planStatus: {
-        type: 'string',
-        optional: true,
-        description: 'READY | PARTIAL',
-      },
-      userDataKey: {
-        type: 'string',
-        optional: true,
-        description: '用户数据键名，用于 provideData 阶段',
-      },
-      userDataValue: {
-        type: 'string',
-        optional: true,
-        description: '用户数据值，用于 provideData 阶段',
-      },
-      reason: {
-        type: 'string',
-        optional: true,
-        description: '中断原因，用于 abort 阶段',
-      },
-    },
-    swIntent: 'task_plan',
-  },
-
-  // ==================== BROWSER DOM 操作（Playwright MCP 兼容）====================
-  {
-    intent: 'browser_snapshot',
-    description: '扫描当前页面，获取所有可交互元素的 Accessibility Tree 快照',
-    dangerous: false,
-    slots: {
-      maxElements: { type: 'number', optional: true, description: '最大元素数量，默认500' },
-      includeIframes: { type: 'boolean', optional: true, description: '是否包含iframe，默认true' },
-    },
-    swIntent: 'browser_snapshot',
-  },
-  {
-    intent: 'browser_click',
-    description: '点击页面元素，使用 [ref=eN] 引用',
-    dangerous: false,
-    slots: {
-      ref: { type: 'string', description: '元素引用，格式 [ref=eN]' },
-    },
-    swIntent: 'browser_click',
-  },
-  {
-    intent: 'browser_type',
-    description: '向输入框输入文本，使用 [ref=eN] 引用',
-    dangerous: false,
-    slots: {
-      ref: { type: 'string', description: '元素引用，格式 [ref=eN]' },
-      text: { type: 'string', description: '要输入的文本' },
-      submit: { type: 'boolean', optional: true, description: '输入后是否按Enter提交' },
-    },
-    swIntent: 'browser_type',
-  },
-  {
-    intent: 'browser_select_option',
-    description: '选择下拉框选项',
-    dangerous: false,
-    slots: {
-      ref: { type: 'string', description: 'select 元素引用' },
-      value: { type: 'string', description: '要选择的值' },
-    },
-    swIntent: 'browser_select_option',
-  },
-  {
-    intent: 'browser_hover',
-    description: '悬停在元素上',
-    dangerous: false,
-    slots: {
-      ref: { type: 'string', description: '元素引用' },
-    },
-    swIntent: 'browser_hover',
-  },
-  {
-    intent: 'browser_press_key',
-    description: '按键操作（如 Enter, Tab, Escape）',
-    dangerous: false,
-    slots: {
-      key: { type: 'string', description: '按键名称，如 Enter, Tab, Escape' },
-    },
-    swIntent: 'browser_press_key',
-  },
-  {
-    intent: 'browser_check',
-    description: '勾选复选框或单选框',
-    dangerous: false,
-    slots: {
-      ref: { type: 'string', description: 'checkbox/radio 元素引用' },
-    },
-    swIntent: 'browser_check',
-  },
-  {
-    intent: 'browser_uncheck',
-    description: '取消勾选复选框',
-    dangerous: false,
-    slots: {
-      ref: { type: 'string', description: 'checkbox 元素引用' },
-    },
-    swIntent: 'browser_uncheck',
-  },
-  {
-    intent: 'browser_fill_form',
-    description: '批量填写表单字段',
-    dangerous: false,
-    slots: {
-      fields: { type: 'array', description: '字段列表，每个包含 ref 和 value' },
-    },
-    swIntent: 'browser_fill_form',
-  },
-  {
-    intent: 'browser_wait_for',
-    description: '等待条件满足（文本出现或元素可见）',
-    dangerous: false,
-    slots: {
-      text: { type: 'string', optional: true, description: '等待出现的文本' },
-      ref: { type: 'string', optional: true, description: '等待出现的元素引用' },
-      timeout: { type: 'number', optional: true, description: '超时时间(ms)，默认5000' },
-    },
-    swIntent: 'browser_wait_for',
-  },
-  {
-    intent: 'browser_take_screenshot',
-    description: '截取当前页面截图',
-    dangerous: false,
-    slots: {
-      path: { type: 'string', optional: true, description: '保存路径' },
-      fullPage: { type: 'boolean', optional: true, description: '是否全页截图' },
-    },
-    swIntent: 'browser_take_screenshot',
-  },
-  {
-    intent: 'browser_navigate',
-    description: '导航到指定 URL',
-    dangerous: false,
-    slots: {
-      url: { type: 'string', description: '目标 URL' },
-    },
-    swIntent: 'browser_navigate',
-  },
-  {
-    intent: 'browser_navigate_back',
-    description: '浏览器后退',
-    dangerous: false,
-    slots: {},
-    swIntent: 'browser_navigate_back',
-  },
-  {
-    intent: 'browser_navigate_forward',
-    description: '浏览器前进',
-    dangerous: false,
-    slots: {},
-    swIntent: 'browser_navigate_forward',
-  },
-  {
-    intent: 'browser_reload',
-    description: '刷新当前页面',
-    dangerous: false,
-    slots: {},
-    swIntent: 'browser_reload',
   },
 
   // ==================== 内置命令 ====================

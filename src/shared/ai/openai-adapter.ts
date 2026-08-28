@@ -94,7 +94,10 @@ export class OpenAIAdapter implements AIAdapter {
       } catch (e) {
         lastError = e instanceof Error ? e : new Error(String(e))
         // 超时或权限错误不重试
-        const isAbort = e instanceof DOMException && e.name === 'AbortError'
+        const isAbort =
+          (e instanceof DOMException && e.name === 'AbortError') ||
+          options.signal?.aborted === true ||
+          lastError.message === 'ABORTED'
         if (isAbort || lastError.message.includes('权限')) {
           throw lastError
         }

@@ -5,6 +5,7 @@
       :key="index"
       :msg="msg"
       :index="index"
+      :on-dispatch-action="onDispatchAction"
       @delete="emit('delete', $event)"
     />
   </div>
@@ -12,11 +13,15 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from 'vue'
-import type { MessageLog } from '../types'
+import type { MessageLog, ExecutionResult } from '../types'
 import MessageBubble from './MessageBubble.vue'
 
 const props = defineProps<{
   messages: readonly MessageLog[]
+  onDispatchAction?: (
+    intent: string,
+    args?: Record<string, unknown>
+  ) => Promise<ExecutionResult | null> | void
 }>()
 
 const emit = defineEmits<{

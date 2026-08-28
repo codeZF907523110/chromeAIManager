@@ -60,6 +60,16 @@ declare global {
       captureVisibleTab(windowId: number, options?: any): Promise<string>
       getZoom(tabId: number): Promise<number>
       setZoom(tabId: number, zoomFactor: number): Promise<void>
+      getZoomSettings(tabId: number): Promise<any>
+      setZoomSettings(tabId: number, settings: any): Promise<void>
+      reload(tabId?: number, reloadProperties?: any): Promise<void>
+      duplicate(tabId: number): Promise<any>
+      discard(tabId: number): Promise<any>
+    }
+    tabGroups: {
+      query(query: any): Promise<any[]>
+      get(groupId: number): Promise<any>
+      update(groupId: number, updateProperties: any): Promise<any>
     }
     windows: {
       getCurrent(options?: any): Promise<any>
@@ -123,13 +133,17 @@ declare global {
       onEnabled: { addListener(callback: (id: string) => void): void }
       onDisabled: { addListener(callback: (id: string) => void): void }
     }
+    browsingData: {
+      settings(): Promise<any>
+      remove(options: any, dataToRemove: any): Promise<void>
+    }
     downloads: {
       download(options: any): Promise<number>
       search(query: any): Promise<any[]>
-      cancel(downloadId: number): Promise<boolean>
+      cancel(downloadId: number): Promise<void>
       erase(query: any): Promise<number>
-      show(downloadId: number): void
-      hide(downloadId: number): void
+      show(downloadId: number): Promise<void>
+      hide(downloadId: number): Promise<void>
       onCreated: { addListener(callback: (download: any) => void): void }
       onChanged: { addListener(callback: (downloadDelta: any) => void): void }
     }
@@ -190,6 +204,16 @@ declare global {
       getAll(filter: any): Promise<any[]>
       remove(details: any): Promise<void>
     }
+    bookmarks: {
+      getTree(): Promise<any[]>
+      getChildren(id: string): Promise<any[]>
+      search(query: string | object): Promise<any[]>
+      get(id: string): Promise<any[]>
+      create(bookmark: any): Promise<any>
+      update(id: string, changes: any): Promise<any>
+      remove(id: string): Promise<void>
+      move(id: string, destination: any): Promise<any>
+    }
     tabGroups: {
       get(groupId: number): Promise<any>
       update(groupId: number, updateProperties: any): Promise<any>
@@ -202,6 +226,22 @@ declare global {
   }
 
   namespace chrome {
+    namespace bookmarks {
+      interface BookmarkTreeNode {
+        id: string
+        parentId?: string
+        index?: number
+        url?: string
+        title?: string
+        dateAdded?: number
+        dateGroupModified?: number
+        dateGroupCreated?: number
+        children?: BookmarkTreeNode[]
+        unfiledBookmarks?: boolean
+        type?: 'url' | 'folder'
+      }
+    }
+
     namespace tabs {
       interface QueryOptions {
         active?: boolean
@@ -267,12 +307,13 @@ declare global {
         index?: number
         highlighted?: boolean
       }
-      interface MoveOptions {
-        index: number
+      interface GroupQuery {
+        windowId?: number
+        collapsed?: boolean
+        color?: string
+        title?: string
       }
-    }
-
-    namespace bookmarks {
+      type Color = 'blue' | 'cyan' | 'green' | 'grey' | 'orange' | 'pink' | 'purple' | 'red'
       interface BookmarkTreeNode {
         id: string
         parentId?: string
@@ -300,6 +341,60 @@ declare global {
       interface BookmarkChangeInfo {
         title?: string
         url?: string
+      }
+    }
+
+    namespace bookmarks {
+      interface BookmarkTreeNode {
+        id: string
+        parentId?: string
+        index?: number
+        url?: string
+        title?: string
+        dateAdded?: number
+        dateGroupModified?: number
+        dateGroupCreated?: number
+        children?: BookmarkTreeNode[]
+        unfiledBookmarks?: boolean
+        type?: 'url' | 'folder'
+      }
+      interface CreateDetails {
+        index?: number
+        parentId?: string
+        title?: string
+        url?: string
+      }
+      interface MoveProperties {
+        index?: number
+        parentId?: string
+      }
+      interface BookmarkChangeInfo {
+        title?: string
+        url?: string
+      }
+    }
+
+    namespace downloads {
+      interface DownloadQuery {
+        id?: number
+        limit?: number
+        query?: string[]
+        orderBy?: string[]
+      }
+    }
+
+    namespace browsingData {
+      interface RemovalOptions {
+        since?: number
+        originTypes?: any
+      }
+      interface OriginTypes {
+        unprotectedWeb?: boolean
+        protectedWeb?: boolean
+        extension?: boolean
+      }
+      interface DataTypeSet {
+        [key: string]: boolean
       }
     }
 
