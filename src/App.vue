@@ -27,7 +27,7 @@
     <!-- 消息列表 -->
     <MessageList
       :messages="state.messageLog"
-      :on-dispatch-action="(intent, args) => dispatchToSW(intent, args || {})"
+      :on-dispatch-action="(intent, args) => slashRunner.dispatchToSW(intent, args || {})"
       @delete="deleteMessage"
     />
 
@@ -217,6 +217,7 @@ import MessageList from './components/MessageList.vue'
 import CommandInput from './components/CommandInput.vue'
 import ConfirmCard from './components/ConfirmCard.vue'
 import { useAIEngine } from './composables/useAIEngine'
+import { useSlashCommandRunner } from './composables/useSlashCommandRunner'
 import { useSettings } from './composables/useSettings'
 import { isRunning } from './composables/usePlanRunner'
 import type { AIModel, AIProvider } from './types'
@@ -231,6 +232,8 @@ const appVersion =
 
 const {
   state,
+  addMessage,
+  clearMessages,
   handleSubmit: aiHandleSubmit,
   cleanup: aiCleanup,
   toggleSettings,
@@ -242,11 +245,44 @@ const {
   setDefaultModel,
   selectModel,
   getActiveModel,
-  dispatchToSW,
   commandInputValue,
   pendingConfirm,
   deleteMessage,
 } = useAIEngine()
+
+/**
+ * 斜杠 runner 自包含：所有消息写入、确认卡、截图渲染都通过 deps 注入，
+ * 不直接持有 messageLog / messageStore。
+ */
+const slashRunner = useSlashCommandRunner({
+  addMessage: (type, text, image, video, recordingFile) => {
+    addMessage(type, text, image, video, recordingFile)
+  },
+  clearMessages: () => clearMessages(),
+  setPendingConfirm: (value) => {
+    pendingConfirm.value = value
+  },
+  cancelPlan: () => {
+    void import('./composables/usePlanRunner').then(({ abort }) => abort())
+  },
+  showScreenshot: (dataUrl, tabTitle) => {
+    // 把截图作为图片消息写入消息流，dataUrl 由 MessageLog.image 字段承载
+    addMessage('ai-chat', { markdown: `[截图: ${tabTitle || '页面'}]` }, dataUrl)
+    void copyScreenshotToClipboard(dataUrl)
+  },
+})
+
+/** 把截图 dataUrl 复制到剪贴板 */
+async function copyScreenshotToClipboard(dataUrl: string): Promise<void> {
+  try {
+    const response = await fetch(dataUrl)
+    const blob = await response.blob()
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })])
+    console.log('[AI管家] 截图已复制到剪贴板')
+  } catch (err) {
+    console.warn('[AI管家] 复制截图失败:', err)
+  }
+}
 
 const isPlanRunning = ref(isRunning())
 const pollTimer = window.setInterval(() => {
@@ -334,7 +370,8 @@ async function handleSubmit() {
   // 连续重复命令不重复发送
   if (text.trim() === lastSubmittedText) return
   lastSubmittedText = text.trim()
-  await aiHandleSubmit(text)
+  // 注入 slash runner 实例到 AI 侧 handleSubmit，让分发保持向后兼容
+  await aiHandleSubmit(text, slashRunner)
   lastSubmittedText = '' // 清零，允许发送相同命令（非连续）
 }
 

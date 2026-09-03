@@ -30,7 +30,7 @@ export interface Command {
   swIntent: string | null
   /**
    * 客户端路由：非 null 时表示该命令由 sidepanel 本地处理（录制等）。
-   * 由 useAIEngine.executeCommand 通过 clientIntent 分支处理。
+   * 由 useSlashCommandRunner.dispatchToSW 通过 clientIntent 分支处理。
    * 可选字段，未声明则默认为 null。
    */
   clientIntent?: ClientIntent

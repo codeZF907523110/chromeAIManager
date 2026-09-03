@@ -14,11 +14,15 @@ vi.mock('../src/service-worker/handlers', () => ({
     if (tool === 'FAIL_TOOL') {
       return { success: false, code: 'INTERNAL', message: '失败' }
     }
+    if (tool === 'PERMISSION_TOOL') {
+      return { success: false, code: 'PERMISSION_DENIED', message: '权限不足' }
+    }
     if (tool === 'observe_tabs') {
       return { success: true, tabs: [{ id: 99, title: 'foo' }] }
     }
     return { success: true, result: args }
   }),
+  DANGEROUS_TOOLS: new Set(['tabs_remove', 'NEEDS_CONFIRM_TOOL']),
 }))
 
 import { executePlan } from '../src/service-worker/plan-runner'
@@ -58,9 +62,7 @@ describe('executePlan', () => {
     // 此处 mock 的 NEEDS_CONFIRM_TOOL 不检查 force，仅验证 plan-runner 调度逻辑
     const report = await executePlan({
       thought: '',
-      plan: [
-        { id: 'p1', tool: 'NEEDS_CONFIRM_TOOL', args: { x: 1, force: true }, deps: [] },
-      ],
+      plan: [{ id: 'p1', tool: 'NEEDS_CONFIRM_TOOL', args: { x: 1, force: true }, deps: [] }],
     } as AIPlan)
     // mock 的 NEEDS_CONFIRM_TOOL 不区分 force；plan-runner 仍会把 NEEDS_CONFIRM 作为 detail
     expect(report.needsConfirm?.itemId).toBe('p1')
@@ -79,7 +81,10 @@ describe('executePlan', () => {
         },
       ],
     } as AIPlan)
-    expect(report.items[1].result).toMatchObject({ success: true, result: { tabId: 99, force: true } })
+    expect(report.items[1].result).toMatchObject({
+      success: true,
+      result: { tabId: 99, force: true },
+    })
   })
 
   it('依赖图循环 → 未执行项标 BLOCKED_BY_FAILED_DEP', async () => {
@@ -132,5 +137,54 @@ describe('executePlan', () => {
     } as AIPlan)
     expect(report.items.find((i) => i.id === 'p1')?.result.success).toBe(false)
     expect(report.items.find((i) => i.id === 'p2')?.result.success).toBe(true)
+  })
+
+  it('权限失败时依赖项被阻断', async () => {
+    const report = await executePlan({
+      thought: '',
+      plan: [
+        { id: 'p1', tool: 'PERMISSION_TOOL', args: {}, deps: [] },
+        { id: 'p2', tool: 'bookmarks_add_current_page', args: {}, deps: ['p1'] },
+      ],
+    } as AIPlan)
+    expect(report.items.find((i) => i.id === 'p1')?.result.code).toBe('PERMISSION_DENIED')
+    expect(report.items.find((i) => i.id === 'p2')?.result.code).toBe('BLOCKED_BY_FAILED_DEP')
+  })
+
+  it('嵌套数组/对象的 $ref 解析', async () => {
+    const report = await executePlan({
+      thought: '',
+      plan: [
+        { id: 'p1', tool: 'observe_tabs', args: {}, deps: [] },
+        {
+          id: 'p2',
+          tool: 'bookmarks_add_current_page',
+          args: {
+            group: { tabId: '$ref:p1.tabs[0].id', nested: { ids: ['$ref:p1.tabs[0].id'] } },
+          },
+          deps: ['p1'],
+        },
+      ],
+    } as AIPlan)
+    expect(report.items[1].result).toMatchObject({
+      success: true,
+      result: { group: { tabId: 99, nested: { ids: [99] } } },
+    })
+  })
+
+  it('$ref 字段不存在时返回 REF_NOT_FOUND', async () => {
+    const report = await executePlan({
+      thought: '',
+      plan: [
+        { id: 'p1', tool: 'observe_tabs', args: {}, deps: [] },
+        {
+          id: 'p2',
+          tool: 'bookmarks_add_current_page',
+          args: { tabId: '$ref:p1.missing' },
+          deps: ['p1'],
+        },
+      ],
+    } as AIPlan)
+    expect(report.items[1].result.code).toBe('REF_NOT_FOUND')
   })
 })

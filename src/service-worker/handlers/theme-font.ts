@@ -45,7 +45,9 @@ export async function updateFontSize(payload: Record<string, unknown>): Promise<
 }
 
 /** 查看浏览器默认字体族（standard | serif | sansserif | fixed | math） */
-export async function observeFontFamily(payload: Record<string, unknown>): Promise<ExecutionResult> {
+export async function observeFontFamily(
+  payload: Record<string, unknown>
+): Promise<ExecutionResult> {
   const generic = (payload.genericFamily as chrome.fontSettings.GenericFamily) || 'standard'
   const level = await chrome.fontSettings.getFontFamily({ genericFamily: generic })
   return { success: true, font: level.fontId, genericFamily: generic }

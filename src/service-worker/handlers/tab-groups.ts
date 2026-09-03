@@ -25,9 +25,22 @@ export async function query(payload: Record<string, unknown>): Promise<Execution
     }
     options.windowId = windowId
   }
-  if (typeof payload.collapsed === 'boolean') options.collapsed = payload.collapsed
-  if (typeof payload.color === 'string') {
-    if (!COLORS.has(payload.color)) {
+  if (typeof payload.collapsed !== 'undefined' && typeof payload.collapsed !== 'boolean') {
+    return { success: false, code: 'INVALID_PARAMS', message: 'collapsed 必须是 boolean' }
+  }
+  if (
+    payload.title !== undefined &&
+    (typeof payload.title !== 'string' || payload.title.length > 100)
+  ) {
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: 'title 必须是长度不超过 100 的字符串',
+    }
+  }
+  if (payload.collapsed !== undefined) options.collapsed = payload.collapsed as boolean
+  if (payload.color !== undefined) {
+    if (typeof payload.color !== 'string' || !COLORS.has(payload.color)) {
       return { success: false, code: 'INVALID_PARAMS', message: 'color 不是有效的标签组颜色' }
     }
     options.color = payload.color as TabGroupColor
@@ -52,6 +65,31 @@ export async function query(payload: Record<string, unknown>): Promise<Execution
   return { success: true, groups: result, observed: result.length }
 }
 
+/** 查询单个真实标签组及其成员。 */
+export async function get(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const groupId = payload.groupId
+  if (typeof groupId !== 'number' || !Number.isInteger(groupId) || groupId < 0) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'groupId 必须是非负整数' }
+  }
+  try {
+    const group = await chrome.tabGroups.get(groupId)
+    const tabs = await chrome.tabs.query({ groupId })
+    return {
+      success: true,
+      group: {
+        ...group,
+        tabIds: tabs.flatMap((tab) => (tab.id === undefined ? [] : [tab.id])),
+        tabs: tabs.map((tab) => ({ id: tab.id, title: tab.title, url: tab.url, index: tab.index })),
+      },
+    }
+  } catch (error: unknown) {
+    return {
+      success: false,
+      code: 'GROUP_NOT_FOUND',
+      message: error instanceof Error ? error.message : '标签组不存在',
+    }
+  }
+}
 /** 为指定标签组准备更新标题、颜色或折叠状态的请求。 */
 export async function update(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const groupId = Number(payload.groupId)
@@ -148,4 +186,108 @@ export async function ungroupTabs(payload: Record<string, unknown>): Promise<Exe
 function normalizeIds(value: unknown): number[] {
   if (!Array.isArray(value)) return []
   return [...new Set(value.map(Number).filter((id) => Number.isInteger(id) && id >= 0))]
+}
+
+/** 解析目标窗口 ID。 */
+function parseWindowId(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value
+  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value)
+  return undefined
+}
+
+/** 校验指定名称的标签组是否已存在，避免重复创建。 */
+async function findGroupByTitle(
+  title: string,
+  windowId: number | undefined,
+  tabGroups: {
+    query: (q: {
+      title?: string
+      windowId?: number
+    }) => Promise<Array<{ id: number; title?: string }>>
+  } | null
+): Promise<chrome.tabGroups.TabGroup | null> {
+  if (!title || !tabGroups) return null
+  const groups = await tabGroups.query({ title, ...(windowId !== undefined ? { windowId } : {}) })
+  return (groups[0] as unknown as chrome.tabGroups.TabGroup | undefined) ?? null
+}
+
+/** 按指定名称创建或复用标签组，并把目标标签加入其中；统一在 SW 内完成并回读成员。 */
+export async function findOrCreateByTitle(
+  payload: Record<string, unknown>
+): Promise<ExecutionResult> {
+  const tabIds = normalizeIds(payload.tabIds)
+  if (tabIds.length === 0) {
+    return { success: false, code: 'INVALID_PARAMS', message: '需要至少一个有效 tabId' }
+  }
+  const title = typeof payload.title === 'string' ? payload.title.trim() : ''
+  if (!title || title.length > 100) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'title 必须是非空字符串' }
+  }
+  const windowId = parseWindowId(payload.windowId)
+  if (
+    payload.color !== undefined &&
+    (typeof payload.color !== 'string' || !COLORS.has(payload.color))
+  ) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'color 不合法' }
+  }
+  const tabGroupsApi = (
+    globalThis as unknown as {
+      chrome?: {
+        tabGroups?: {
+          query: (q: {
+            title?: string
+            windowId?: number
+          }) => Promise<Array<{ id: number; title?: string }>>
+          get: (id: number) => Promise<{ id: number; title?: string }>
+          update: (
+            id: number,
+            props: { title?: string; color?: string }
+          ) => Promise<{ id: number; title?: string }>
+        }
+      }
+    }
+  ).chrome?.tabGroups
+  const tabsApi = (
+    globalThis as unknown as {
+      chrome?: {
+        tabs?: {
+          get: (id: number) => Promise<unknown>
+          group: (o: unknown) => Promise<number>
+          query: (q: { groupId?: number }) => Promise<Array<{ id?: number }>>
+        }
+      }
+    }
+  ).chrome?.tabs
+  if (!tabGroupsApi || !tabsApi) {
+    return { success: false, code: 'API_UNAVAILABLE', message: 'tabGroups API 不可用' }
+  }
+  const color = payload.color as chrome.tabGroups.ColorEnum | undefined
+  for (const tabId of tabIds) {
+    try {
+      await tabsApi.get(tabId)
+    } catch {
+      return { success: false, code: 'TARGET_NOT_FOUND', message: `目标标签 ${tabId} 不存在` }
+    }
+  }
+  let group = await findGroupByTitle(title, windowId, tabGroupsApi)
+  let reused = Boolean(group)
+  if (!group) {
+    const groupId = await tabsApi.group({
+      tabIds,
+      createProperties: windowId === undefined ? undefined : { windowId },
+    })
+    await tabGroupsApi.update(groupId, { title, ...(color ? { color } : {}) })
+    group = await tabGroupsApi.get(groupId)
+  } else {
+    await tabsApi.group({ groupId: group.id, tabIds })
+    if (color) await tabGroupsApi.update(group.id, { color })
+    group = await tabGroupsApi.get(group.id)
+  }
+  const members = await tabsApi.query({ groupId: group!.id })
+  return {
+    success: true,
+    reused,
+    group,
+    tabIds: members.flatMap((tab) => (tab.id === undefined ? [] : [tab.id])),
+  }
 }

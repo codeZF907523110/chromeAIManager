@@ -26,15 +26,54 @@ export async function search(payload: Record<string, unknown>): Promise<Executio
   }
 }
 
-/** 取消指定下载任务。 */
+/** 查询指定下载任务并返回；不存在时返回稳定错误。 */
+async function getDownload(id: number): Promise<unknown | null> {
+  const [item] = await chrome.downloads.search({ id })
+  return item ?? null
+}
+
+/** 判断字符串是否包含 ASCII 控制字符（含 NUL）。 */
+function hasControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) < 32 || value.charCodeAt(i) === 127) return true
+  }
+  return false
+}
+
 export async function cancel(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const id = Number(payload.downloadId)
   if (!Number.isInteger(id) || id < 0) {
     return { success: false, code: 'INVALID_PARAMS', message: 'downloadId 必须是非负整数' }
   }
+  if ((await getDownload(id)) === null)
+    return { success: false, code: 'DOWNLOAD_NOT_FOUND', message: '下载任务不存在' }
   await chrome.downloads.cancel(id)
   const [item] = await chrome.downloads.search({ id })
   return { success: true, downloadId: id, state: item?.state ?? 'interrupted' }
+}
+
+/** 暂停指定下载任务。 */
+export async function pause(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const downloadId = parseDownloadId(payload.downloadId)
+  if (downloadId === null)
+    return { success: false, code: 'INVALID_PARAMS', message: 'downloadId 必须是非负整数' }
+  if ((await getDownload(downloadId)) === null)
+    return { success: false, code: 'DOWNLOAD_NOT_FOUND', message: '下载任务不存在' }
+  await chrome.downloads.pause(downloadId)
+  const [item] = await chrome.downloads.search({ id: downloadId })
+  return { success: true, downloadId, paused: item?.paused ?? true, state: item?.state }
+}
+
+/** 恢复指定下载任务。 */
+export async function resume(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const downloadId = parseDownloadId(payload.downloadId)
+  if (downloadId === null)
+    return { success: false, code: 'INVALID_PARAMS', message: 'downloadId 必须是非负整数' }
+  if ((await getDownload(downloadId)) === null)
+    return { success: false, code: 'DOWNLOAD_NOT_FOUND', message: '下载任务不存在' }
+  await chrome.downloads.resume(downloadId)
+  const [item] = await chrome.downloads.search({ id: downloadId })
+  return { success: true, downloadId, resumed: item?.paused === false, state: item?.state }
 }
 
 /** 下载 http/https URL，返回下载 ID。 */
@@ -48,19 +87,30 @@ export async function download(payload: Record<string, unknown>): Promise<Execut
   } catch {
     return { success: false, code: 'INVALID_PARAMS', message: 'url 格式无效' }
   }
-  if (!['http:', 'https:'].includes(url.protocol)) {
+  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) {
     return { success: false, code: 'INVALID_PARAMS', message: '只允许 http/https URL' }
   }
   const options: Record<string, unknown> = { url: url.href }
   if (payload.filename !== undefined) {
+    if (typeof payload.filename !== 'string') {
+      return { success: false, code: 'INVALID_PARAMS', message: 'filename 不合法' }
+    }
+    const filename = payload.filename.trim()
     if (
-      typeof payload.filename !== 'string' ||
-      !payload.filename.trim() ||
-      payload.filename.includes('..')
+      !filename ||
+      filename.includes('..') ||
+      filename.includes('/') ||
+      filename.includes('\\') ||
+      /^[a-zA-Z]:/.test(filename) ||
+      filename.startsWith('~') ||
+      hasControlChar(filename)
     ) {
       return { success: false, code: 'INVALID_PARAMS', message: 'filename 不合法' }
     }
-    options.filename = payload.filename.trim()
+    if (filename.length > 255) {
+      return { success: false, code: 'INVALID_PARAMS', message: 'filename 过长' }
+    }
+    options.filename = filename
   }
   if (typeof payload.saveAs === 'boolean') options.saveAs = payload.saveAs
   const id = await chrome.downloads.download(options)
@@ -72,6 +122,8 @@ export async function open(payload: Record<string, unknown>): Promise<ExecutionR
   const id = parseDownloadId(payload.downloadId)
   if (id === null)
     return { success: false, code: 'INVALID_PARAMS', message: 'downloadId 必须是非负整数' }
+  if ((await getDownload(id)) === null)
+    return { success: false, code: 'DOWNLOAD_NOT_FOUND', message: '下载任务不存在' }
   await chrome.downloads.open(id)
   return { success: true, downloadId: id, opened: true }
 }
@@ -81,6 +133,8 @@ export async function erase(payload: Record<string, unknown>): Promise<Execution
   const id = parseDownloadId(payload.downloadId)
   if (id === null)
     return { success: false, code: 'INVALID_PARAMS', message: 'downloadId 必须是非负整数' }
+  if ((await getDownload(id)) === null)
+    return { success: false, code: 'DOWNLOAD_NOT_FOUND', message: '下载任务不存在' }
   const erased = await chrome.downloads.erase({ id })
   return { success: true, downloadId: id, erased: erased > 0 }
 }
@@ -90,6 +144,8 @@ export async function removeFile(payload: Record<string, unknown>): Promise<Exec
   const id = parseDownloadId(payload.downloadId)
   if (id === null)
     return { success: false, code: 'INVALID_PARAMS', message: 'downloadId 必须是非负整数' }
+  if ((await getDownload(id)) === null)
+    return { success: false, code: 'DOWNLOAD_NOT_FOUND', message: '下载任务不存在' }
   await chrome.downloads.removeFile(id)
   return { success: true, downloadId: id, removed: true }
 }

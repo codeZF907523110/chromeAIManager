@@ -7,22 +7,10 @@
  *   - AI 通过 richReply 自由产出（块注册表 aiUsable: true）
  *
  * 列定义 + 行数据解耦，运行时只取字符串 key。
- * 长字段走"截断 + Element Plus tooltip"组合，避免撑爆气泡宽度。
+ * URL 列使用 ElLink 组件，支持省略号和 Tooltip 展示。
  */
-import { ElTooltip } from 'element-plus'
-
-export interface DataTableColumn {
-  /** 字段名（行对象的 key） */
-  key: string
-  /** 表头文本 */
-  title: string
-  /** 列宽（px / % / 其它 CSS 长度） */
-  width?: number | string
-  /** 超过 N 字符截断 + tooltip 显示完整值 */
-  ellipsis?: number
-  /** 自定义格式化（返回值 =字符串文本，避免 HTML）） */
-  format?: (row: Record<string, unknown>) => string
-}
+import { ElTooltip, ElLink } from 'element-plus'
+import type { DataTableColumn } from '../../types'
 
 const props = withDefaults(
   defineProps<{
@@ -41,6 +29,10 @@ function getCell(row: Record<string, unknown>, col: DataTableColumn): string {
   if (col.format) return col.format(row)
   const v = row[col.key]
   return v === null || v === undefined ? '' : String(v)
+}
+
+function isUrl(key: string): boolean {
+  return key === 'url'
 }
 
 function isLong(s: string, col: DataTableColumn): boolean {
@@ -63,8 +55,29 @@ function isLong(s: string, col: DataTableColumn): boolean {
       </tr>
       <tr v-for="(row, i) in props.rows" :key="i">
         <td v-for="c in props.columns" :key="c.key">
+          <!-- URL 列使用 ElLink + Tooltip -->
           <el-tooltip
-            v-if="c.ellipsis && isLong(getCell(row, c), c)"
+            v-if="isUrl(c.key) && isLong(getCell(row, c), c)"
+            :content="getCell(row, c)"
+            placement="top"
+            :show-after="200"
+          >
+            <el-link type="primary" :href="getCell(row, c)" target="_blank" :underline="false">
+              {{ truncate(getCell(row, c), c.ellipsis!) }}
+            </el-link>
+          </el-tooltip>
+          <el-link
+            v-else-if="isUrl(c.key)"
+            type="primary"
+            :href="getCell(row, c)"
+            target="_blank"
+            :underline="false"
+          >
+            {{ getCell(row, c) }}
+          </el-link>
+          <!-- 其他列：ellipsis + tooltip -->
+          <el-tooltip
+            v-else-if="c.ellipsis && isLong(getCell(row, c), c)"
             :content="getCell(row, c)"
             placement="top"
             :show-after="200"
@@ -92,6 +105,7 @@ function isLong(s: string, col: DataTableColumn): boolean {
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
+  word-break: break-word;
 }
 
 .data-table th {
@@ -113,5 +127,6 @@ function isLong(s: string, col: DataTableColumn): boolean {
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+  word-break: break-all;
 }
 </style>

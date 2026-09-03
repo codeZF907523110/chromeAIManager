@@ -196,11 +196,12 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   {
     slash: 'storage-get',
-    intent: 'storage_get',
-    description: '读取扩展本地存储。无参=列出全部；带 key=单值（表格展示）',
+    intent: 'storage_area_get',
+    description:
+      '读取扩展存储。无参=同时列出 local 和 session；带 area=local|session|sync|managed；带 key=单值',
     aliases: ['sg', '读存储'],
     hasArg: true,
-    placeholder: 'key(可选)',
+    placeholder: 'area key(可选)',
   },
   {
     slash: 'storage-set',
@@ -278,13 +279,16 @@ export function matchSlashCommand(input: string): SlashMatchResult | SlashError 
   const args = parts.slice(1).join(' ')
 
   // 1. 精确匹配
-  let cmd: SlashCommand | undefined = SLASH_COMMANDS.find((c) => c.slash === cmdName)
-  // 2. 别名匹配
-  if (!cmd) cmd = SLASH_COMMANDS.find((c) => c.aliases?.includes(cmdName))
+  let cmd: SlashCommand | undefined = SLASH_COMMANDS.find((c) => c.slash.toLowerCase() === cmdName)
+  // 2. 别名匹配（统一大小写，兼容 /Cookie 等历史输入）
+  if (!cmd)
+    cmd = SLASH_COMMANDS.find((c) => c.aliases?.some((alias) => alias.toLowerCase() === cmdName))
   // 3. 前缀模糊匹配
   if (!cmd)
     cmd = SLASH_COMMANDS.find(
-      (c) => c.slash.startsWith(cmdName) || c.aliases?.some((a) => a.startsWith(cmdName))
+      (c) =>
+        c.slash.toLowerCase().startsWith(cmdName) ||
+        c.aliases?.some((a) => a.toLowerCase().startsWith(cmdName))
     )
 
   if (!cmd) return { error: 'UNKNOWN_SLASH', raw: trimmed }
@@ -298,11 +302,45 @@ export function matchSlashCommand(input: string): SlashMatchResult | SlashError 
   const slots: Record<string, unknown> = {}
   // 不论 hasArg 与否，args 非空就解析 slots；hasArg 仅控制"MISSING_ARG"提示，
   // 不应阻断参数写入。search_history / sort_tabs 这类"参数可选"命令就是这种用法。
+  //
+  // /history /cookies /site-perms /clear-cookies 这类"无参=默认"命令，由 buildSlots
+  // 在 args 为空时显式写入哨兵或默认值（timeRange='today' / domain=CURRENT_TAB_DOMAIN），
+  // 不依赖 SW 端隐式分支——这样 SW handler 看到的 payload 字段始终非空，AI plan 路径
+  // 也不会因为"未传"而出错。
   if (args.trim()) {
     buildSlots(cmd.intent, args, slots)
+  } else {
+    applyDefaults(cmd.intent, slots)
   }
 
   return { intent: cmd.intent, slots, cmd }
+}
+
+/**
+ * 为"无参=默认"命令写入显式默认值 / 哨兵值。
+ *
+ * 哨兵字符串 CURRENT_TAB_DOMAIN 由 SW 端识别后走"取当前活动标签 hostname"分支；
+ * 不让 SW 端用"参数 undefined ⇒ 走默认"这种隐式行为。
+ */
+function applyDefaults(intent: string, slots: Record<string, unknown>): void {
+  const CURRENT_TAB_DOMAIN = '__current__'
+  switch (intent) {
+    case 'search_history':
+    case 'search_history_min':
+      // /history 无参：展示今天全部
+      slots.timeRange = 'today'
+      break
+    case 'delete_history':
+      // /clear-history 无参：清空今天（与历史默认值一致）
+      slots.timeRange = 'today'
+      break
+    case 'get_cookies':
+    case 'clear_cookies':
+    case 'get_site_permissions':
+      // /cookies /clear-cookies /site-perms 无参：取当前页域名
+      slots.domain = CURRENT_TAB_DOMAIN
+      break
+  }
 }
 
 function buildSlots(intent: string, args: string, slots: Record<string, unknown>): void {
@@ -314,6 +352,14 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
     // 不含协议前缀；末尾不是 .；首尾是字母数字或连字符
     return /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(s)
   }
+  /**
+   * "无参默认当前页"哨兵值。
+   *
+   * cookies / clear-cookies / site-perms 这类命令无参时本应默认取当前活动标签的域名，
+   * 直接留空字段会让 SW 端走隐式分支（行为可读性差，也容易在 AI plan 路径上被误传）。
+   * 这里显式写一个不会与真实域名冲突的哨兵字符串，SW 端识别后走"取当前 active tab"分支。
+   */
+  const CURRENT_TAB_DOMAIN = '__current__'
   switch (intent) {
     case 'add_bookmark': {
       // 不传参数 = 当前页面（url 留空，SW 端取当前活动标签）
@@ -343,7 +389,9 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
     }
     case 'find_tab':
     case 'search_history':
+    case 'close_tabs_by_url':
       // /find /history 参数可选：不传走默认（find=全部 / history=今天），传值按关键词过滤
+      // /close-url 需要 query 参数
       if (args.trim()) (slots as Record<string, string>).query = args
       break
     case 'reopen_closed_tab':
@@ -358,18 +406,38 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
     case 'get_cookies':
     case 'clear_cookies':
     case 'get_site_permissions':
-      // 这几个命令 domain 可选；为空时由 SW 端取当前页面域名
-      if (args.trim()) (slots as Record<string, string>).domain = args
+      // domain 可选；无参时显式写 CURRENT_TAB_DOMAIN 哨兵，SW 端识别后取当前活动标签的 hostname
+      if (args.trim()) (slots as Record<string, string>).domain = args.trim()
+      else (slots as Record<string, string>).domain = CURRENT_TAB_DOMAIN
       break
-    case 'storage_get':
     case 'storage_remove':
-      // /storage-get 与 /storage-remove 的参数是 key
+      // /storage-remove 的参数是 key
       if (args.trim()) (slots as Record<string, string>).key = args.trim()
       break
-    case 'delete_history':
-      // /clear-history 必带时间范围
-      if (!args.trim()) return
-      ;(slots as Record<string, string>).timeRange = args
+    case 'storage_get':
+    case 'storage_area_get':
+      // /storage-get 参数格式：area key(可选)
+      // 无参 = 列出 local 全部
+      // 仅 area = 列出该 area 全部
+      // area key = 读取指定 key
+      if (args.trim()) {
+        const parts = args.trim().split(/\s+/)
+        if (['local', 'session', 'sync', 'managed'].includes(parts[0])) {
+          ;(slots as Record<string, string>).area = parts[0]
+          if (parts[1]) (slots as Record<string, string>).key = parts[1]
+        } else {
+          // 旧格式：只有一个参数当 key（向后兼容）
+          ;(slots as Record<string, string>).area = 'local'
+          ;(slots as Record<string, string>).key = parts[0]
+        }
+      }
+      break
+    case 'search_history_min':
+      // 内部命令：从 history_search 透传 timeRange
+      ;(slots as Record<string, string>).timeRange = 'today'
+      break
+    case 'reload_tab':
+      if (args.trim()) (slots as Record<string, boolean>).all = args.trim().toLowerCase() === 'all'
       break
     case 'sort_tabs':
       ;(slots as Record<string, string>).order = args

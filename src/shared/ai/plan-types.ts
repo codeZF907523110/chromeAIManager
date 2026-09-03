@@ -19,6 +19,12 @@ export interface PlanItem {
   deps: string[]
   /** AI 合并标记：本次调用由哪些用户指令合并而来；仅用于 UI 展示 */
   mergedFrom?: string[]
+  /**
+   * 半成品 plan 补全时携带的种子结果（来自第一轮 SW report.items）。
+   * SW plan-runner 在解析 $ref 时优先使用本字段，跳过对应 deps 的重复执行。
+   * 仅在 usePlanRunner.detectAndCompleteHalfPlan 路径下填充；普通 plan 不带此字段。
+   */
+  seededResults?: Record<string, unknown>
 }
 
 /** AI 单次响应（替代旧 AIResponse） */

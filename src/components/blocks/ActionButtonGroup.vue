@@ -7,7 +7,7 @@
  *   - onAction: (intent, args) => void
  *
  * 点击 → onAction(intent, args)。
- * onAction 由 MessageBubble 通过 createApp(props) 注入，回调 useAIEngine.executeCommand。
+ * onAction 由 MessageBubble 通过 createApp(props) 注入，回调 useSlashCommandRunner.dispatchToSW。
  *
  * 不走 emit：嵌入组件是 createApp 动态挂载，emit 事件在动态组件树上无法冒泡到宿主组件；
  * 用 props 函数更显式、可追踪，也避免循环依赖。

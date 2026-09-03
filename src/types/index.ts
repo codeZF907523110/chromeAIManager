@@ -26,4 +26,7 @@ export type { Context } from './context'
 export type { ExecutionResult, ExecuteCommandPayload } from './execution'
 
 // UI 相关类型
-export type { AgentState, Settings } from './ui'
+export type { AgentState, Settings, ConfirmCardItem, ConfirmCardData } from './ui'
+
+// 块组件相关类型
+export type { DataTableColumn } from './data-table'

@@ -17,7 +17,13 @@ export interface ConfirmPreview {
     tabId?: number
     /** 初始是否勾选（默认 true = 即将关闭） */
     selected?: boolean
+    /** 扩展字段：携带 tabIds 数组，用于 close_duplicate_tabs 等需要批量操作的场景 */
+    tabIds?: number[]
+    /** 扩展字段：携带书签 ID 数组 */
+    bookmarkIds?: string[]
   }>
+  /** 扩展字段：全部待关闭的 tabIds（用于 close_duplicate_tabs 等批量操作） */
+  allTabIds?: number[]
 }
 
 /**
@@ -35,14 +41,18 @@ export interface ConfirmPreview {
 export function buildReconfirmPayload(
   originalPlan: AIPlan,
   confirmItem: { id: string; tool: string },
-  selectedIds: Array<string | number>
+  selectedIds: Array<string | number>,
+  options: { confirmationToken?: string } = {}
 ): AIPlan {
   const tool = confirmItem.tool
   return {
     thought: originalPlan.thought,
     plan: originalPlan.plan?.map((it) => {
       if (it.id !== confirmItem.id) return it
-      const extra: Record<string, unknown> = { force: true }
+      const extra: Record<string, unknown> = {
+        force: true,
+        ...(options.confirmationToken ? { confirmationToken: options.confirmationToken } : {}),
+      }
       if (tool === 'history_remove') {
         extra.selectedUrls = selectedIds.map((id) => String(id))
       } else if (tool === 'bookmarks_remove_node') {
@@ -53,12 +63,16 @@ export function buildReconfirmPayload(
         extra.tabIds = selectedIds
           .map((id) => (typeof id === 'number' ? id : Number(id)))
           .filter((id): id is number => Number.isInteger(id) && id >= 0)
+      } else if (tool === 'cookies_remove') {
+        // selectedIds 是 cookie name（字符串）
+        extra.selectedNames = selectedIds.map((id) => String(id))
       } else {
         extra.selectedIds = selectedIds
       }
       return {
         ...it,
         args: { ...it.args, ...extra },
+        ...(it.seededResults ? { seededResults: it.seededResults } : {}),
       }
     }),
   }
@@ -68,14 +82,59 @@ export function buildReconfirmPayload(
  * 生成确认预览
  * @returns preview 对象或 null（无需确认）
  */
-export function generateConfirmPreview(
+export async function generateConfirmPreview(
   intent: string,
   slots: Record<string, unknown>,
   context: Context | null
-): ConfirmPreview | null {
+): Promise<ConfirmPreview | null> {
   if (!context?.tabs) return null
 
   switch (intent) {
+    case 'close_tabs_by_domain':
+    case 'mute_tabs_by_domain':
+    case 'unmute_tabs_by_domain': {
+      const domain = ((slots.domain as string) || '').toLowerCase().trim()
+      if (!domain) return null
+      const matching = context.tabs.filter((t) => {
+        if (!t.url || t.pinned) return false
+        try {
+          const hostname = new URL(t.url).hostname.toLowerCase().replace(/^www\./, '')
+          const target = domain.replace(/^www\./, '')
+          return hostname === target || hostname.endsWith(`.${target}`)
+        } catch {
+          return false
+        }
+      })
+      if (matching.length === 0) return null
+
+      const allTabIds = matching.map((t) => t.id).filter((id): id is number => id !== undefined)
+
+      let title = ''
+      let description = ''
+      if (intent === 'close_tabs_by_domain') {
+        title = `将关闭 "${domain}" 下的 ${matching.length} 个标签页`
+        description = '此操作不可撤销（可勾选要关闭的标签）'
+      } else if (intent === 'mute_tabs_by_domain') {
+        title = `将静音 "${domain}" 下的 ${matching.length} 个标签页`
+        description = '可勾选要静音的标签'
+      } else {
+        title = `将取消静音 "${domain}" 下的 ${matching.length} 个标签页`
+        description = '可勾选要取消静音的标签'
+      }
+
+      return {
+        title,
+        description,
+        items: matching.map((t, index) => ({
+          primary: t.title || t.url || '标签',
+          secondary: t.url || '',
+          tabId: index,
+          selected: true,
+        })),
+        allTabIds,
+      }
+    }
+
     case 'close_duplicate_tabs': {
       const duplicateGroups = findDuplicateGroups(context.tabs, slots.url as string | undefined)
       const totalToRemove = duplicateGroups.reduce((sum, g) => sum + g.tabs.length - 1, 0)
@@ -83,10 +142,18 @@ export function generateConfirmPreview(
 
       return {
         title: `将关闭 ${totalToRemove} 个重复标签页`,
-        description: `检测到 ${duplicateGroups.length} 组重复 URL`,
-        items: duplicateGroups.map((g) => ({
+        description: `检测到 ${duplicateGroups.length} 组重复 URL（可勾选要关闭的组）`,
+        items: duplicateGroups.map((g, index) => ({
           primary: g.url,
           secondary: `${g.tabs.length} 个标签页 → 保留 1 个`,
+          // groupIndex 作为每组的唯一标识，供 checkbox 使用
+          tabId: index,
+          // 该组需要关闭的 tabIds
+          tabIds: g.tabs
+            .slice(1)
+            .map((t) => t.id)
+            .filter((id): id is number => id !== undefined),
+          selected: true,
         })),
       }
     }
@@ -119,15 +186,23 @@ export function generateConfirmPreview(
           ? `匹配关键词: ${q}（${skippedPinned} 个固定标签已跳过）`
           : `匹配关键词: ${q}`
 
+      // 收集所有匹配的 tabIds
+      const allTabIdsToRemove = matching
+        .map((t) => t.id)
+        .filter((id): id is number => id !== undefined)
+
       return {
         title: `将关闭 ${matching.length} 个标签页`,
         description,
-        items: matching.map((t) => ({
+        items: matching.map((t, index) => ({
           primary: t.title || t.url,
           secondary: t.url,
-          tabId: t.id,
+          // index 作为每条的标识，供 checkbox 使用
+          tabId: index,
           selected: true,
         })),
+        // 扩展字段：全部待关闭的 tabIds
+        allTabIds: allTabIdsToRemove,
       }
     }
 
@@ -170,13 +245,26 @@ export function generateConfirmPreview(
     case 'remove_bookmark': {
       const query = slots.query as string | undefined
       if (!query) return null
-      // Context 里没存书签详情，只有 bookmarkFolders 路径数组。
-      // 这里在 SW 端没有 bookmarks_observe_tree 之类的回查接口可用，
-      // 所以预览只能展示提示文本 + 用户提供的关键词，真正的勾选删除能力在 SW 端做。
-      return {
-        title: `将删除匹配 "${query}" 的书签`,
-        description: '此操作不可撤销',
-        items: [],
+      // 在 sidepanel 上下文中直接搜索书签
+      try {
+        const results = await chrome.bookmarks.search(query)
+        if (results.length === 0) return null
+        return {
+          title: `将删除 ${results.length} 个匹配的书签`,
+          description: '此操作不可撤销（可勾选要删除的项）',
+          items: results.map((node, index) => ({
+            // label 字段：显示标题和 URL
+            label: node.title || node.url || '书签',
+            primary: node.title || node.url || '书签',
+            secondary: node.url || '',
+            tabId: index, // 用 index 作为标识
+            // 扩展字段：存储书签 ID
+            bookmarkIds: [node.id],
+            selected: true,
+          })),
+        }
+      } catch {
+        return null
       }
     }
 
@@ -199,12 +287,46 @@ export function generateConfirmPreview(
     }
 
     case 'clear_cookies': {
-      const domain = slots.domain
+      let domain = slots.domain
       if (!domain) return null
+      // 解析 CURRENT_TAB_DOMAIN 哨兵值：取当前活动标签的 hostname
+      if (domain === '__current__') {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+        if (!tab?.url) return null
+        try {
+          domain = new URL(tab.url).hostname
+        } catch {
+          return null
+        }
+      }
+      // 拉取该域下的所有 Cookie，让用户逐个勾选
+      let cookies: Array<{ name: string; path: string }> = []
+      try {
+        const list = await chrome.cookies.getAll({
+          domain: String(domain).replace(/^https?:\/\//, ''),
+        })
+        cookies = list.map((c) => ({ name: c.name, path: c.path || '/' }))
+      } catch {
+        /* ignore */
+      }
+      if (cookies.length === 0) {
+        return {
+          title: `当前域名 "${domain}" 下没有 Cookie 可清除`,
+          description: '',
+          items: [],
+        }
+      }
       return {
-        title: `将清除域名 "${domain}" 下的所有 Cookie`,
-        description: '此操作不可撤销，可能导致需要重新登录',
-        items: [],
+        title: `将清除 "${domain}" 下的 ${cookies.length} 个 Cookie`,
+        description: '此操作不可撤销，可能导致需要重新登录（可勾选要清除的 Cookie）',
+        items: cookies.map((c, index) => ({
+          primary: c.name,
+          secondary: `path: ${c.path}`,
+          tabId: index,
+          selected: true,
+          // 扩展字段：用 cookie 名作为标识
+          bookmarkIds: [c.name],
+        })),
       }
     }
 

@@ -16,13 +16,10 @@
     "topSites",
     "management",
     "contentSettings",
-    "privacy",
-    "desktopCapture",
     "notifications",
     "downloads",
     "offscreen",
-    "sidePanel",
-    "unlimitedStorage"
+    "sidePanel"
   ],
   "host_permissions": ["<all_urls>"],
   "action": {},
@@ -50,7 +47,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["offscreen/*", "lib/*", "sidepanel.html", "sidepanel.js", "sidepanel.css", "style.js", "style.css", "constants.js"],
+      "resources": ["offscreen/*", "lib/*"],
       "matches": ["<all_urls>"]
     }
   ]

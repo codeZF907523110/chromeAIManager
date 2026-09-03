@@ -9,26 +9,26 @@ import type { ExecutionResult } from '../../types/execution'
 export async function navigate(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const url = payload.url as string
   if (!url) return { success: false, code: 'INVALID_PARAMS', message: 'URL 为空' }
-  if (
-    url.startsWith('chrome://') ||
-    url.startsWith('chrome-extension://') ||
-    url.startsWith('javascript:')
-  ) {
-    return { success: false, code: 'PAGE_BLOCKED', message: '无法导航到受保护页面' }
-  }
+  let parsed: URL
   try {
-    new URL(url)
+    parsed = new URL(url)
   } catch {
     return { success: false, code: 'INVALID_PARAMS', message: 'URL 格式无效' }
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { success: false, code: 'PAGE_BLOCKED', message: '无法导航到受保护页面' }
+  }
+  if (parsed.hostname === 'chrome.google.com' && parsed.pathname.startsWith('/webstore')) {
+    return { success: false, code: 'PAGE_BLOCKED', message: '无法导航到 Web Store' }
   }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
   if (payload.newTab) {
-    await chrome.tabs.create({ url })
+    await chrome.tabs.create({ url: parsed.href })
   } else {
-    await chrome.tabs.update(tab.id, { url })
+    await chrome.tabs.update(tab.id, { url: parsed.href })
   }
-  return { success: true, navigated: url }
+  return { success: true, navigated: parsed.href }
 }
 
 /** 截取活动标签可见区域（PNG dataUrl） */

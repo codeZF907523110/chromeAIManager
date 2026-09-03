@@ -82,7 +82,7 @@ const emit = defineEmits<{
 
 /**
  * 嵌入组件接收的"派发命令"回调。
- * MessageBubble 把 useAIEngine.executeCommand 注入到 createApp 的 props 里，
+ * MessageBubble 把 useSlashCommandRunner.dispatchToSW 注入到 createApp 的 props 里，
  * 嵌入组件（ActionButtonGroup）通过 props.onAction(intent, args) 派发。
  */
 function dispatchAction(intent: string, args?: Record<string, unknown>): void {

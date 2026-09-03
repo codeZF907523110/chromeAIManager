@@ -13,7 +13,46 @@ export async function observe(payload: Record<string, unknown>): Promise<Executi
   return { success: true, windows: wins, observed: wins.length }
 }
 
-/** 创建新窗口（url 为空创建空白窗口；incognito 隐身） */
+/** 根据 ID 获取指定窗口。 */
+export async function get(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const id = parseWindowId(payload.windowId)
+  if (id === null)
+    return { success: false, code: 'INVALID_PARAMS', message: 'windowId 必须是非负整数' }
+  const window = await chrome.windows.get(id, { populate: payload.includeTabs === true })
+  return { success: true, window }
+}
+
+/** 获取当前窗口。 */
+export async function getCurrent(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const window = await chrome.windows.getCurrent({ populate: payload.includeTabs === true })
+  return { success: true, window }
+}
+
+/** 获取最近聚焦的窗口。 */
+export async function getLastFocused(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const window = await chrome.windows.getLastFocused({ populate: payload.includeTabs === true })
+  return { success: true, window }
+}
+
+/** 获取全部窗口。 */
+export async function getAll(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  return observe({ ...payload, includeTabs: payload.includeTabs === true })
+}
+
+/** 关闭指定窗口。该工具由统一危险策略负责确认。 */
+export async function remove(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const id = parseWindowId(payload.windowId)
+  if (id === null)
+    return { success: false, code: 'INVALID_PARAMS', message: 'windowId 必须是非负整数' }
+  await chrome.windows.remove(id)
+  return { success: true, windowId: id, removed: true }
+}
+
+/** 解析窗口 ID。 */
+function parseWindowId(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
+}
+
 export async function create(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const opts: chrome.windows.CreateData = {}
   if (payload.url) opts.url = payload.url as string

@@ -1,3 +1,5 @@
+<!-- 状态：冻结/未实现。当前版本不包含 Content Script、browser_* 或 Accessibility Tree 能力。 -->
+
 # DOM 操作架构设计文档（Playwright MCP 方案）
 
 > **重要说明**：本文档是架构设计方案，指导项目从旧命令体系向 Playwright MCP 风格的重构。已识别出当前代码的多个关键缺陷，本文档提供完整修复方案。
@@ -8,17 +10,18 @@
 
 ### 1.1 业界主流方案对比
 
-| 方案 | 访问模式 | Token 成本 | 可靠性 | 适合场景 | 复杂度 |
-|------|----------|------------|--------|----------|--------|
-| **Claude Computer Use** | 截图 + 视觉模型 | 高 ($0.50-$5/任务) | 78% | 全桌面控制 | 高 |
-| **OpenAI Operator** | 截图 + CUA | 高（托管服务） | 87% | 简单 Web 任务 | 低 |
-| **Stagehand** | Playwright + AI 选择器 | 中 | 89% | 生产级自动化 | 中 |
-| **Browser Use** | Playwright + 多模态 | 高 | 89.1% | 复杂多步工作流 | 高 |
-| **Playwright MCP** | Accessibility Tree + ref | 低 (~200-400 tokens/快照) | 92% | AI 驱动的浏览器操作 | 低 |
+| 方案                    | 访问模式                 | Token 成本                | 可靠性 | 适合场景            | 复杂度 |
+| ----------------------- | ------------------------ | ------------------------- | ------ | ------------------- | ------ |
+| **Claude Computer Use** | 截图 + 视觉模型          | 高 ($0.50-$5/任务)        | 78%    | 全桌面控制          | 高     |
+| **OpenAI Operator**     | 截图 + CUA               | 高（托管服务）            | 87%    | 简单 Web 任务       | 低     |
+| **Stagehand**           | Playwright + AI 选择器   | 中                        | 89%    | 生产级自动化        | 中     |
+| **Browser Use**         | Playwright + 多模态      | 高                        | 89.1%  | 复杂多步工作流      | 高     |
+| **Playwright MCP**      | Accessibility Tree + ref | 低 (~200-400 tokens/快照) | 92%    | AI 驱动的浏览器操作 | 低     |
 
 **选型结论：Playwright MCP 方案最优**
 
 理由：
+
 1. **Token 成本最低** - Accessibility Tree 比截图节省 90%+ tokens
 2. **可靠性最高** - 92% 常见任务成功率（DOM 驱动方案普遍优于视觉方案）
 3. **与 Chrome Extension 架构天然匹配** - 使用 Content Script 替代 Playwright，通过 Extension API 实现相同能力
@@ -52,22 +55,24 @@
 
 ### 2.2 关键设计原则
 
-| 原则 | 说明 |
-|------|------|
-| **确定性引用** | 每个交互元素有唯一 `[ref=eN]` 标识符，AI 用 ref 定位而非自然语言描述 |
-| **Accessibility Tree 优先** | 使用 Chrome Accessibility Tree 而非原始 DOM，天然过滤非交互元素 |
-| **原子操作** | 每次只执行一个操作，避免复杂序列的不可预测性 |
-| **Context 缓存** | 快照结果缓存，页面变化时才重新扫描 |
-| **Ref 失效检测** | 操作失败时自动检测 ref 是否失效，必要时重新扫描 |
-| **Iframe 穿透** | 递归扫描所有 iframe 内的可交互元素 |
+| 原则                        | 说明                                                                 |
+| --------------------------- | -------------------------------------------------------------------- |
+| **确定性引用**              | 每个交互元素有唯一 `[ref=eN]` 标识符，AI 用 ref 定位而非自然语言描述 |
+| **Accessibility Tree 优先** | 使用 Chrome Accessibility Tree 而非原始 DOM，天然过滤非交互元素      |
+| **原子操作**                | 每次只执行一个操作，避免复杂序列的不可预测性                         |
+| **Context 缓存**            | 快照结果缓存，页面变化时才重新扫描                                   |
+| **Ref 失效检测**            | 操作失败时自动检测 ref 是否失效，必要时重新扫描                      |
+| **Iframe 穿透**             | 递归扫描所有 iframe 内的可交互元素                                   |
 
 ### 2.3 与现有系统关系
 
 当前项目存在两套命令体系：
+
 - **旧体系**：`tabs_observe`, `bookmarks_observe_tree`, `navigate` 等（保留，用于浏览器管理）
 - **新体系**：`browser_snapshot`, `browser_click`, `browser_type` 等（新增，用于页面操作）
 
 **迁移策略**：
+
 - 旧体系继续服务于标签页、书签、历史等浏览器层面的操作
 - 新体系专注于页面内容层面的 DOM 操作
 - 两者通过统一的 executeCommand switch 暴露给 AI
@@ -79,45 +84,50 @@
 ### 3.1 工具分类
 
 #### 导航类 (Navigation)
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
-| `browser_navigate` | `{ url: string }` | 导航到指定 URL |
-| `browser_navigate_back` | `{}` | 后退 |
-| `browser_navigate_forward` | `{}` | 前进 |
-| `browser_reload` | `{}` | 刷新页面 |
+
+| 工具名                     | 参数              | 说明           |
+| -------------------------- | ----------------- | -------------- |
+| `browser_navigate`         | `{ url: string }` | 导航到指定 URL |
+| `browser_navigate_back`    | `{}`              | 后退           |
+| `browser_navigate_forward` | `{}`              | 前进           |
+| `browser_reload`           | `{}`              | 刷新页面       |
 
 #### 观察类 (Observation)
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
-| `browser_snapshot` | `{ maxElements?: number, includeIframes?: boolean }` | 获取 Accessibility Tree 快照 |
-| `browser_take_screenshot` | `{ path?: string, fullPage?: boolean }` | 截图（可选） |
-| `browser_console_messages` | `{ limit?: number }` | 获取控制台日志 |
-| `browser_network_requests` | `{}` | 获取网络请求 |
+
+| 工具名                     | 参数                                                 | 说明                         |
+| -------------------------- | ---------------------------------------------------- | ---------------------------- |
+| `browser_snapshot`         | `{ maxElements?: number, includeIframes?: boolean }` | 获取 Accessibility Tree 快照 |
+| `browser_take_screenshot`  | `{ path?: string, fullPage?: boolean }`              | 截图（可选）                 |
+| `browser_console_messages` | `{ limit?: number }`                                 | 获取控制台日志               |
+| `browser_network_requests` | `{}`                                                 | 获取网络请求                 |
 
 #### 交互类 (Interaction)
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
-| `browser_click` | `{ ref: string }` | 点击元素 |
-| `browser_type` | `{ ref: string, text: string, submit?: boolean }` | 输入文本 |
-| `browser_select_option` | `{ ref: string, value: string }` | 选择下拉选项 |
-| `browser_hover` | `{ ref: string }` | 悬停元素 |
-| `browser_drag` | `{ from: string, to: string }` | 拖拽元素 |
-| `browser_press_key` | `{ key: string }` | 按键 |
-| `browser_check` / `browser_uncheck` | `{ ref: string }` | 勾选/取消勾选 |
-| `browser_fill_form` | `{ fields: Array<{ ref, value }> }` | 批量填写表单 |
+
+| 工具名                              | 参数                                              | 说明          |
+| ----------------------------------- | ------------------------------------------------- | ------------- |
+| `browser_click`                     | `{ ref: string }`                                 | 点击元素      |
+| `browser_type`                      | `{ ref: string, text: string, submit?: boolean }` | 输入文本      |
+| `browser_select_option`             | `{ ref: string, value: string }`                  | 选择下拉选项  |
+| `browser_hover`                     | `{ ref: string }`                                 | 悬停元素      |
+| `browser_drag`                      | `{ from: string, to: string }`                    | 拖拽元素      |
+| `browser_press_key`                 | `{ key: string }`                                 | 按键          |
+| `browser_check` / `browser_uncheck` | `{ ref: string }`                                 | 勾选/取消勾选 |
+| `browser_fill_form`                 | `{ fields: Array<{ ref, value }> }`               | 批量填写表单  |
 
 #### 等待类 (Waiting)
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
+
+| 工具名             | 参数                                                | 说明         |
+| ------------------ | --------------------------------------------------- | ------------ |
 | `browser_wait_for` | `{ text?: string, ref?: string, timeout?: number }` | 等待条件满足 |
 
 #### 标签页类 (Tabs) - 复用旧体系
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
-| `browser_tab_list` | `{}` | 列出所有标签页 → 映射到 `tabs_observe` |
-| `browser_tab_new` | `{ url?: string }` | 新建标签页 → 映射到 `tabs_create` |
-| `browser_tab_select` | `{ index: number }` | 切换标签页 → 映射到 `tabs_update` |
-| `browser_tab_close` | `{ index?: number }` | 关闭标签页 → 映射到 `tabs_remove` |
+
+| 工具名               | 参数                 | 说明                                   |
+| -------------------- | -------------------- | -------------------------------------- |
+| `browser_tab_list`   | `{}`                 | 列出所有标签页 → 映射到 `tabs_observe` |
+| `browser_tab_new`    | `{ url?: string }`   | 新建标签页 → 映射到 `tabs_create`      |
+| `browser_tab_select` | `{ index: number }`  | 切换标签页 → 映射到 `tabs_update`      |
+| `browser_tab_close`  | `{ index?: number }` | 关闭标签页 → 映射到 `tabs_remove`      |
 
 ### 3.2 工具白名单机制
 
@@ -155,7 +165,10 @@ const TOOL_WHITELIST = new Set([
   'browser_tab_close',
 ])
 
-async function executeCommand(intent: string, payload: Record<string, unknown>): Promise<ExecutionResult> {
+async function executeCommand(
+  intent: string,
+  payload: Record<string, unknown>
+): Promise<ExecutionResult> {
   // 新体系工具白名单检查
   if (intent.startsWith('browser_')) {
     if (!TOOL_WHITELIST.has(intent)) {
@@ -171,7 +184,8 @@ async function executeCommand(intent: string, payload: Record<string, unknown>):
 
   // 旧体系保持兼容
   switch (intent) {
-    case 'tabs_observe': return await observeTabs(payload)
+    case 'tabs_observe':
+      return await observeTabs(payload)
     // ... 其他旧命令
   }
 }
@@ -217,7 +231,7 @@ Playwright MCP 的 `browser_snapshot` 返回 YAML-like 结构：
 - button "Sign in" [ref=e6]
 - link "Forgot password?" [ref=e7]
 - listitem:
-  - checkbox "Remember me" [ref=e8]
+    - checkbox "Remember me" [ref=e8]
 ```
 
 ### 4.2 数据结构定义
@@ -227,30 +241,30 @@ Playwright MCP 的 `browser_snapshot` 返回 YAML-like 结构：
 
 export interface AccessibilityNode {
   // 基础属性
-  role: string           // button, textbox, link, heading, listitem 等
-  name: string           // 可访问名称（aria-label 或文本内容）
-  ref: string            // 唯一引用 [ref=e0]
-  level?: number         // heading 级别
-  checked?: boolean      // checkbox/radio 状态
-  disabled?: boolean     // 是否禁用
-  required?: boolean     // 是否必填
-  selected?: boolean     // option 是否选中
-  expanded?: boolean     // 是否展开
-  value?: string         // 当前值
+  role: string // button, textbox, link, heading, listitem 等
+  name: string // 可访问名称（aria-label 或文本内容）
+  ref: string // 唯一引用 [ref=e0]
+  level?: number // heading 级别
+  checked?: boolean // checkbox/radio 状态
+  disabled?: boolean // 是否禁用
+  required?: boolean // 是否必填
+  selected?: boolean // option 是否选中
+  expanded?: boolean // 是否展开
+  value?: string // 当前值
   children?: AccessibilityNode[]
 
   // 位置信息（用于调试和错误恢复）
-  tagName?: string       // 原始 HTML 标签名
-  xpath?: string         // 唯一 XPath（用于 ref 失效时的备用定位）
+  tagName?: string // 原始 HTML 标签名
+  xpath?: string // 唯一 XPath（用于 ref 失效时的备用定位）
   rect?: {
     x: number
     y: number
     width: number
     height: number
-  }                      // 元素位置（用于截图参考）
+  } // 元素位置（用于截图参考）
 
   // iframe 信息
-  iframeSrc?: string     // 所在 iframe 的 src
+  iframeSrc?: string // 所在 iframe 的 src
 }
 
 export interface PageSnapshot {
@@ -613,7 +627,7 @@ export function findElementByRef(ref: string): HTMLElement | null {
   const cleanRef = ref.replace('[ref=', '').replace(']', '')
 
   // 通过 snapshotCache 找到对应的节点，再用 XPath 查找
-  const node = snapshotCache?.nodes.find(n => n.ref === `[ref=${cleanRef}]`)
+  const node = snapshotCache?.nodes.find((n) => n.ref === `[ref=${cleanRef}]`)
   if (!node?.xpath) return null
 
   try {
@@ -739,23 +753,23 @@ async function executeBrowserTool(
 
 ### 6.2 Action 类型
 
-| Action | 说明 | 参数 |
-|--------|------|------|
-| `browser_navigate` | 导航 | `{ url: string }` |
-| `browser_snapshot` | 扫描页面 | `{ maxElements?: number, includeIframes?: boolean }` |
-| `browser_click` | 点击 | `{ ref: string }` |
-| `browser_type` | 输入 | `{ ref: string, text: string, submit?: boolean }` |
-| `browser_select_option` | 选择 | `{ ref: string, value: string }` |
-| `browser_hover` | 悬停 | `{ ref: string }` |
-| `browser_press_key` | 按键 | `{ key: string }` |
-| `browser_check` | 勾选 | `{ ref: string }` |
-| `browser_uncheck` | 取消勾选 | `{ ref: string }` |
-| `browser_fill_form` | 填表单 | `{ fields: Array<{ ref, value }> }` |
-| `browser_wait_for` | 等待 | `{ text?: string, ref?: string, timeout?: number }` |
-| `browser_take_screenshot` | 截图 | `{ path?: string }` |
-| `done` | 完成 | - |
-| `ask` | 询问用户 | `{ question: string }` |
-| `chat` | 纯对话 | `{ message: string }` |
+| Action                    | 说明     | 参数                                                 |
+| ------------------------- | -------- | ---------------------------------------------------- |
+| `browser_navigate`        | 导航     | `{ url: string }`                                    |
+| `browser_snapshot`        | 扫描页面 | `{ maxElements?: number, includeIframes?: boolean }` |
+| `browser_click`           | 点击     | `{ ref: string }`                                    |
+| `browser_type`            | 输入     | `{ ref: string, text: string, submit?: boolean }`    |
+| `browser_select_option`   | 选择     | `{ ref: string, value: string }`                     |
+| `browser_hover`           | 悬停     | `{ ref: string }`                                    |
+| `browser_press_key`       | 按键     | `{ key: string }`                                    |
+| `browser_check`           | 勾选     | `{ ref: string }`                                    |
+| `browser_uncheck`         | 取消勾选 | `{ ref: string }`                                    |
+| `browser_fill_form`       | 填表单   | `{ fields: Array<{ ref, value }> }`                  |
+| `browser_wait_for`        | 等待     | `{ text?: string, ref?: string, timeout?: number }`  |
+| `browser_take_screenshot` | 截图     | `{ path?: string }`                                  |
+| `done`                    | 完成     | -                                                    |
+| `ask`                     | 询问用户 | `{ question: string }`                               |
+| `chat`                    | 纯对话   | `{ message: string }`                                |
 
 ---
 
@@ -851,10 +865,7 @@ export class ContextCache {
     return `${tabId}:${url}`
   }
 
-  async getOrFetch(
-    tabId: number,
-    forceRefresh = false
-  ): Promise<CachedSnapshot | null> {
+  async getOrFetch(tabId: number, forceRefresh = false): Promise<CachedSnapshot | null> {
     const url = await this.getCurrentUrl(tabId)
     const key = this.getCacheKey(tabId, url)
 
@@ -949,15 +960,15 @@ export enum DOMErrorType {
 
 ### 9.2 自愈策略
 
-| 错误类型 | 自愈策略 |
-|----------|----------|
-| `ELEMENT_NOT_FOUND` | 重新扫描页面，获取新的 ref |
-| `REF_INVALID` | 重新扫描页面 |
-| `PAGE_NAVIGATED` | 等待页面加载完成，重新扫描 |
-| `CONTENT_SCRIPT_UNRESPONSIVE` | 等待重试（最多 3 次） |
-| `TIMEOUT` | 延长等待时间后重试 |
-| `ELEMENT_NOT_VISIBLE` | 尝试滚动到元素位置后重试 |
-| `UNKNOWN_TOOL` | 返回可用工具列表给 AI |
+| 错误类型                      | 自愈策略                   |
+| ----------------------------- | -------------------------- |
+| `ELEMENT_NOT_FOUND`           | 重新扫描页面，获取新的 ref |
+| `REF_INVALID`                 | 重新扫描页面               |
+| `PAGE_NAVIGATED`              | 等待页面加载完成，重新扫描 |
+| `CONTENT_SCRIPT_UNRESPONSIVE` | 等待重试（最多 3 次）      |
+| `TIMEOUT`                     | 延长等待时间后重试         |
+| `ELEMENT_NOT_VISIBLE`         | 尝试滚动到元素位置后重试   |
+| `UNKNOWN_TOOL`                | 返回可用工具列表给 AI      |
 
 ---
 
@@ -1017,6 +1028,7 @@ export enum DOMErrorType {
 ### 10.2 上下文注入
 
 每次 LLM 调用时，注入以下内容：
+
 - 当前任务目标
 - 历史操作记录（最近 5 步）
 - 当前页面快照（Accessibility Tree）
@@ -1117,7 +1129,7 @@ export default defineConfig({
         // Service Worker 入口
         'service-worker': resolve(__dirname, 'src/service-worker/index.ts'),
         // Content Script 入口（新增）
-        'content': resolve(__dirname, 'src/content/index.ts'),
+        content: resolve(__dirname, 'src/content/index.ts'),
       },
     },
   },
@@ -1166,107 +1178,105 @@ function init(): void {
 }
 
 function setupMessageListener(): void {
-  chrome.runtime.onMessage.addListener(
-    (message: ContentScriptMessage, _sender, sendResponse) => {
-      if (!enabled) {
+  chrome.runtime.onMessage.addListener((message: ContentScriptMessage, _sender, sendResponse) => {
+    if (!enabled) {
+      sendResponse({
+        success: false,
+        error: 'DOM感知未启用',
+        timestamp: Date.now(),
+      } as ContentScriptResponse)
+      return false
+    }
+
+    switch (message.type) {
+      case 'SNAPSHOT':
+        snapshotCache = captureAccessibilityTree({ includeIframes: true })
+        console.log(
+          '[DOM感知] SNAPSHOT 响应, 元素数量=',
+          snapshotCache.nodes.length,
+          'URL=',
+          snapshotCache.url
+        )
+        sendResponse({
+          success: true,
+          data: snapshotCache,
+          timestamp: message.timestamp,
+        } as ContentScriptResponse)
+        return false
+
+      case 'CLICK':
+        sendResponse(executeClick(message.ref))
+        return false
+
+      case 'TYPE':
+        sendResponse(executeType(message.ref, message.text, message.submit))
+        return false
+
+      case 'SELECT':
+        sendResponse(executeSelect(message.ref, message.value))
+        return false
+
+      case 'HOVER':
+        sendResponse(executeHover(message.ref))
+        return false
+
+      case 'PRESS_KEY':
+        sendResponse(executeKeyPress(message.key))
+        return false
+
+      case 'CHECK':
+        sendResponse(executeCheck(message.ref, true))
+        return false
+
+      case 'UNCHECK':
+        sendResponse(executeCheck(message.ref, false))
+        return false
+
+      case 'FILL_FORM':
+        sendResponse(executeFillForm(message.fields))
+        return false
+
+      case 'WAIT_FOR':
+        sendResponse(executeWaitFor(message.text, message.ref, message.timeout))
+        return false
+
+      case 'NAVIGATE':
+        window.location.href = message.url
+        sendResponse({ success: true, timestamp: message.timestamp })
+        return false
+
+      case 'NAVIGATE_BACK':
+        window.history.back()
+        sendResponse({ success: true, timestamp: message.timestamp })
+        return false
+
+      case 'NAVIGATE_FORWARD':
+        window.history.forward()
+        sendResponse({ success: true, timestamp: message.timestamp })
+        return false
+
+      case 'RELOAD':
+        window.location.reload()
+        sendResponse({ success: true, timestamp: message.timestamp })
+        return false
+
+      case 'SCREENSHOT':
+        sendResponse({
+          success: true,
+          data: 'screenshot_not_implemented_yet',
+          timestamp: message.timestamp,
+        })
+        return false
+
+      default:
         sendResponse({
           success: false,
-          error: 'DOM感知未启用',
+          error: 'UNKNOWN_MESSAGE_TYPE',
           timestamp: Date.now(),
         } as ContentScriptResponse)
         return false
-      }
-
-      switch (message.type) {
-        case 'SNAPSHOT':
-          snapshotCache = captureAccessibilityTree({ includeIframes: true })
-          console.log(
-            '[DOM感知] SNAPSHOT 响应, 元素数量=',
-            snapshotCache.nodes.length,
-            'URL=',
-            snapshotCache.url
-          )
-          sendResponse({
-            success: true,
-            data: snapshotCache,
-            timestamp: message.timestamp,
-          } as ContentScriptResponse)
-          return false
-
-        case 'CLICK':
-          sendResponse(executeClick(message.ref))
-          return false
-
-        case 'TYPE':
-          sendResponse(executeType(message.ref, message.text, message.submit))
-          return false
-
-        case 'SELECT':
-          sendResponse(executeSelect(message.ref, message.value))
-          return false
-
-        case 'HOVER':
-          sendResponse(executeHover(message.ref))
-          return false
-
-        case 'PRESS_KEY':
-          sendResponse(executeKeyPress(message.key))
-          return false
-
-        case 'CHECK':
-          sendResponse(executeCheck(message.ref, true))
-          return false
-
-        case 'UNCHECK':
-          sendResponse(executeCheck(message.ref, false))
-          return false
-
-        case 'FILL_FORM':
-          sendResponse(executeFillForm(message.fields))
-          return false
-
-        case 'WAIT_FOR':
-          sendResponse(executeWaitFor(message.text, message.ref, message.timeout))
-          return false
-
-        case 'NAVIGATE':
-          window.location.href = message.url
-          sendResponse({ success: true, timestamp: message.timestamp })
-          return false
-
-        case 'NAVIGATE_BACK':
-          window.history.back()
-          sendResponse({ success: true, timestamp: message.timestamp })
-          return false
-
-        case 'NAVIGATE_FORWARD':
-          window.history.forward()
-          sendResponse({ success: true, timestamp: message.timestamp })
-          return false
-
-        case 'RELOAD':
-          window.location.reload()
-          sendResponse({ success: true, timestamp: message.timestamp })
-          return false
-
-        case 'SCREENSHOT':
-          sendResponse({
-            success: true,
-            data: 'screenshot_not_implemented_yet',
-            timestamp: message.timestamp,
-          })
-          return false
-
-        default:
-          sendResponse({
-            success: false,
-            error: 'UNKNOWN_MESSAGE_TYPE',
-            timestamp: Date.now(),
-          } as ContentScriptResponse)
-          return false
-      }
     }
-  )
+  })
 }
 
 function executeClick(ref: string): ContentScriptResponse {
@@ -1363,11 +1373,7 @@ function executeFillForm(fields: Array<{ ref: string; value: string }>): Content
   return { success: true, timestamp: Date.now() }
 }
 
-function executeWaitFor(
-  text?: string,
-  ref?: string,
-  timeout?: number
-): ContentScriptResponse {
+function executeWaitFor(text?: string, ref?: string, timeout?: number): ContentScriptResponse {
   const ms = timeout || 5000
   return { success: true, timestamp: Date.now() }
 }
@@ -1427,13 +1433,13 @@ case 'browser_tab_close':
 
 ### 14.1 快照压缩
 
-| 策略 | 说明 | 效果 |
-|------|------|------|
-| 只保留交互元素 | 非交互元素不入快照 | 减少 60-80% |
-| 文本截断 | 单元素文本超过 200 字符截断 | 减少 20-30% |
-| 深度限制 | 递归深度不超过 10 层 | 防止过深树 |
-| Token 预算 | 总 Token 不超过 4000 | 控制上下文窗口 |
-| iframe 限制 | 最多扫描 3 个 iframe | 防止性能问题 |
+| 策略           | 说明                        | 效果           |
+| -------------- | --------------------------- | -------------- |
+| 只保留交互元素 | 非交互元素不入快照          | 减少 60-80%    |
+| 文本截断       | 单元素文本超过 200 字符截断 | 减少 20-30%    |
+| 深度限制       | 递归深度不超过 10 层        | 防止过深树     |
+| Token 预算     | 总 Token 不超过 4000        | 控制上下文窗口 |
+| iframe 限制    | 最多扫描 3 个 iframe        | 防止性能问题   |
 
 ### 14.2 增量更新
 
@@ -1442,14 +1448,14 @@ function computeDelta(
   oldNodes: AccessibilityNode[],
   newNodes: AccessibilityNode[]
 ): { added: AccessibilityNode[]; removed: AccessibilityNode[]; changed: AccessibilityNode[] } {
-  const oldRefs = new Set(oldNodes.map(n => n.ref))
-  const newRefs = new Set(newNodes.map(n => n.ref))
+  const oldRefs = new Set(oldNodes.map((n) => n.ref))
+  const newRefs = new Set(newNodes.map((n) => n.ref))
 
   return {
-    added: newNodes.filter(n => !oldRefs.has(n.ref)),
-    removed: oldNodes.filter(n => !newRefs.has(n.ref)),
-    changed: oldNodes.filter(old => {
-      const newOne = newNodes.find(n => n.ref === old.ref)
+    added: newNodes.filter((n) => !oldRefs.has(n.ref)),
+    removed: oldNodes.filter((n) => !newRefs.has(n.ref)),
+    changed: oldNodes.filter((old) => {
+      const newOne = newNodes.find((n) => n.ref === old.ref)
       return newOne && (old.name !== newOne.name || old.value !== newOne.value)
     }),
   }
@@ -1489,9 +1495,7 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
   return Object.fromEntries(
     Object.entries(data).map(([key, value]) => [
       key,
-      SENSITIVE_FIELDS.some(f => key.toLowerCase().includes(f))
-        ? '***MASKED***'
-        : value,
+      SENSITIVE_FIELDS.some((f) => key.toLowerCase().includes(f)) ? '***MASKED***' : value,
     ])
   )
 }
@@ -1502,6 +1506,7 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 ## 16. 实施计划
 
 ### Phase 1: 核心基础设施（优先级最高）
+
 - [ ] 创建 `src/content/dom-perception.ts`（包含完整的 Accessibility Tree 采集逻辑）
 - [ ] 创建 `src/content/messages.ts`
 - [ ] 创建 `src/content/index.ts`
@@ -1510,6 +1515,7 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 - [ ] 测试小红书页面扫描（验证 tree 长度 > 0）
 
 ### Phase 2: Service Worker 集成
+
 - [ ] 修改 `executor.ts` 添加 `browser_*` 命令处理
 - [ ] 创建 `src/service-worker/context-cache.ts`
 - [ ] 创建 `src/types/dom.ts`
@@ -1517,12 +1523,14 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 - [ ] 测试 `browser_snapshot` 和 `browser_click` 端到端流程
 
 ### Phase 3: Agent 循环适配
+
 - [ ] 修改 `prompts.ts` 使用新的工具名和输出格式
 - [ ] 修改 `useAIEngine.ts` 适配新的 toolCall 结构
 - [ ] 统一 AI 输出格式为 `{ thought, action, args, predict, step }`
 - [ ] 端到端测试小红书登录流程
 
 ### Phase 4: 优化与完善
+
 - [ ] 实现截图功能
 - [ ] 实现控制台消息和网络请求获取
 - [ ] 性能优化和 Token 压缩
@@ -1533,23 +1541,29 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 ## 17. 已知问题与解决方案
 
 ### 问题 1：当前 AI 输出 `browser_type` 但 executor 不识别
+
 **根因**：executor.ts 的 switch 语句没有 `browser_*` case
 **解决**：在 executor.ts 中添加所有 `browser_*` 命令的 case
 
 ### 问题 2：Content Script 不存在
+
 **根因**：`src/content/` 目录未创建，manifest.json 未配置 content_scripts
 **解决**：按 Phase 1 计划创建所有文件并更新配置
 
 ### 问题 3：DOM 遍历提前终止
+
 **根因**：原代码在非交互元素处 `return`，导致整个子树被跳过
 **解决**：已在 dom-perception.ts 中修复，子元素遍历在交互判断之前
 
 ### 问题 4：Ref 查找使用不存在的 `data-ref` 属性
+
 **根因**：dom-perception.ts 没往 DOM 写 `data-ref`，但查找逻辑用了它
 **解决**：改用 XPath 查找，通过 `node.xpath` 定位元素
 
 ### 问题 5：AI 输出格式与代码解析逻辑不匹配（关键）
+
 **根因**：
+
 - 当前 `useAIEngine.ts:554-565` 期望 AI 输出 `{ action: 'exec_tool', toolCall: { name, args } }`
 - 当前 `types/ai.ts:30` 定义的 action 类型是 `'exec_tool' | 'execute' | 'done' | ...`
 - 文档新提示词要求 AI 输出 `{ action: 'browser_click', args: { ref } }`
@@ -1558,6 +1572,7 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 **最终决策：采用方案 B（扁平格式，符合 MCP 标准）**
 
 选择理由：
+
 1. **标准化** - 与 Playwright MCP、Claude Computer Use 等业界标准一致
 2. **代码更简洁** - AI 直接说"我要做什么"，不需要理解包装结构
 3. **长期维护成本更低** - 未来集成其他 MCP 工具无需适配层
@@ -1566,46 +1581,71 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 **完整改动清单**：
 
 #### 1. `types/ai.ts` - 修改 AIResponse 类型
+
 ```typescript
 export interface AIResponse {
   thought?: string
   action:
-    | 'browser_snapshot' | 'browser_click' | 'browser_type' | 'browser_select_option'
-    | 'browser_hover' | 'browser_press_key' | 'browser_check' | 'browser_uncheck'
-    | 'browser_fill_form' | 'browser_wait_for' | 'browser_take_screenshot'
-    | 'browser_navigate' | 'browser_navigate_back' | 'browser_navigate_forward'
-    | 'browser_reload' | 'browser_tab_list' | 'browser_tab_new' | 'browser_tab_select'
+    | 'browser_snapshot'
+    | 'browser_click'
+    | 'browser_type'
+    | 'browser_select_option'
+    | 'browser_hover'
+    | 'browser_press_key'
+    | 'browser_check'
+    | 'browser_uncheck'
+    | 'browser_fill_form'
+    | 'browser_wait_for'
+    | 'browser_take_screenshot'
+    | 'browser_navigate'
+    | 'browser_navigate_back'
+    | 'browser_navigate_forward'
+    | 'browser_reload'
+    | 'browser_tab_list'
+    | 'browser_tab_new'
+    | 'browser_tab_select'
     | 'browser_tab_close'
-    | 'done' | 'ask' | 'scan' | 'chat' | 'exec_plan' | 'askUserResponse'
-  args?: Record<string, unknown>   // 新增：扁平化参数
+    | 'done'
+    | 'ask'
+    | 'scan'
+    | 'chat'
+    | 'exec_plan'
+    | 'askUserResponse'
+  args?: Record<string, unknown> // 新增：扁平化参数
   plan?: string
   predict?: string
   reply?: string
   content?: string
-  step?: number                    // 新增：步骤序号
+  step?: number // 新增：步骤序号
   // ... exec_plan 相关字段保持不变
 }
 ```
 
 #### 2. `prompts.ts` - 更新输出格式说明
+
 将输出格式从：
+
 ```json
 { "action": "exec_tool", "toolCall": { "name": "...", "args": {...} } }
 ```
+
 改为：
+
 ```json
 { "action": "browser_click", "args": { "ref": "e6" }, "predict": "..." }
 ```
 
 #### 3. `useAIEngine.ts` - 适配扁平格式解析（核心改动）
+
 关键替换逻辑（约 15 行）：
+
 ```typescript
 // 原代码（line 564-565）
 const toolCall = json.toolCall
 const toolName = toolCall.name
 
 // 新代码
-const toolName = json.action  // action 本身就是工具名
+const toolName = json.action // action 本身就是工具名
 const toolArgs = json.args || {}
 
 // 执行
@@ -1621,18 +1661,22 @@ if (toolName === 'chat') {
 **注意**：`exec_plan`、`scan` 等非 browser 命令的解析逻辑也需要保留兼容。
 
 ### 问题 6：`executeCommand` 函数不存在于 Service Worker
+
 **根因**：`useAIEngine.ts:825` 定义了本地 `executeCommand` 函数，通过 `chrome.runtime.sendMessage` 调用 Service Worker
 **解决**：确认 `service-worker/index.ts:45` 已经正确接收并分发消息，无需额外修改
 
 ### 问题 7：vite.config.ts 缺少 Content Script 构建入口
+
 **根因**：`vite.config.ts:119-124` 只有 `sidepanel` 和 `service-worker` 两个入口
 **解决**：按文档第 12.2 节添加 `content` 入口
 
 ### 问题 8：Manifest 缺少 Content Script 配置
+
 **根因**：`manifest.json` 没有 `content_scripts` 字段
 **解决**：按文档第 12.1 节添加 content_scripts 配置
 
 ### 问题 9：`traverseNode` 闭包作用域问题
+
 **根因**：文档第 4.3 节的 `traverseNode` 函数引用了 `options?.maxElements`，但 `options` 是 `captureAccessibilityTree` 的参数，在 `traverseNode` 闭包中无法直接访问
 **解决**：在 `captureAccessibilityTree` 中提取 `maxElements` 到局部变量，传入 `traverseNode` 或通过闭包访问
 
@@ -1653,17 +1697,20 @@ export function captureAccessibilityTree(options: {...}): PageSnapshot {
 ## 18. 参考资料
 
 ### 官方文档
+
 - [Playwright MCP 官方文档](https://playwright.dev/mcp)
 - [Model Context Protocol 规范](https://modelcontextprotocol.io)
 - [Playwright Accessibility API](https://playwright.dev/docs/accessibility)
 - [Chrome Extensions API](https://developer.chrome.com/docs/extensions/reference)
 
 ### 开源项目
+
 - [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp) - 官方 MCP 服务器
 - [Browserbase/stagehand](https://github.com/browserbase/stagehand) - TypeScript 自动化框架
 - [browser-use/browser-use](https://github.com/browser-use/browser-use) - Python Agent 框架
 
 ### 行业文章
+
 - [Playwright MCP Complete Guide (2026)](https://mcp.directory/blog/playwright-browser-mcp-guide-2026)
 - [Browser Use vs Stagehand vs Playwright MCP](https://fp8.co/articles/Browser-Use-vs-Stagehand-vs-Playwright-MCP-AI-Agent-Browser-Automation)
 - [How We Made Our AI Browser Agent Stop Clicking the Wrong Button](https://dev.to/omidseyfan/how-we-made-our-ai-browser-agent-stop-clicking-the-wrong-button-3kkl)

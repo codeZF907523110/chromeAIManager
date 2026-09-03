@@ -65,12 +65,21 @@ declare global {
       getContexts(options: any): Promise<any[]>
       getURL(path: string): string
       getManifest(): { version: string }
+      id: string
     }
     tabs: {
       query(query: any): Promise<any[]>
       sendMessage(tabId: number, message: any): Promise<any>
       get(tabId: number): Promise<any>
       update(tabId: number, updateInfo: any): Promise<any>
+      highlight(options: any): Promise<any>
+      goBack(tabId: number): Promise<void>
+      goForward(tabId: number): Promise<void>
+      captureVisibleTab(windowId?: number, options?: any): Promise<string>
+      getZoom(tabId: number): Promise<number>
+      setZoom(tabId: number, zoomFactor: number): Promise<void>
+      getZoomSettings(tabId: number): Promise<any>
+      setZoomSettings(tabId: number, settings: any): Promise<void>
       create(createProps: any): Promise<any>
       remove(tabIds: number | number[]): Promise<number | number[]>
       move(tabIds: number[], options: any): Promise<number[]>
@@ -81,6 +90,9 @@ declare global {
       setZoom(tabId: number, zoomFactor: number): Promise<void>
       getZoomSettings(tabId: number): Promise<any>
       setZoomSettings(tabId: number, settings: any): Promise<void>
+      highlight(options: any): Promise<any>
+      goBack(tabId: number): Promise<void>
+      goForward(tabId: number): Promise<void>
       reload(tabId?: number, reloadProperties?: any): Promise<void>
       duplicate(tabId: number): Promise<any>
       discard(tabId: number): Promise<any>
@@ -91,8 +103,10 @@ declare global {
       update(groupId: number, updateProperties: any): Promise<any>
     }
     windows: {
+      get(windowId: number, options?: any): Promise<any>
       getCurrent(options?: any): Promise<any>
       getLastFocused(options?: any): Promise<any>
+      remove(windowId: number): Promise<void>
       getAll(options?: any): Promise<any[]>
       create(createProps?: any): Promise<any>
       update(windowId: number, updateInfo: any): Promise<any>
@@ -100,6 +114,8 @@ declare global {
     bookmarks: {
       getTree(): Promise<any[]>
       getChildren(id: string): Promise<any[]>
+      getSubTree(id: string): Promise<any[]>
+      getRecent(numberOfItems: number): Promise<any[]>
       search(query: string | object): Promise<any[]>
       get(id: string): Promise<any[]>
       create(bookmark: any): Promise<any>
@@ -109,6 +125,7 @@ declare global {
     }
     history: {
       search(query: any): Promise<any[]>
+      getVisits(details: any): Promise<any[]>
       deleteRange(range: any): Promise<void>
       deleteAll(): Promise<void>
       deleteUrl(url: string): Promise<void>
@@ -170,6 +187,8 @@ declare global {
       open(downloadId: number): Promise<void>
       removeFile(downloadId: number): Promise<void>
       search(query: any): Promise<any[]>
+      pause(downloadId: number): Promise<void>
+      resume(downloadId: number): Promise<void>
       cancel(downloadId: number): Promise<void>
       erase(query: any): Promise<number>
       show(downloadId: number): Promise<void>
@@ -186,6 +205,7 @@ declare global {
     notifications: {
       create(options: any): Promise<string>
       clear(notificationId: string): Promise<boolean>
+      update(notificationId: string, options: any): Promise<boolean>
       getAll(): Promise<object>
       onclick: { addListener(callback: (notificationId: string) => void): void }
     }
@@ -229,9 +249,13 @@ declare global {
         setting: any
         scope?: 'regular' | 'incognito_session_only' | 'incognito_persistent'
       }): Promise<void>
+      clear(details: any): Promise<void>
     }
     cookies: {
+      get(details: any): Promise<any>
+      set(details: any): Promise<any>
       getAll(filter: any): Promise<any[]>
+      getAllCookieStores(): Promise<any[]>
       remove(details: any): Promise<void>
     }
     bookmarks: {
@@ -251,11 +275,28 @@ declare global {
     }
     sessions: {
       getRecentlyClosed(options?: any): Promise<any[]>
+      getDevices(): Promise<any[]>
       restore(sessionId: string): Promise<any>
     }
   }
 
   namespace chrome {
+    namespace tabGroups {
+      type ColorEnum = 'blue' | 'cyan' | 'green' | 'grey' | 'orange' | 'pink' | 'purple' | 'red'
+      interface TabGroup {
+        id: number
+        title?: string
+        color?: ColorEnum
+        collapsed?: boolean
+        windowId?: number
+      }
+      interface QueryInfo {
+        windowId?: number
+        collapsed?: boolean
+        color?: ColorEnum
+        title?: string
+      }
+    }
     namespace bookmarks {
       interface BookmarkTreeNode {
         id: string

@@ -3,13 +3,19 @@
  */
 
 export interface ExecutionResult {
-  success?: boolean
+  success: boolean
   code?: string
   message?: string
+  suggestion?: string
+  data?: unknown
+  meta?: {
+    api: string
+    namespace: string
+    durationMs?: number
+  }
   error?: string
   result?: unknown
   detail?: Record<string, unknown>
-  // 动态属性
   [key: string]: unknown
 }
 

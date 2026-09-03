@@ -91,13 +91,24 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'tabs_remove',
-    description: '关闭标签页。tabIds 为空关闭当前标签',
+    description:
+      '关闭标签页。tabIds 关闭指定标签；domain 关闭当前窗口匹配域名的所有非固定标签（可与 tabIds 组合，重复会去重）',
     dangerous: true,
     slots: {
       tabIds: {
         type: 'array',
         optional: true,
         description: '要关闭的标签 ID 数组',
+      },
+      domain: {
+        type: 'string',
+        optional: true,
+        description: '按域名过滤，仅关闭当前窗口匹配域名的非固定标签',
+      },
+      currentWindow: {
+        type: 'boolean',
+        optional: true,
+        description: 'domain 模式下仅当前窗口（默认 true）',
       },
     },
     swIntent: 'tabs_remove',
@@ -156,6 +167,18 @@ export const COMMANDS: Command[] = [
       tabIds: { type: 'number[]', description: '标签页 ID 数组' },
     },
     swIntent: 'tab_groups_ungroup_tabs',
+  },
+  {
+    intent: 'tab_groups_find_or_create_by_title',
+    description: '按指定名称查找已有标签组；不存在则创建并把目标 tab 加入',
+    dangerous: false,
+    slots: {
+      title: { type: 'string', description: '标签组名称' },
+      tabIds: { type: 'number[]', description: '要加入的标签页 ID 数组' },
+      windowId: { type: 'number', optional: true, description: '目标窗口 ID' },
+      color: { type: 'string', optional: true, description: '标签组颜色' },
+    },
+    swIntent: 'tab_groups_find_or_create_by_title',
   },
   {
     intent: 'tabs_group_by_domain',
@@ -342,14 +365,14 @@ export const COMMANDS: Command[] = [
   // ==================== HISTORY (2) ====================
   {
     intent: 'history_search',
-    description: '搜索浏览历史',
+    description: '搜索浏览历史（默认展示今天全部；带 query 按关键词过滤）',
     dangerous: false,
     slots: {
-      query: { type: 'string', description: '搜索关键词' },
+      query: { type: 'string', optional: true, description: '搜索关键词；缺省时不过滤' },
       timeRange: {
         type: 'string',
         optional: true,
-        description: 'today | yesterday | week | month | all',
+        description: 'today（默认） | yesterday | week | month | all',
       },
       maxResults: {
         type: 'number',
@@ -358,6 +381,25 @@ export const COMMANDS: Command[] = [
       },
     },
     swIntent: 'history_search',
+  },
+  {
+    intent: 'history_search_min',
+    description: '历史搜索但返回最小化 URL（去除 query/fragment）',
+    dangerous: false,
+    slots: {
+      query: { type: 'string', optional: true, description: '搜索关键词' },
+      timeRange: {
+        type: 'string',
+        optional: true,
+        description: 'today | yesterday | week | month | all',
+      },
+      maxResults: {
+        type: 'number',
+        optional: true,
+        description: '最大返回数量 1-1000',
+      },
+    },
+    swIntent: 'history_search_min',
   },
   {
     intent: 'history_remove',
@@ -525,13 +567,6 @@ export const COMMANDS: Command[] = [
     },
     swIntent: 'zoom',
   },
-  {
-    intent: 'downloads_open',
-    description: '打开下载管理页面',
-    dangerous: false,
-    slots: {},
-    swIntent: 'downloads_open',
-  },
 
   // ==================== THEME (2) ====================
   {
@@ -628,6 +663,25 @@ export const COMMANDS: Command[] = [
     },
     swIntent: 'cookies_remove',
   },
+  {
+    intent: 'cookies_set',
+    description: '为指定 URL 设置 Cookie；value 不进入返回值',
+    dangerous: true,
+    slots: {
+      url: { type: 'string', description: 'Cookie 所属 URL' },
+      name: { type: 'string', description: 'Cookie 名称' },
+      value: { type: 'string', description: 'Cookie 值（不回显到结果）' },
+      domain: { type: 'string', optional: true, description: '可选显式域名' },
+      path: { type: 'string', optional: true, description: '路径' },
+      secure: { type: 'boolean', optional: true, description: '是否仅 HTTPS' },
+      httpOnly: { type: 'boolean', optional: true, description: '是否禁止 JS 访问' },
+      sameSite: { type: 'string', optional: true, description: 'no_restriction|lax|strict' },
+      storeId: { type: 'string', optional: true, description: 'Cookie Store ID' },
+      expirationDate: { type: 'number', optional: true, description: '过期时间' },
+      partitionKey: { type: 'string', optional: true, description: '分区键' },
+    },
+    swIntent: 'cookies_set',
+  },
 
   // ==================== TOP_SITES (1) ====================
   {
@@ -693,7 +747,38 @@ export const COMMANDS: Command[] = [
     swIntent: 'permissions_update',
   },
 
-  // ==================== STORAGE (3) ====================
+  {
+    intent: 'content_settings_get',
+    description: '查询指定网站内容设置',
+    dangerous: false,
+    slots: {
+      primaryPattern: { type: 'string', description: '网站匹配模式' },
+      resourceId: { type: 'string', description: '资源类型' },
+    },
+    swIntent: 'content_settings_get',
+  },
+  {
+    intent: 'content_settings_set',
+    description: '设置指定网站内容权限',
+    dangerous: true,
+    slots: {
+      primaryPattern: { type: 'string', description: '网站匹配模式' },
+      resourceId: { type: 'string', description: '资源类型' },
+      setting: { type: 'string', description: 'allow | block | ask | default' },
+    },
+    swIntent: 'content_settings_set',
+  },
+  {
+    intent: 'content_settings_clear',
+    description: '清除指定网站内容设置',
+    dangerous: true,
+    slots: {
+      primaryPattern: { type: 'string', description: '网站匹配模式' },
+      resourceId: { type: 'string', optional: true, description: '资源类型' },
+    },
+    swIntent: 'content_settings_clear',
+  },
+
   {
     intent: 'storage_get',
     description: '读取扩展存储键值（无 key 列出全部）',
@@ -867,6 +952,8 @@ export const COMMANDS: Command[] = [
     requiresPrecompute: true,
     slots: {
       query: { type: 'string', description: '搜索关键词' },
+      tabId: { type: 'number', optional: true, description: '预计算的 tabId（来自 precompute）' },
+      active: { type: 'boolean', optional: true, description: '是否激活' },
     },
     swIntent: 'tabs_update',
   },
@@ -878,6 +965,7 @@ export const COMMANDS: Command[] = [
     requiresPrecompute: true,
     slots: {
       url: { type: 'string', optional: true, description: '仅去重指定 URL' },
+      tabIds: { type: 'number[]', optional: true, description: '预勾选的 tabIds（来自确认卡）' },
     },
     swIntent: 'tabs_remove',
   },
@@ -888,7 +976,8 @@ export const COMMANDS: Command[] = [
     aiHidden: true,
     requiresPrecompute: true,
     slots: {
-      query: { type: 'string', description: 'URL 子串或关键词（匹配 url/title）' },
+      query: { type: 'string', optional: true, description: 'URL 子串或关键词（匹配 url/title）' },
+      tabIds: { type: 'number[]', optional: true, description: '预勾选的 tabIds（来自确认卡）' },
     },
     swIntent: 'tabs_remove_by_url',
   },
@@ -955,15 +1044,15 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'search_history',
-    description: '搜索浏览历史',
+    description: '搜索浏览历史（默认展示今天全部；带 query 按关键词过滤）',
     dangerous: false,
     aiHidden: true,
     slots: {
-      query: { type: 'string', description: '搜索关键词' },
+      query: { type: 'string', optional: true, description: '搜索关键词；缺省时不过滤' },
       timeRange: {
         type: 'string',
         optional: true,
-        description: 'today | week | month',
+        description: 'today（默认） | yesterday | week | month | all',
       },
     },
     swIntent: 'history_search',
@@ -1123,6 +1212,11 @@ export const COMMANDS: Command[] = [
     requiresPrecompute: true,
     slots: {
       query: { type: 'string', description: '书签关键词' },
+      selectedIds: {
+        type: 'string[]',
+        optional: true,
+        description: '从确认卡勾选后回传的书签 ID 列表',
+      },
     },
     swIntent: 'bookmarks_remove_node',
   },

@@ -52,7 +52,78 @@ export async function observeTree(payload: Record<string, unknown>): Promise<Exe
   return { success: true, nodes: results, observed: results.length }
 }
 
-/** 按 nodeId 移动书签节点，支持 beforeId 转换为目标父节点和索引。 */
+/** 按 nodeId 获取单个书签节点。 */
+export async function get(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const nodeId = parseNodeId(payload.nodeId)
+  if (!nodeId) return invalidNodeId()
+  const nodes = await chrome.bookmarks.get(nodeId)
+  return { success: true, node: nodes[0] ?? null }
+}
+
+/** 获取指定书签文件夹的直接子节点；可限制返回数量。 */
+export async function getChildren(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const nodeId = parseNodeId(payload.nodeId)
+  if (!nodeId) return invalidNodeId()
+  const limit = payload.limit === undefined ? 200 : payload.limit
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 500) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'limit 必须是 1 到 500 的整数' }
+  }
+  const nodes = await chrome.bookmarks.getChildren(nodeId)
+  return { success: true, nodes: nodes.slice(0, limit), found: Math.min(nodes.length, limit) }
+}
+
+/** 获取指定节点及其完整子树。 */
+export async function getSubTree(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const nodeId = parseNodeId(payload.nodeId)
+  if (!nodeId) return invalidNodeId()
+  const nodes = await chrome.bookmarks.getSubTree(nodeId)
+  return { success: true, nodes }
+}
+
+/** 按关键词搜索书签，过滤掉文件夹并保留原生字段；maxResults 限制结果数量。 */
+export async function search(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  if (typeof payload.query !== 'string' || !payload.query.trim()) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'query 必须是非空字符串' }
+  }
+  const maxResults = payload.maxResults === undefined ? 50 : payload.maxResults
+  if (
+    typeof maxResults !== 'number' ||
+    !Number.isInteger(maxResults) ||
+    maxResults < 1 ||
+    maxResults > 200
+  ) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'maxResults 必须是 1 到 200 的整数' }
+  }
+  const nodes = await chrome.bookmarks.search(payload.query.trim())
+  const filtered = nodes.filter((node) => !!node.url).slice(0, maxResults)
+  return { success: true, nodes: filtered, found: filtered.length }
+}
+
+/** 获取最近新增的书签。 */
+export async function getRecent(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const maxResults = payload.maxResults === undefined ? 10 : payload.maxResults
+  if (
+    typeof maxResults !== 'number' ||
+    !Number.isInteger(maxResults) ||
+    maxResults < 1 ||
+    maxResults > 100
+  ) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'maxResults 必须是 1 到 100 的整数' }
+  }
+  const nodes = await chrome.bookmarks.getRecent(maxResults)
+  return { success: true, nodes, found: nodes.length }
+}
+
+/** 解析并校验书签节点 ID。 */
+function parseNodeId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+/** 返回统一的无效书签节点 ID 错误。 */
+function invalidNodeId(): ExecutionResult {
+  return { success: false, code: 'INVALID_PARAMS', message: 'nodeId 必须是非空字符串' }
+}
+
 export async function moveNode(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const nodeId = typeof payload.nodeId === 'string' ? payload.nodeId.trim() : ''
   if (!nodeId) {
@@ -195,28 +266,50 @@ export async function openNode(payload: Record<string, unknown>): Promise<Execut
  */
 export async function removeNode(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const nodeId = payload.nodeId as string | undefined
-  const selectedIds = Array.isArray(payload.selectedIds) ? (payload.selectedIds as unknown[]) : []
+  const selectedIds = Array.isArray(payload.selectedIds)
+    ? (payload.selectedIds as unknown[]).filter((id): id is string => typeof id === 'string')
+    : []
+  const query = typeof payload.query === 'string' ? payload.query.trim() : ''
 
+  // selectedIds 优先：只删除勾选的书签
   if (selectedIds.length > 0) {
-    const idsToRemove = selectedIds
-      .map((id) => (typeof id === 'number' ? id : Number(id)))
-      .filter((id): id is number => Number.isFinite(id) && id > 0)
-      .map((id) => String(id))
-    for (const id of idsToRemove) {
+    let removed = 0
+    for (const id of selectedIds) {
       try {
         await chrome.bookmarks.remove(id)
+        removed++
       } catch (e: unknown) {
         console.warn('[removeBookmark] 删除失败:', id, e)
       }
     }
-    if (!idsToRemove.length) {
+    return { success: true, removed }
+  }
+
+  // query 模式：按 URL 或标题搜索并删除匹配的书签
+  if (query) {
+    try {
+      const results = await chrome.bookmarks.search(query)
+      if (results.length === 0) {
+        return { success: true, removed: 0, message: '没有找到匹配的书签' }
+      }
+      // 删除所有匹配的书签
+      const idsToRemove: string[] = []
+      for (const node of results) {
+        try {
+          await chrome.bookmarks.remove(node.id)
+          idsToRemove.push(node.id)
+        } catch (e: unknown) {
+          console.warn('[removeBookmark] 删除失败:', node.id, e)
+        }
+      }
+      return { success: true, removed: idsToRemove.length }
+    } catch (e: unknown) {
       return {
         success: false,
-        code: 'INVALID_PARAMS',
-        message: '所选项目没有有效的 id',
+        code: 'BOOKMARK_SEARCH_FAILED',
+        message: `搜索书签失败: ${e instanceof Error ? e.message : String(e)}`,
       }
     }
-    return { success: true, removed: idsToRemove.length }
   }
 
   if (!nodeId) {

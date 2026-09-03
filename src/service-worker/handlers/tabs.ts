@@ -4,6 +4,7 @@
  */
 
 import { findDuplicateGroups } from '../utils/tab-matcher'
+import { query as queryTabGroups } from './tab-groups'
 import type { ExecutionResult } from '../../types/execution'
 
 /** 查询标签列表（按 query / domain / currentWindow / pinned / muted / discarded 过滤） */
@@ -47,15 +48,62 @@ export async function observe(payload: Record<string, unknown>): Promise<Executi
   return { success: true, tabs: filtered, observed: filtered.length }
 }
 
+/** 获取单个标签页的真实状态。 */
+export async function get(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const tabId = payload.tabId
+  if (typeof tabId !== 'number' || !Number.isInteger(tabId) || tabId < 0) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'tabId 必须是非负整数' }
+  }
+  const tab = await chrome.tabs.get(tabId)
+  return { success: true, tab }
+}
+
 /** 创建新标签 */
 export async function create(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const opts: chrome.tabs.CreateProperties = {}
-  if (payload.url) opts.url = payload.url as string
-  if (payload.active !== undefined) opts.active = payload.active as boolean
-  if (payload.windowId) opts.windowId = payload.windowId as number
-  if (payload.index !== undefined) opts.index = payload.index as number
-  const tab = await chrome.tabs.create(opts)
+  if (payload.url !== undefined) {
+    if (typeof payload.url !== 'string' || !isWebUrl(payload.url)) {
+      return { success: false, code: 'INVALID_PARAMS', message: 'url 必须是合法的 http/https URL' }
+    }
+    opts.url = payload.url
+  }
+  if (payload.active !== undefined && typeof payload.active !== 'boolean') {
+    return { success: false, code: 'INVALID_PARAMS', message: 'active 必须是 boolean' }
+  }
+  if (payload.active !== undefined) opts.active = payload.active
+  if (payload.windowId !== undefined) {
+    if (
+      typeof payload.windowId !== 'number' ||
+      !Number.isInteger(payload.windowId) ||
+      payload.windowId < 0
+    ) {
+      return { success: false, code: 'INVALID_PARAMS', message: 'windowId 必须是非负整数' }
+    }
+    opts.windowId = payload.windowId
+  }
+  if (payload.index !== undefined) {
+    if (
+      typeof payload.index !== 'number' ||
+      !Number.isInteger(payload.index) ||
+      payload.index < 0
+    ) {
+      return { success: false, code: 'INVALID_PARAMS', message: 'index 必须是非负整数' }
+    }
+    opts.index = payload.index
+  }
+  const created = await chrome.tabs.create(opts)
+  const tab = created.id === undefined ? created : await chrome.tabs.get(created.id)
   return { success: true, tab }
+}
+
+/** 校验可导航的网页 URL。 */
+function isWebUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname
+  } catch {
+    return false
+  }
 }
 
 /** 重新加载指定或当前活动标签页。 */
@@ -126,56 +174,137 @@ async function resolveTabId(value: unknown): Promise<number | null> {
 /** 更新单个或多个标签属性（url / active / muted / pinned / discarded）。
  * 数组 payload 用于斜杠命令的批量操作，单 tab payload 保持原有兼容行为。
  */
+
+/** 高亮指定标签页。 */
+export async function highlight(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const tabIds = normalizeTabIds(payload.tabIds)
+  if (!tabIds.length)
+    return { success: false, code: 'INVALID_PARAMS', message: 'tabIds 必须是非空数字数组' }
+  const windowId = payload.windowId
+  if (
+    windowId !== undefined &&
+    (typeof windowId !== 'number' || !Number.isInteger(windowId) || windowId < 0)
+  ) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'windowId 必须是非负整数' }
+  }
+  const window = await chrome.tabs.highlight({
+    tabs: tabIds,
+    windowId: windowId as number | undefined,
+  })
+  return { success: true, window }
+}
+
+/** 后退到指定标签页的上一页，并回读标签状态。 */
+export async function goBack(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  return navigateHistory(payload, 'back')
+}
+
+/** 前进到指定标签页的下一页，并回读标签状态。 */
+export async function goForward(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  return navigateHistory(payload, 'forward')
+}
+
+/** 执行历史导航并返回最新标签页。 */
+async function navigateHistory(
+  payload: Record<string, unknown>,
+  direction: 'back' | 'forward'
+): Promise<ExecutionResult> {
+  const tabId = await resolveTabId(payload.tabId)
+  if (tabId === null)
+    return { success: false, code: 'INVALID_PARAMS', message: 'tabId 无效或未找到活动标签' }
+  await chrome.tabs[direction === 'back' ? 'goBack' : 'goForward'](tabId)
+  return { success: true, direction, tab: await chrome.tabs.get(tabId) }
+}
+
+/** 截取目标窗口当前可见标签页。 */
+export async function captureVisibleTab(
+  payload: Record<string, unknown>
+): Promise<ExecutionResult> {
+  const windowId = payload.windowId
+  if (
+    windowId !== undefined &&
+    (typeof windowId !== 'number' || !Number.isInteger(windowId) || windowId < 0)
+  ) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'windowId 必须是非负整数' }
+  }
+  const image = await chrome.tabs.captureVisibleTab(windowId as number | undefined, {
+    format: 'png',
+  })
+  return { success: true, image, windowId }
+}
+
+/** 获取指定标签页的缩放比例。 */
+export async function getZoom(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const tabId = parseExplicitTabId(payload.tabId)
+  if (tabId === null)
+    return { success: false, code: 'INVALID_PARAMS', message: 'tabId 必须是非负整数' }
+  return { success: true, tabId, zoomFactor: await chrome.tabs.getZoom(tabId) }
+}
+
+/** 设置标签页缩放比例并回读。 */
+export async function setZoom(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const tabId = parseExplicitTabId(payload.tabId)
+  const zoomFactor = payload.zoomFactor
+  if (
+    tabId === null ||
+    typeof zoomFactor !== 'number' ||
+    !Number.isFinite(zoomFactor) ||
+    zoomFactor <= 0
+  ) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'tabId 或 zoomFactor 无效' }
+  }
+  await chrome.tabs.setZoom(tabId, zoomFactor)
+  return { success: true, tabId, zoomFactor: await chrome.tabs.getZoom(tabId) }
+}
+
+/** 获取标签页缩放设置。 */
+export async function getZoomSettings(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const tabId = parseExplicitTabId(payload.tabId)
+  if (tabId === null)
+    return { success: false, code: 'INVALID_PARAMS', message: 'tabId 必须是非负整数' }
+  return { success: true, tabId, settings: await chrome.tabs.getZoomSettings(tabId) }
+}
+
+/** 设置标签页缩放设置并回读。 */
+export async function setZoomSettings(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const tabId = parseExplicitTabId(payload.tabId)
+  if (tabId === null || !isPlainObject(payload.settings)) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'tabId 或 settings 无效' }
+  }
+  await chrome.tabs.setZoomSettings(tabId, payload.settings)
+  return { success: true, tabId, settings: await chrome.tabs.getZoomSettings(tabId) }
+}
+
+/** 解析显式 tabId，拒绝字符串和非法数字。 */
+function parseExplicitTabId(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
+}
+
+/** 判断值是否为普通对象。 */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
 export async function update(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tabIds = normalizeTabIds(payload.tabIds)
   if (Array.isArray(payload.tabIds)) {
-    if (tabIds.length === 0) {
+    if (!tabIds.length)
       return { success: false, code: 'INVALID_PARAMS', message: 'tabIds 必须是非空数字数组' }
-    }
     const updateProps = buildUpdateProps(payload)
-    const shouldReload = payload.reload === true
-    if (Object.keys(updateProps).length === 0 && !shouldReload && payload.discarded !== true) {
-      return { success: false, code: 'INVALID_PARAMS', message: '至少提供一个要更新的标签属性' }
-    }
     const results = await Promise.allSettled(
-      tabIds.map(async (id) => {
-        if (shouldReload) await chrome.tabs.reload(id)
-        if (payload.discarded === true && Object.keys(updateProps).length === 0) {
-          await chrome.tabs.discard(id)
-          return null
-        }
-        return Object.keys(updateProps).length > 0 ? chrome.tabs.update(id, updateProps) : null
-      })
+      tabIds.map((id) => chrome.tabs.update(id, updateProps))
     )
-    const updated = results.filter((result) => result.status === 'fulfilled').length
     return {
-      success: updated === tabIds.length,
-      code: updated === tabIds.length ? undefined : 'PARTIAL_SUCCESS',
-      message: `已处理 ${updated} 个标签页`,
-      updated,
-      failed: tabIds.length - updated,
-      reloaded: shouldReload,
+      success: results.every((result) => result.status === 'fulfilled'),
+      updated: tabIds.length,
     }
   }
-
-  let tabId = payload.tabId as number | undefined
-  if (tabId === undefined) {
-    const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (active?.id === undefined)
-      return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
-    tabId = active.id
-  }
-  const tabIdValue = tabId!
-  if (payload.reload === true) await chrome.tabs.reload(tabIdValue)
-  const updateProps = buildUpdateProps(payload)
-  if (Object.keys(updateProps).length === 0 && payload.reload !== true) {
-    return { success: false, code: 'INVALID_PARAMS', message: '至少提供一个要更新的标签属性' }
-  }
-  const tab =
-    Object.keys(updateProps).length > 0
-      ? await chrome.tabs.update(tabIdValue, updateProps)
-      : await chrome.tabs.get(tabIdValue)
-  return { success: true, tab, reloaded: payload.reload === true }
+  const tabId = await resolveTabId(payload.tabId)
+  if (tabId === null) return { success: false, code: 'NO_TABS_FOUND', message: '未找到目标标签' }
+  const tab = await chrome.tabs.update(tabId, buildUpdateProps(payload))
+  return { success: true, tab }
 }
 
 /** 从兼容 payload 中提取 tabs.update 支持的字段。 */
@@ -201,19 +330,29 @@ function normalizeTabIds(value: unknown): number[] {
 
 /** 移动标签（按 index 位置）。空 tabIds 移动当前活动标签；倒序逐个 move 以实现"按目标顺序整体重排"。 */
 export async function move(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const tabIds = (payload.tabIds as unknown[])
-    ? (payload.tabIds as unknown[])
-        .map((id: unknown) => Number(id))
-        .filter((id: number) => !isNaN(id))
-    : undefined
-  const index = Number(payload.index)
-  if (!Number.isInteger(index) || index < 0) {
+  const requestedIds = payload.tabIds
+  if (requestedIds !== undefined && !Array.isArray(requestedIds)) {
+    return { success: false, code: 'INVALID_PARAMS', message: 'tabIds 必须是数组' }
+  }
+  const tabIds = requestedIds === undefined ? undefined : normalizeTabIds(requestedIds)
+  if (
+    requestedIds !== undefined &&
+    (!tabIds?.length || new Set(requestedIds).size !== requestedIds.length)
+  ) {
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: 'tabIds 必须是非空且不重复的数字数组',
+    }
+  }
+  const index = payload.index
+  if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
     return { success: false, code: 'INVALID_PARAMS', message: 'index 必须是非负整数' }
   }
 
   if (!tabIds?.length) {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!active?.id)
+    if (active?.id === undefined)
       return {
         success: false,
         code: 'NO_TABS_FOUND',
@@ -230,11 +369,11 @@ export async function move(payload: Record<string, unknown>): Promise<ExecutionR
   }
 
   try {
-    const reversed = [...tabIds].reverse()
+    const reversed = [...(tabIds ?? [])].reverse()
     for (const id of reversed) {
       await chrome.tabs.move([id], { index })
     }
-    return { success: true, moved: reversed.length, tabIds, newIndex: index }
+    return { success: true, moved: reversed.length, tabIds: tabIds ?? [], newIndex: index }
   } catch (err: unknown) {
     const e = err as { message?: string }
     return {
@@ -246,18 +385,77 @@ export async function move(payload: Record<string, unknown>): Promise<ExecutionR
   }
 }
 
-/** 关闭标签（dangerous — 由 dispatchTool 统一拦截） */
-export async function remove(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const tabIds = payload.tabIds as number[] | undefined
-  if (!tabIds?.length) {
-    const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (active?.id === undefined)
-      return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
-    await chrome.tabs.remove(active.id)
-    return { success: true, removed: 1 }
+/** 解析 URL 的 hostname（去除 www. 前缀，小写）；URL 无效返回空串。 */
+function normalizedHostname(url: string | undefined): string {
+  if (!url) return ''
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, '')
+  } catch {
+    return ''
   }
-  await chrome.tabs.remove(tabIds)
-  return { success: true, removed: tabIds.length }
+}
+
+/** 判断标签是否匹配指定 domain（域名完全相等或为子域名）。 */
+function tabMatchesDomain(tab: chrome.tabs.Tab, domain: string): boolean {
+  const d = domain.toLowerCase().replace(/^www\./, '')
+  const hostname = normalizedHostname(tab.url)
+  if (!d || !hostname) return false
+  const matched = hostname === d || hostname.endsWith(`.${d}`)
+  console.log(
+    `[AI管家] tabMatchesDomain tab=${tab.id} url=${tab.url} hostname=${hostname} domain=${d} matched=${matched}`
+  )
+  return matched
+}
+
+/** 关闭标签（dangerous — 由 dispatchTool 统一拦截）。
+ *
+ * 支持两种入参模式：
+ *   1) tabIds 数组 → 仅关闭指定标签（不做 domain 重新匹配）
+ *   2) domain（可选 currentWindow，默认 true）→ 关闭当前窗口匹配域名的非固定标签
+ *   3) tabIds + domain → 仍以 tabIds 为准（domain 仅作语义提示）
+ *
+ * 设计：传入 tabIds 时表示"用户已勾选/已确认"，必须严格按 tabIds 执行，
+ * 不应再基于 domain 二次扩展，避免"只勾了一个却关了全部"。
+ */
+export async function remove(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  console.log(`[AI管家] tabs.remove enter payload=${JSON.stringify(payload)}`)
+  const explicitTabIds = normalizeTabIds(payload.tabIds)
+  console.log(`[AI管家] tabs.remove explicit tabIds=${JSON.stringify(explicitTabIds)}`)
+
+  let tabIds = explicitTabIds
+  // 只有当调用方没有显式传 tabIds 时，才允许基于 domain 重新查询。
+  if (tabIds.length === 0 && typeof payload.domain === 'string' && payload.domain.trim()) {
+    const query: chrome.tabs.QueryOptions =
+      payload.currentWindow === false ? {} : { currentWindow: true }
+    console.log(
+      `[AI管家] tabs.remove domain mode query=${JSON.stringify(query)} domain=${payload.domain}`
+    )
+    const tabs = await chrome.tabs.query(query)
+    console.log(
+      `[AI管家] tabs.remove queried tabs total=${tabs.length}`,
+      `sample=${tabs.slice(0, 3).map((t) => `${t.id}:${(t.url || '').slice(0, 60)}`).join(',')}`
+    )
+    for (const t of tabs) {
+      if (t.id === undefined || t.pinned) continue
+      if (!tabMatchesDomain(t, payload.domain)) continue
+      tabIds.push(t.id)
+    }
+    console.log(`[AI管家] tabs.remove after merge=${JSON.stringify(tabIds)}`)
+  } else if (tabIds.length > 0 && typeof payload.domain === 'string' && payload.domain.trim()) {
+    console.log(
+      `[AI管家] tabs.remove explicit tabIds takes precedence, skip domain re-query (domain=${payload.domain})`
+    )
+  }
+
+  const uniqueIds = [...new Set(tabIds)]
+  console.log(`[AI管家] tabs.remove uniqueIds=${JSON.stringify(uniqueIds)}`)
+  if (!uniqueIds.length) {
+    console.log('[AI管家] tabs.remove no ids to close, return success with removed=0')
+    return { success: true, removed: 0, message: '没有可关闭的标签' }
+  }
+  await chrome.tabs.remove(uniqueIds)
+  console.log(`[AI管家] tabs.remove done removed=${uniqueIds.length}`)
+  return { success: true, removed: uniqueIds.length, tabIds: uniqueIds }
 }
 
 /** 按 url/title 子串模糊匹配关闭标签（dangerous）。支持前端预勾选的 tabIds。 */
@@ -299,21 +497,7 @@ export async function removeByUrl(payload: Record<string, unknown>): Promise<Exe
 
 /** 列出所有标签分组 */
 export async function observeGroups(): Promise<ExecutionResult> {
-  const tabs = await chrome.tabs.query({})
-  const groupMap = new Map<number, { color: string; title?: string; tabs: string[] }>()
-  for (const tab of tabs) {
-    if (tab.groupId !== -1) {
-      if (!groupMap.has(tab.groupId)) {
-        groupMap.set(tab.groupId, {
-          color: 'grey',
-          title: tab.title,
-          tabs: [],
-        })
-      }
-      groupMap.get(tab.groupId)!.tabs.push(tab.title || '')
-    }
-  }
-  return { success: true, groups: Array.from(groupMap.entries()).map(([id, g]) => ({ id, ...g })) }
+  return queryTabGroups({})
 }
 
 /**

@@ -5,16 +5,18 @@
  *   - 命令有对应的 markdownFactory → 生成带占位符的 markdown + components
  *   - 没注册的 → 走 fallback（纯 markdown 文本）
  *
- * 与 useAIEngine.ts 的 renderExecutionResult 是替代关系——
- * 每个命令调用对应的 xxxMarkdownBody() 即可。
+ * 与 shared/render-result.ts 的 renderExecutionResult 是替代关系——
+ * buildMarkdownBody 是 renderExecutionResult 在「有 markdownFactory」分支的调用入口。
+ * 每次新增命令时调用对应的 xxxMarkdownBody() 即可。
  */
 
 import type { MessageBody } from '../../types/message-block'
 import type { ExecutionResult } from '../../types/execution'
+import type { DataTableColumn } from '../../types'
 import TabList from '../../components/blocks/TabList.vue'
 import ActionButtonGroup from '../../components/blocks/ActionButtonGroup.vue'
 import HistoryTable from '../../components/blocks/HistoryTable.vue'
-import DataTable, { type DataTableColumn } from '../../components/blocks/DataTable.vue'
+import DataTable from '../../components/blocks/DataTable.vue'
 import { newBlockId } from '../../composables/useMarkdown'
 
 interface HistoryItem {
@@ -247,7 +249,7 @@ function tabsSearchMarkdownBody(r: ExecutionResult): MessageBody {
   }>
   const columns: DataTableColumn[] = [
     { key: 'title', title: '标题', ellipsis: 36 },
-    { key: 'url', title: 'URL', ellipsis: 48 },
+    { key: 'url', title: 'URL', ellipsis: 40 },
   ]
   return dataTableBody({
     title: `搜索结果（${tabs.length} 个匹配标签）`,
@@ -402,6 +404,7 @@ export const markdownFactories: Record<string, FactoryFn> = {
   bookmarks_observe_tree: bookmarksMarkdownBody,
   windows_observe: windowsMarkdownBody,
   storage_get: storageGetMarkdownBody,
+  storage_area_get: storageGetMarkdownBody,
 }
 
 export function buildMarkdownBody(intent: string, result: ExecutionResult): MessageBody | null {

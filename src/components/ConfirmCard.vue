@@ -12,8 +12,12 @@
           class="confirm-card-checkbox"
           @change="toggleItem(i, ($event.target as HTMLInputElement).checked)"
         />
-        <span class="primary">{{ item.primary }}</span>
-        <span class="secondary">{{ item.secondary }}</span>
+        <!-- label 优先显示（如书签的标题+URL合并） -->
+        <span v-if="item.label" class="label">{{ item.label }}</span>
+        <template v-else>
+          <span class="primary">{{ item.primary }}</span>
+          <span class="secondary">{{ item.secondary }}</span>
+        </template>
       </label>
     </div>
     <div v-if="selectableCount > 0" class="confirm-card-summary">
@@ -25,7 +29,7 @@
       <button class="btn-cancel" :disabled="loading" @click="handleCancel">取消</button>
       <button
         class="btn-confirm"
-        :disabled="loading || selectableCount > 0 && selectedCount === 0"
+        :disabled="loading || (selectableCount > 0 && selectedCount === 0)"
         @click="handleConfirm"
       >
         {{ loading ? '执行中...' : '确认执行' }}
@@ -35,19 +39,25 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * ConfirmCard — 危险操作二次确认卡
+ *
+ * 由 App.vue 直接渲染（pendingConfirm.value）。
+ * 数据来源：useSlashCommandRunner.prepareConfirmation / usePlanRunner.showConfirmCard，
+ * 都返回统一的 ConfirmCardData（types/ui.ts）。
+ */
 import { ref, computed, watch } from 'vue'
-
-interface Item {
-  primary: string
-  secondary: string
-  tabId?: number
-  selected?: boolean
-}
+import type { ConfirmCardItem } from '../types'
 
 const props = defineProps<{
   title: string
   description?: string
-  items: Item[]
+  items: ConfirmCardItem[]
+  /**
+   * 预计算的批量 tabIds（如 close_duplicate_tabs）。
+   * 存在时，点击确认直接使用此数组，不从 checkbox 收集。
+   */
+  allTabIds?: number[]
   onConfirm: (selectedTabIds: number[]) => Promise<void>
 }>()
 
@@ -58,8 +68,10 @@ const emit = defineEmits<{
 const loading = ref(false)
 
 // 本地维护 items 选中状态，避免直接 mutate props
-const localItems = ref<Item[]>(props.items.map((it) => ({ ...it })))
-const selectableCount = computed(() => localItems.value.filter((it) => it.tabId !== undefined).length)
+const localItems = ref<ConfirmCardItem[]>(props.items.map((it) => ({ ...it })))
+const selectableCount = computed(
+  () => localItems.value.filter((it) => it.tabId !== undefined).length
+)
 const selectedCount = computed(
   () => localItems.value.filter((it) => it.tabId !== undefined && it.selected !== false).length
 )
@@ -89,9 +101,12 @@ function toggleAll(checked: boolean) {
 async function handleConfirm() {
   loading.value = true
   try {
-    const selectedTabIds = localItems.value
-      .filter((it) => it.tabId !== undefined && it.selected !== false)
-      .map((it) => it.tabId as number)
+    // 如果存在预计算的 allTabIds（如 close_duplicate_tabs），直接使用
+    const selectedTabIds = props.allTabIds
+      ? props.allTabIds
+      : localItems.value
+          .filter((it) => it.tabId !== undefined && it.selected !== false)
+          .map((it) => it.tabId as number)
     await props.onConfirm(selectedTabIds)
   } catch (e: unknown) {
     console.error('[AI管家] 确认操作失败:', e)
@@ -156,6 +171,15 @@ function handleCancel() {
 }
 
 .confirm-card-item .primary {
+  color: var(--app-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  margin-right: 12px;
+}
+
+.confirm-card-item .label {
   color: var(--app-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;

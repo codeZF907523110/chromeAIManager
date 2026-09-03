@@ -117,11 +117,77 @@ export class OpenAIAdapter implements AIAdapter {
   }
 
   private async ensurePermission(): Promise<void> {
-    const origin = new URL(this.endpoint).origin
-    const ok = await chrome.permissions.contains({ origins: [`${origin}/*`] })
+    const origin = (() => {
+      try {
+        return new URL(this.endpoint).origin
+      } catch {
+        return ''
+      }
+    })()
+    if (!/^https?:\/\//.test(origin)) {
+      throw new Error('AI endpoint 必须是 http(s) URL')
+    }
+    const api = (
+      globalThis as {
+        chrome?: {
+          permissions?: {
+            contains: (req: unknown, cb: (g: boolean) => void) => unknown
+            request: (req: unknown, cb: (g: boolean) => void) => unknown
+          }
+        }
+      }
+    ).chrome?.permissions
+    if (!api?.contains) {
+      return // 测试环境或非扩展上下文：跳过 host 权限校验
+    }
+    const ok = await safeContains(api, { origins: [`${origin}/*`] })
     if (!ok) {
-      const granted = await chrome.permissions.request({ origins: [`${origin}/*`] })
+      const granted = await safeRequest(api, { origins: [`${origin}/*`] })
       if (!granted) throw new Error(`需要 ${origin} 的访问权限`)
     }
   }
+}
+
+/** 兼容 Promise 与 callback 风格 chrome.permissions.contains。 */
+function safeContains(
+  api: { contains: (req: unknown, cb: (g: boolean) => void) => unknown },
+  request: { origins?: string[] }
+): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    try {
+      const ret = api.contains(request, (granted: boolean) => {
+        const err = (globalThis as { chrome?: { runtime?: { lastError?: { message?: string } } } })
+          .chrome?.runtime?.lastError
+        if (err) reject(new Error(err.message ?? 'permissions.contains 失败'))
+        else resolve(Boolean(granted))
+      })
+      if (ret && typeof (ret as Promise<boolean>).then === 'function') {
+        ;(ret as Promise<boolean>).then(resolve, reject)
+      }
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)))
+    }
+  })
+}
+
+/** 兼容 Promise 与 callback 风格 chrome.permissions.request。 */
+function safeRequest(
+  api: { request: (req: unknown, cb: (g: boolean) => void) => unknown },
+  request: { origins?: string[] }
+): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    try {
+      const ret = api.request(request, (granted: boolean) => {
+        const err = (globalThis as { chrome?: { runtime?: { lastError?: { message?: string } } } })
+          .chrome?.runtime?.lastError
+        if (err) reject(new Error(err.message ?? 'permissions.request 失败'))
+        else resolve(Boolean(granted))
+      })
+      if (ret && typeof (ret as Promise<boolean>).then === 'function') {
+        ;(ret as Promise<boolean>).then(resolve, reject)
+      }
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)))
+    }
+  })
 }

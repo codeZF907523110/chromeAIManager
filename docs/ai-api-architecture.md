@@ -1,3 +1,7 @@
+> 当前实现说明：本文中的旧 executor、browser_* 和 DOM/Agent Loop 设计属于历史方案，当前以 `docs/mv3-api-implementation-plan.md` 和 `docs/mv3-api-remaining-work-plan.md` 为准。
+>
+> 入口边界（2026-08-31）：斜杠命令由 `useSlashCommandRunner`（`src/composables/useSlashCommandRunner.ts`）自包含处理：slash 匹配、特殊默认值、precompute、`MSG_EXECUTE`、slash 确认、客户端命令路由（录制）、`dispatchToSW` 嵌入按钮路径、`onScopeDispose` 释放录制生命周期。自然语言由 `usePlanRunner`（`MSG_EXECUTE_PLAN`）处理。两者只共享底层安全执行设施（service-worker handlers / commands.ts / precompute / shared/render-result.ts）；不再共享业务状态、结果渲染或确认卡协议（`ConfirmCardData` 在 `types/ui.ts` 统一）。`useAIEngine` 仅保留 AI 入口（模型管理、消息持久化、状态通道、handleSubmit 分发）；结果渲染抽到中立层 `shared/render-result.ts`。
+
 # AI 浏览器 API 操作架构设计文档（Plan-First 方案·最终版 v3.1）
 
 > **文档版本**：v3.1（完整审查后定稿）
@@ -568,12 +572,12 @@ function resolvePath(root: unknown, path: string): unknown {
 
 ```ts
 // src/composables/usePrecompute.ts (NEW, 取代旧 useAIEngine 内的 precompute)
-import { contextCache } from './useAIEngine'
+import { contextCache } from './usePrecompute'
 
 /**
  * 部分命令需要先 observe 后才能 resolve 参数（如 query → tabId）。
- * 此函数从旧 useAIEngine.ts:1093-1210 完整迁移。
- * 用在 dispatchToSW 路径，AI plan 路径不调（AI 直接给 tabIds）。
+ * 此函数从旧 useAIEngine.ts 完整迁移。
+ * 用在 useSlashCommandRunner.sendToSW / dispatchToSW 路径，AI plan 路径不调（AI 直接给 tabIds）。
  */
 export async function precompute(
   intent: string,
@@ -829,10 +833,10 @@ function formatTab(t: TabInfo): TabInfo {
 
 ## 7. 前端入口
 
-### 7.1 aiEngine 实例独立化
+### 7.1 useAIEngine 实例独立化（已实现）
 
 ```ts
-// src/composables/useAIEngine.ts (大瘦身, 保留对外 API)
+// src/composables/useAIEngine.ts (瘦身后, 仅 AI 侧职责)
 import { ref } from 'vue'
 import { AIEngine } from '../shared/ai/engine'
 
@@ -841,17 +845,19 @@ const engine = new AIEngine() // ← 模块级单例，usePlanRunner 可直接 i
 export { engine as aiEngine }
 export function useAIEngine() {
   // 保留:
-  // - handleSlashCommand（100% 不变）
-  // - dispatchToSW（保留 precompute + renderExecutionResult 流程）
-  // - renderExecutionResult（保留 clientExec 路径 + buildMarkdownBody fallback）
-  // - recordingExecutor（不变）
-  // - addMessage / deleteMessage / clearMessages / getActiveModel / addModel / ...
-  // - formatHelp / formatSlashCommands / formatResultDescription / formatStepSummary
-  // - pendingConfirm（弹卡状态）
-  // - state.messageLog / state.isSettingsOpen / state.commandInputValue / ...
-  // - handleSubmit / cleanup
+  // - addMessage / deleteMessage / clearMessages / 模型 CRUD / initEngine / selectModel
+  // - handleNaturalLanguage（调 usePlanRunner.run）
+  // - handleSubmit（分发：以 / 开头 → slashRunner.run；其它 → handleNaturalLanguage）
+  // - pendingConfirm（App.vue 共用确认卡）
+  // - state.messageLog / state.isSettingsOpen / state.commandInputValue
 
-  // 删除:
+  // 已迁出:
+  // - handleSlashCommand / dispatchToSW / renderExecutionResult / formatResultDescription
+  // - recordingExecutor（→ useSlashCommandRunner 内部 + onScopeDispose）
+  // - formatHelp / formatSlashCommands / formatStepSummary
+  // - precompute 函数（→ usePrecompute 模块）
+
+  // 已删除:
   // - agentLoop（被 usePlanRunner 替代）
   // - scanCurrentPage（DOM 相关）
   // - updatePlanTracker / persistPlanTracker / recoverContext / addLesson
@@ -1042,7 +1048,7 @@ AIPlan 协议下，AI 输出只有 `chat.reply` + `thought`，不再有 `toolCal
 代码中没有使用 `chrome.scripting.*`，删掉。如果后续 DOM 操作架构恢复再加。
 
 ```ts
-// src/composables/useAIEngine.ts: handleNaturalLanguage (替换)
+// src/composables/useAIEngine.ts: handleNaturalLanguage (瘦身后)
 async function handleNaturalLanguage(text: string) {
   const ai = await aiEngine.checkAvailability()
   if (!ai.available) {
@@ -1053,11 +1059,65 @@ async function handleNaturalLanguage(text: string) {
     return
   }
 
-  if (activeLoopId.value || pendingConfirm.value) cleanup()
+  if (pendingConfirm.value) cleanup()
 
-  await usePlanRunner(text)
+  setStatusMessage('思考中...')
+
+  const { run: runPlan } = await import('./usePlanRunner')
+  await runPlan(text, {
+    addMessage: addMessageLocal,
+    updateStatusText,
+    removeStatusText,
+    setPendingConfirm: (value) => { pendingConfirm.value = value },
+    // plan 路径下由 usePlanRunner 自己负责单步渲染（含 clientExec + 确认卡），
+    // 这里用空实现占位，保持 PlanRunnerContext 接口兼容
+    renderExecutionResult: async () => {},
+  })
 }
 ```
+
+### 7.7 useSlashCommandRunner 自包含（v3.1+，已实现）
+
+```ts
+// src/composables/useSlashCommandRunner.ts (NEW)
+import { onScopeDispose } from 'vue'
+import { createRecordingExecutor } from '../recording/executor'
+import { renderExecutionResult } from '../shared/render-result'
+import { SLASH_COMMANDS, matchSlashCommand } from '../shared/slash-commands'
+
+export interface SlashRunnerDeps {
+  addMessage: (type, text, image?, video?, recordingFile?) => void
+  clearMessages: () => void
+  setPendingConfirm: (value: ConfirmCardData | null) => void
+  cancelPlan: () => void
+  showScreenshot: (dataUrl: string, tabTitle?: string) => void
+}
+
+export function useSlashCommandRunner(deps: SlashRunnerDeps) {
+  // 录制执行器（slash 专属生命周期，onScopeDispose 释放）
+  const recordingExecutor = createRecordingExecutor({ ... })
+
+  // 渲染：注入 shared/render-result
+  const renderResult = (intent, response, slots) =>
+    renderExecutionResult(intent, response, slots, {
+      addAIChat: (t) => deps.addMessage('ai-chat', t),
+      addSystem: (t) => deps.addMessage('system', t),
+      showScreenshot: deps.showScreenshot,
+    })
+
+  // 危险命令 → 确认卡（独立协议）
+  async function prepareConfirmation(intent, slots) { ... }
+
+  // 主入口：run(text) + dispatchToSW(intent, slots)
+  // dispatchToSW 供 MessageBubble 嵌入按钮调用
+  async function run(text) { ... }
+  async function dispatchToSW(intent, slots) { ... }
+
+  return { run, dispatchToSW, formatSlashCommands }
+}
+```
+
+**与 useAIEngine / usePlanRunner 完全解耦**：仅共享底层 service-worker handler / commands.ts / precompute / shared/render-result.ts。`App.vue` 注入 deps 即可。
 
 ---
 
@@ -1107,20 +1167,29 @@ src/manifest.json 内（删除 permissions，可选）:
 src/shared/ai/plan-types.ts                          # AIPlan / PlanItem / PlanItemResult / PlanExecutionReport
 src/shared/ai/system-prompt.ts                       # buildSystemPrompt() + buildToolList()
 src/service-worker/plan-runner.ts                    # executePlan(plan) DAG 调度
-src/service-worker/precompute.ts                     # 从 useAIEngine 提取的 precompute 函数
+src/composables/usePrecompute.ts                     # 前端 precompute（slash + plan 共享）
 src/service-worker/handlers/index.ts                 # REGISTRY + DANGEROUS_TOOLS + buildConfirmChildren + dispatchTool
-src/service-worker/handlers/tabs.ts                  # 9 个 tab handler
+src/service-worker/handlers/tabs.ts                  # tab handler（含 clientExec: tabs_group_by_domain / tabs_ungroup_all）
 src/service-worker/handlers/bookmarks.ts             # 7 个 bookmark handler
-src/service-worker/handlers/history.ts               # 2 个 history handler
-src/service-worker/handlers/windows.ts               # 3 个 window handler
+src/service-worker/handlers/history.ts               # history handler
+src/service-worker/handlers/window-groups.ts         # window / tab-groups handler
 src/service-worker/handlers/navigation.ts            # 4 个 navigation handler
 src/service-worker/handlers/storage.ts               # 4 个 storage/session handler
 src/service-worker/handlers/theme-font.ts            # 6 个 theme/font handler
 src/service-worker/handlers/cookies.ts               # 2 个 cookie handler
 src/service-worker/handlers/top-sites.ts             # 1 个 top site handler
 src/service-worker/handlers/extensions.ts            # 3 个 extension handler
-src/service-worker/handlers/permissions.ts           # 2 个 permission handler
+src/service-worker/handlers/permissions.ts           # 2 个 permission handler（含 site-perms / set-site-perm）
+src/service-worker/handlers/notifications.ts         # notifications handler
+src/service-worker/handlers/downloads.ts             # downloads handler
+src/service-worker/handlers/browsing-data.ts         # browsing_data handler
+src/service-worker/handlers/sessions.ts              # sessions handler
+src/service-worker/handlers/content-settings.ts      # content_settings handler
 src/composables/usePlanRunner.ts                     # 新 AI 入口
+src/composables/useSlashCommandRunner.ts             # 自包含 slash runner（解析 / 确认 / SW dispatch / 客户端命令 / 录制）
+src/shared/render-result.ts                          # 中立渲染层（renderExecutionResult / formatResultDescription）
+src/shared/client-exec.ts                            # CLIENT_EXEC_HANDLERS 注册表
+src/types/ui.ts                                      # 新增 ConfirmCardData / ConfirmCardItem
 tests/plan-runner.spec.ts                            # vitest 单元测试
 ```
 
@@ -1129,8 +1198,10 @@ tests/plan-runner.spec.ts                            # vitest 单元测试
 ```
 src/service-worker/index.ts                          # 加 MSG_EXECUTE_PLAN 分支；移除 executeCommand import
 src/service-worker/context-collector.ts              # 修 muted bug (line 121)
-src/composables/useAIEngine.ts                       # 大瘦身：删 agentLoop/PlanTracker/Lesson/scanCurrentPage；
-                                                 # 保留 handleSlashCommand/dispatchToSW/renderExecutionResult/recordingExecutor
+src/composables/useAIEngine.ts                       # 进一步瘦身：移除 handleSlashCommand / dispatchToSW /
+                                                 # renderExecutionResult / recordingExecutor / formatHelp
+                                                 # （全部迁到 useSlashCommandRunner + shared/render-result）
+                                                 # handleSubmit 改为可选注入 slashRunner，保持向后兼容
 src/types/ai.ts                                      # 替换 AIResponse → AIPlan（导出 AIPlan / PlanItem）
 src/types/execution.ts                               # 保留 ExecutionResult；新增 PlanItemResult / PlanExecutionReport
 src/types/index.ts                                   # 删 Lesson/PlanStep/PlanTracker/SessionData 导出
@@ -1383,7 +1454,7 @@ grep -r "browser_snapshot\|browser_click\|browser_type\|task_plan" src/shared/co
 11. **precompute 路径保留**：10+ 个 requiresPrecompute 命令需要 query → tabId 转换
 12. **dispatchToSW 保留**：嵌入组件按钮依赖
 13. **renderExecutionResult 保留**：嵌入组件按钮回调 + EXECUTE_RESULT 消息监听
-14. _*browser_* 命令删除_*：v3 只支持 API 操作，不支持 DOM 操作
+14. _\*browser_* 命令删除_*：v3 只支持 API 操作，不支持 DOM 操作
 
 ---
 
@@ -1403,14 +1474,20 @@ grep -r "browser_snapshot\|browser_click\|browser_type\|task_plan" src/shared/co
 ## Critical Files for Implementation
 
 - /Users/didi/Desktop/myProject/chromeAIManager/src/service-worker/index.ts
-- /Users/didi/Desktop/myProject/chromeAIManager/src/service-worker/executor.ts（DEL）
+- /Users/didi/Desktop/myProject/chromeAIManager/src/service-worker/handlers/index.ts（统一 dispatcher，替代旧 executor.ts）
 - /Users/didi/Desktop/myProject/chromeAIManager/src/service-worker/context-collector.ts
-- /Users/didi/Desktop/myProject/chromeAIManager/src/composables/useAIEngine.ts
+- /Users/didi/Desktop/myProject/chromeAIManager/src/composables/useAIEngine.ts（瘦身后：仅 AI 入口 / 模型管理 / 消息通道）
+- /Users/didi/Desktop/myProject/chromeAIManager/src/composables/useSlashCommandRunner.ts（自包含：slash 解析 / 确认 / SW dispatch / 客户端命令 / 录制生命周期）
+- /Users/didi/Desktop/myProject/chromeAIManager/src/composables/usePlanRunner.ts（自然语言入口：AI 调用 + DAG 调度）
+- /Users/didi/Desktop/myProject/chromeAIManager/src/composables/usePrecompute.ts（前端 precompute，slash + plan 共用）
 - /Users/didi/Desktop/myProject/chromeAIManager/src/shared/commands.ts
 - /Users/didi/Desktop/myProject/chromeAIManager/src/shared/slash-commands.ts
+- /Users/didi/Desktop/myProject/chromeAIManager/src/shared/render-result.ts（中立渲染层：renderExecutionResult / formatResultDescription）
+- /Users/didi/Desktop/myProject/chromeAIManager/src/shared/client-exec.ts（CLIENT_EXEC_HANDLERS 注册表）
+- /Users/didi/Desktop/myProject/chromeAIManager/src/shared/confirm.ts
 - /Users/didi/Desktop/myProject/chromeAIManager/src/types/ai.ts
 - /Users/didi/Desktop/myProject/chromeAIManager/src/types/context.ts
-- /Users/didi/Desktop/myProject/chromeAIManager/src/types/ui.ts
+- /Users/didi/Desktop/myProject/chromeAIManager/src/types/ui.ts（ConfirmCardData / ConfirmCardItem 统一）
 - /Users/didi/Desktop/myProject/chromeAIManager/src/shared/constants.ts
 - /Users/didi/Desktop/myProject/chromeAIManager/src/App.vue
 - /Users/didi/Desktop/myProject/chromeAIManager/src/components/MessageBubble.vue

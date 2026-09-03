@@ -5,11 +5,16 @@ import vueParser from 'vue-eslint-parser'
 import prettierRecommended from 'eslint-plugin-prettier/recommended'
 import prettierPlugin from 'eslint-plugin-prettier'
 
+// ESLint 8 / TypeScript ESLint requires structuredClone on older Node runtimes.
+if (!globalThis.structuredClone) {
+  globalThis.structuredClone = (value) => JSON.parse(JSON.stringify(value))
+}
+
 export default [
   js.configs.recommended,
   prettierRecommended,
   {
-    ignores: ['dist/', 'node_modules/', '**/*.d.ts', '**/*.js', 'vite.config.ts'],
+    ignores: ['dist/', 'node_modules/', '.agents/', '.claude/', '**/*.d.ts', '**/*.js', 'vite.config.ts'],
   },
   {
     files: ['**/*.vue', '**/*.ts'],
@@ -67,7 +72,7 @@ export default [
       'no-debugger': 'off',
       'no-undef': 'off',
       'no-unused-vars': 'off',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
     },
   },
@@ -114,7 +119,7 @@ export default [
       'no-debugger': 'off',
       'no-undef': 'off',
       'no-unused-vars': 'off',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
     },
   },
