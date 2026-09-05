@@ -16,7 +16,8 @@ import { getCommand } from '../shared/commands'
 import { MSG_EXECUTE_PLAN, MSG_GET_CONTEXT } from '../shared/constants'
 import type { AIPlan } from '../shared/ai/plan-types'
 import type { PlanExecutionReport } from '../service-worker/plan-runner'
-import { wrapCatReply } from '../shared/personality'
+import { summarizePlanResult } from '../shared/ai/post-plan-summarizer'
+import { wrapCatReply, wrapCatReplyFinal } from '../shared/personality'
 import { buildReconfirmPayload } from '../shared/confirm'
 import { executeClientExec } from '../shared/client-exec'
 import {
@@ -24,7 +25,6 @@ import {
   type RenderResultDeps,
 } from '../shared/render-result'
 import type { ConfirmCardData, MessageBody, MessageLog } from '../types'
-import { detectHalfPlan } from '../shared/ai/intent-rules'
 export interface PlanRunnerContext {
   addMessage: (
     type: MessageLog['type'],
@@ -50,9 +50,10 @@ let abortCtl: AbortController | null = null
 
 /**
  * 当前 plan 路径是否在跑（暴露给 UI 显示停止按钮）
- * 用 ref + setter 让 App.vue 的轮询能拿到最新值
+ * 直接暴露响应式 ref，避免 200ms setInterval 轮询。
+ * B33 修复：App.vue 用 `runningRef` 配合 watch 即可，无需轮询。
  */
-const runningRef = ref(false)
+export const runningRef = ref(false)
 export function isRunning(): boolean {
   return runningRef.value
 }
@@ -113,94 +114,38 @@ export async function run(userText: string, ctx: PlanRunnerContext): Promise<voi
     return
   }
 
-  // 闲聊路径：检查是否同时有截图需求
-  if (parsed.chat) {
-    // 检查 AI plan 中是否有截图命令
-    if (parsed.plan?.some((item) => item.tool === 'screenshot')) {
-      // 有截图 plan，需要将截图和闲聊合并到一条消息
-      ctx.updateStatusText('执行中...')
-
-      // 创建带合并逻辑的渲染依赖
-      const chatReply = parsed.chat.reply
-      let screenshotHandled = false
-
-      const screenshotDeps: RenderResultDeps = {
-        addAIChat: (text) => ctx.addMessage('ai-chat', text),
-        addSystem: (text) => ctx.addMessage('system', text),
-        showScreenshot: (dataUrl, tabTitle) => {
-          // 将截图和闲聊内容合并到一条消息
-          const markdown = chatReply
-            ? `${chatReply}\n\n[截图: ${tabTitle || '页面'}]`
-            : `[截图: ${tabTitle || '页面'}]`
-          ctx.addMessage('ai-chat', wrapCatReply(markdown), dataUrl)
-          screenshotHandled = true
-        },
-      }
-
-      try {
-        console.log(
-          `[usePlanRunner][chat+screenshot] -> SW MSG_EXECUTE_PLAN items=${parsed.plan?.length ?? 0}`
-        )
-        const report = (await chrome.runtime.sendMessage({
-          type: MSG_EXECUTE_PLAN,
-          command: { plan: parsed },
-        })) as PlanExecutionReport
-        console.log(
-          `[usePlanRunner][chat+screenshot] <- SW report hasItems=${Array.isArray(report?.items)}, items=${report?.items?.length ?? 0}, success=${report?.success}, needsConfirm=${!!report?.needsConfirm}`,
-          `itemCodes=${report?.items?.map((it) => `${it.tool}:${(it.result as { code?: string; success?: boolean })?.code ?? (it.result as { success?: boolean })?.success ?? '?'}`).join(',') ?? '<no-items>'}`
-        )
-        if (!report || !Array.isArray(report.items)) {
-          const reason =
-            (report as { error?: string; message?: string; code?: string } | null)?.error ||
-            (report as { message?: string } | null)?.message ||
-            (report as { code?: string } | null)?.code ||
-            'SW 返回结构无效'
-          console.error(
-            `[usePlanRunner][chat+screenshot] invalid structure, report=${JSON.stringify(report)?.slice(0, 500)}`
-          )
-          throw new Error(reason)
-        }
-
-        // 渲染结果
-        for (const item of report.items) {
-          await renderResult(item.tool, item.result, item.args, screenshotDeps)
-        }
-
-        // 如果截图未处理（AI 没有返回截图），补发闲聊消息
-        if (!screenshotHandled) {
-          ctx.addMessage('ai-chat', wrapCatReply(chatReply))
-        }
-      } catch (e: unknown) {
-        ctx.addMessage('system', `执行失败: ${e instanceof Error ? e.message : String(e)}`)
-      }
-    } else {
-      // 没有截图 plan，直接发送闲聊
-      ctx.addMessage('ai-chat', wrapCatReply(parsed.chat.reply))
-    }
+  // 4. chat + plan 合并路径（P1-8）：
+  //    AI 既返 chat.reply 又返非空 plan 时：
+  //    - 先把 chat.reply 排到 ai-chat 通道（用户先看到闲聊）
+  //    - 再走标准的 precompute + SW dispatch + render 路径，让 plan 也被执行
+  //    - 旧 chat+screenshot 特殊路径已并入：showScreenshot 闭包合并到 chat.reply 后面
+  if (parsed.chat && parsed.plan?.length) {
+    ctx.addMessage('ai-chat', wrapCatReply(parsed.chat.reply))
+    // 继续走下面标准 plan 执行路径；不要 return。
+  } else if (parsed.chat) {
+    // 纯闲聊：plan 为空或缺失
+    ctx.addMessage('ai-chat', wrapCatReply(parsed.chat.reply))
     ctx.removeStatusText()
     return
   }
 
-  // 5. 空 plan
-  if (!parsed.plan?.length) {
-    ctx.addMessage('ai-chat', wrapCatReply(parsed.thought || '已完成'))
+  // 5. 空 plan：AI 仅在 parsed.chat/thought 里写过自然语言解释，直接复述即可
+  const planItems = parsed.plan ?? []
+  if (!parsed.chat && planItems.length === 0) {
+    ctx.addMessage('ai-chat', wrapCatReplyFinal(parsed.thought || '好的喵~'))
     ctx.removeStatusText()
     return
   }
 
   // 6. 兜底补齐 plan item 必填字段（AI 偶尔会漏 deps）。
   //    SW 端 isValidAIPlan 仍做严格校验；这里仅做兼容性兜底。
-  for (const item of parsed.plan) {
+  for (const item of planItems) {
     if (!Array.isArray(item.deps)) {
-      console.warn(
-        `[usePlanRunner] AI 漏了 deps 字段，补 []; item=${item.id} tool=${item.tool}`
-      )
+      console.warn(`[usePlanRunner] AI 漏了 deps 字段，补 []; item=${item.id} tool=${item.tool}`)
       item.deps = []
     }
     if (!item.args || typeof item.args !== 'object') {
-      console.warn(
-        `[usePlanRunner] AI 漏了 args 字段，补 {}; item=${item.id} tool=${item.tool}`
-      )
+      console.warn(`[usePlanRunner] AI 漏了 args 字段，补 {}; item=${item.id} tool=${item.tool}`)
       item.args = {}
     }
   }
@@ -216,7 +161,7 @@ export async function run(userText: string, ctx: PlanRunnerContext): Promise<voi
   try {
     const { refreshContext, precompute } = await import('./usePrecompute')
     await refreshContext()
-    for (const item of parsed.plan) {
+    for (const item of planItems) {
       const command = getCommand(item.tool)
       if (!command?.requiresPrecompute) continue
 
@@ -258,18 +203,18 @@ export async function run(userText: string, ctx: PlanRunnerContext): Promise<voi
   }
 
   // 7. 切到执行中：用 updateStatusText 把状态消息替换为执行进度
-  ctx.updateStatusText(`执行中 (0/${parsed.plan.length})`)
+  ctx.updateStatusText(`执行中 (0/${planItems.length})`)
 
   // 7. 一次性发给 SW 做 DAG 调度
   let report: PlanExecutionReport
   try {
     console.log(
-      `[usePlanRunner] -> SW MSG_EXECUTE_PLAN items=${parsed.plan.length}`,
-      parsed.plan.map((it) => `${it.id}:${it.tool}:${JSON.stringify(it.args)}`).join(' | ')
+      `[usePlanRunner] -> SW MSG_EXECUTE_PLAN items=${planItems.length}`,
+      planItems.map((it) => `${it.id}:${it.tool}:${JSON.stringify(it.args)}`).join(' | ')
     )
     report = (await chrome.runtime.sendMessage({
       type: MSG_EXECUTE_PLAN,
-      command: { plan: parsed },
+      command: { plan: { ...parsed, plan: planItems } },
     })) as PlanExecutionReport
     console.log(
       `[usePlanRunner] <- SW report hasItems=${Array.isArray(report?.items)}, items=${report?.items?.length ?? 0}, success=${report?.success}, needsConfirm=${!!report?.needsConfirm}`,
@@ -287,7 +232,7 @@ export async function run(userText: string, ctx: PlanRunnerContext): Promise<voi
       )
       throw new Error(reason)
     }
-    ctx.updateStatusText(`执行中 (${report.items.length}/${parsed.plan.length})`)
+    ctx.updateStatusText(`执行中 (${report.items.length}/${planItems.length})`)
   } catch (e: unknown) {
     console.error('[usePlanRunner] SW call failed', e)
     ctx.addMessage(
@@ -300,83 +245,78 @@ export async function run(userText: string, ctx: PlanRunnerContext): Promise<voi
   }
 
   // 7.5 检查是否有需要前端确认的危险操作
+  //    弹出确认卡期间不算「在跑」——runningRef 立刻重置，停止按钮不会再转圈；
+  //    用户最终确认 / 取消由 handleConfirm 内部按需再次置 true。
   if (report.needsConfirm) {
-    await showAiConfirmCard(report.needsConfirm, parsed, ctx)
+    runningRef.value = false
+    await showAiConfirmCard(report.needsConfirm, parsed, userText, ctx)
     ctx.removeStatusText()
     return
-  }
-
-  // 7.6 检测 AI"半成品 plan"：只观察但没真执行操作
-  // 典型场景：AI 调 tabs_observe 看了一下 baidu 标签，但没接着调 tabs_remove
-  // 导致用户输入"关闭所有百度标签页"后只回复"已完成 1 步"，但实际什么都没关。
-  // 防御：detectAndCompleteHalfPlan() 把这种半成品 plan 补全为完整的执行计划；
-  // 同时把第一轮已执行的 observe 结果作为 seededResults 注入合成 mutation，
-  // SW 端 plan-runner 会复用种子避免重复 observe。
-  // 修复 confirm-card bug：augmentedPlan 必须传给 showAiConfirmCard，
-  // 因为 confirm item 的 id 在合成 plan 中，原 parsed 里查不到会回退到「确认操作」。
-  const halfPlanResult = detectAndCompleteHalfPlan(parsed, userText, report.items)
-  if (halfPlanResult.completed && halfPlanResult.newPlan) {
-    const augmentedPlan: AIPlan = {
-      thought: parsed.thought,
-      plan: halfPlanResult.newPlan,
-    }
-    console.log(
-      `[usePlanRunner] half-plan detected rule=${halfPlanResult.diagnostics?.matchedRule ?? '?'}`,
-      `items=${augmentedPlan.plan.length}, segments=${halfPlanResult.diagnostics?.segments?.length ?? 1}`
-    )
-    try {
-      const newReport = (await chrome.runtime.sendMessage({
-        type: MSG_EXECUTE_PLAN,
-        command: { plan: augmentedPlan },
-      })) as PlanExecutionReport
-      if (newReport?.needsConfirm) {
-        await showAiConfirmCard(newReport.needsConfirm, augmentedPlan, ctx)
-        ctx.removeStatusText()
-        return
-      }
-      await handleClientExec(newReport, ctx)
-      ctx.removeStatusText()
-      return
-    } catch (e: unknown) {
-      console.warn('[usePlanRunner] half-plan re-execute failed', e)
-    }
   }
 
   // 8. 处理 clientExec 路径（tabs.group_by_domain / tabs.ungroup_all）
   //    clientExec 路径会自己写入 ai-chat 反馈，避免重复输出汇总
   await handleClientExec(report, ctx)
 
-  // 9. 仅当 clientExec 未单独反馈时，输出一条汇总消息
-  //    通过 report.items 中是否含 clientExec 字段判断，避免重复回复
+  // 9. 单步渲染：跳过 clientExec（已渲过），由 renderExecutionResult 写入 ai-chat
+  //    闭包标志 anyRendered 用于"是否有步骤已渲染过"的判定；不再维护 17 intent 白名单。
+  let anyRendered = false
+  // P1-8 合并：chat+plan 路径下，若 plan 含 screenshot，要把截图拼到 chat reply 之后，
+  // 保持原 chat+screenshot 视觉一致性。hasChat 标记当前 plan 是否来自 chat+plan 合并路径。
+  const hasChat = !!parsed.chat && !!parsed.plan?.length
+  const chatReply = hasChat ? parsed.chat!.reply : ''
+  const renderDeps: RenderResultDeps = {
+    addAIChat: (text) => ctx.addMessage('ai-chat', text),
+    addSystem: (text) => ctx.addMessage('system', text),
+    markRendered: () => {
+      anyRendered = true
+    },
+    showScreenshot: (dataUrl, tabTitle) => {
+      // 合并路径：把截图拼到闲聊回复之后；纯 plan 路径保持默认 showScreenshot。
+      if (hasChat) {
+        const merged = `${chatReply}\n\n[截图: ${tabTitle || '页面'}]`
+        ctx.addMessage('ai-chat', wrapCatReply(merged), dataUrl)
+      } else {
+        ctx.addMessage('ai-chat', wrapCatReply(`[截图: ${tabTitle || '页面'}]`), dataUrl)
+      }
+      anyRendered = true
+    },
+  }
+  for (const item of report.items) {
+    const r = item.result as { clientExec?: string }
+    if (typeof r?.clientExec === 'string') continue // 已由 handleClientExec 渲过
+    await renderResult(item.tool, item.result, item.args, renderDeps)
+  }
+
+  // 10. 仅当 clientExec 未单独反馈 + 单步未渲染过时，调一次 AI 复盘生成自然语言回复
   const hasClientExec = report.items.some(
     (it) => typeof (it.result as { clientExec?: string }).clientExec === 'string'
   )
-  const hasRendered = report.items.some((it) => {
-    const intent = getCommand(it.tool)?.intent ?? it.tool
-    return (
-      intent === 'tabs_remove' ||
-      intent === 'close_tabs_by_domain' ||
-      intent === 'clear_cookies' ||
-      intent === 'delete_history' ||
-      intent === 'remove_bookmark' ||
-      intent === 'uninstall_extension' ||
-      intent === 'tabs_create' ||
-      intent === 'add_bookmark' ||
-      intent === 'find_tab' ||
-      intent === 'reopen_closed_tab' ||
-      intent === 'pin_tab' ||
-      intent === 'duplicate_tab' ||
-      intent === 'enable_extension' ||
-      intent === 'disable_extension' ||
-      intent === 'set_theme' ||
-      intent === 'theme_update'
-    )
-  })
-  if (!hasClientExec && !hasRendered) {
-    // AI 思考过程（thought）属于内部推理，不应回显给用户；
-    // 让 emitFinalChat 用"已完成 N 步"作为兜底语。
-    emitFinalChat(report, '', ctx)
+  const isPaused = !!report.paused
+  // 失败 / 暂停 plan：即使有步骤已渲染过，也追加 AI 复盘给用户一个"整体结论"。
+  // 阻止"每步都有气泡但没人告诉我到底成没成"的体验。
+  const needsPostSummary =
+    (!report.success || isPaused) && !report.needsConfirm && userText.trim().length > 0
+  if (needsPostSummary) {
+    const summary = await summarizePlanResult({ userText, report })
+    if (summary) {
+      ctx.addMessage('ai-chat', wrapCatReplyFinal(summary))
+    }
   }
+  if (!hasClientExec && !anyRendered && !needsPostSummary) {
+    const summary = await summarizePlanResult({ userText, report })
+    if (summary) {
+      ctx.addMessage('ai-chat', wrapCatReplyFinal(summary))
+    } else {
+      // AI 不可用时退化文案（仅收尾 emoji，不再"嘿嘿好呀喵~ 已完成 1 步"）
+      const succeeded = report.items.filter((i) => i.result.success !== false).length
+      const failed = report.items.length - succeeded
+      const fallback =
+        failed > 0 ? `完成 ${succeeded} 步，有 ${failed} 步失败` : `已完成 ${succeeded} 步`
+      ctx.addMessage('ai-chat', wrapCatReplyFinal(fallback))
+    }
+  }
+  runningRef.value = false
   ctx.removeStatusText()
 }
 
@@ -387,6 +327,7 @@ export async function run(userText: string, ctx: PlanRunnerContext): Promise<voi
  */
 export async function handleConfirm(
   originalPlan: AIPlan,
+  userText: string,
   confirmItem: { id: string; tool: string },
   selectedIds: Array<string | number>,
   ctx: PlanRunnerContext,
@@ -426,21 +367,49 @@ export async function handleConfirm(
       'system',
       `抱歉，Service Worker 暂时无法响应喵~（${e instanceof Error ? e.message : String(e)}）`
     )
+    runningRef.value = false
     ctx.removeStatusText()
     return
   }
 
   await handleClientExec(report, ctx)
+
+  // confirm 后二次执行：单步渲染跳过 clientExec，闭包标志用于判定是否需要 AI 复盘。
+  let anyRendered = false
+  const renderDeps: RenderResultDeps = {
+    addAIChat: (text) => ctx.addMessage('ai-chat', text),
+    addSystem: (text) => ctx.addMessage('system', text),
+    markRendered: () => {
+      anyRendered = true
+    },
+  }
+  for (const item of report.items) {
+    const r = item.result as { clientExec?: string }
+    if (typeof r?.clientExec === 'string') continue
+    await renderResult(item.tool, item.result, item.args, renderDeps)
+  }
+
   const hasClientExec = report.items.some(
     (it) => typeof (it.result as { clientExec?: string }).clientExec === 'string'
   )
   if (report.needsConfirm) {
-    showConfirmCard(report.needsConfirm, reconfirm, ctx)
-  } else if (!hasClientExec) {
-    // 确认完成后：thought 是 AI 的内部推理，对用户没有价值，
-    // 这里改用一句简洁的完成语，不输出思考过程。
-    emitFinalChat(report, '', ctx)
+    runningRef.value = false
+    showConfirmCard(report.needsConfirm, reconfirm, userText, ctx)
+  } else if (!hasClientExec && !anyRendered) {
+    // 确认完成后：AI 复盘基于真实执行结果生成自然语言回复；
+    // thought 是 AI 的内部推理，不再回显给用户。
+    const summary = await summarizePlanResult({ userText, report })
+    if (summary) {
+      ctx.addMessage('ai-chat', wrapCatReplyFinal(summary))
+    } else {
+      const succeeded = report.items.filter((i) => i.result.success !== false).length
+      const failed = report.items.length - succeeded
+      const fallback =
+        failed > 0 ? `完成 ${succeeded} 步，有 ${failed} 步失败` : `已完成 ${succeeded} 步`
+      ctx.addMessage('ai-chat', wrapCatReplyFinal(fallback))
+    }
   }
+  runningRef.value = false
   ctx.removeStatusText()
 }
 
@@ -665,6 +634,7 @@ async function getSummaryContext(): Promise<ContextSnapshot> {
 function showConfirmCard(
   needsConfirm: { itemId: string; detail: Record<string, unknown> },
   plan: AIPlan,
+  userText: string,
   ctx: PlanRunnerContext
 ): void {
   const detail = needsConfirm.detail
@@ -696,7 +666,14 @@ function showConfirmCard(
       ctx.setPendingConfirm(null)
       const token =
         typeof detail.confirmationToken === 'string' ? detail.confirmationToken : undefined
-      await handleConfirm(plan, { id: needsConfirm.itemId, tool }, allSelected, ctx, token)
+      await handleConfirm(
+        plan,
+        userText,
+        { id: needsConfirm.itemId, tool },
+        allSelected,
+        ctx,
+        token
+      )
     },
     onCancel: () => {
       ctx.addMessage('ai-chat', wrapCatReply('好嘞，已帮你取消啦~'))
@@ -712,10 +689,15 @@ function showConfirmCard(
  * 与 useSlashCommandRunner.prepareConfirmation 的区别：
  * - 这里 SW 已经做了一次预检（dispatchTool 拦截 dangerous），但仍需要前端展示勾选 UI
  * - 因此前端用 precompute 的结果回查 contextCache 拼出 children 列表
+ *
+ * P1-5 扩展：除了 domain 类工具，对 close_tabs_by_url / close_duplicate_tabs /
+ * ungroup_all / bookmarks_remove_node / history_remove / tabs_remove_by_url 等
+ * 也基于 candidates + contextCache 反查 children。
  */
 async function showAiConfirmCard(
   needsConfirm: { itemId: string; detail: Record<string, unknown> },
   plan: AIPlan,
+  userText: string,
   ctx: PlanRunnerContext
 ): Promise<void> {
   const detail = needsConfirm.detail
@@ -730,32 +712,9 @@ async function showAiConfirmCard(
     ? (detail.children as Array<{ id: string | number; title?: string; url?: string }>)
     : []
 
-  // 对于 close_tabs_by_domain / mute_tabs_by_domain 等批量工具，
-  // SW 的 children 可能为空（dispatchTool 没生成 children），需要前端补上
-  if (
-    children.length === 0 &&
-    (tool === 'close_tabs_by_domain' ||
-      tool === 'mute_tabs_by_domain' ||
-      tool === 'unmute_tabs_by_domain')
-  ) {
-    const { contextCache, refreshContext } = await import('./usePrecompute')
-    if (!contextCache.value) await refreshContext()
-    const tabs = contextCache.value?.tabs ?? []
-    const domain = ((args.domain as string) || '').toLowerCase().trim()
-    if (domain) {
-      children = tabs
-        .filter((t) => {
-          if (!t.url || t.pinned) return false
-          try {
-            const hostname = new URL(t.url).hostname.toLowerCase().replace(/^www\./, '')
-            const target = domain.replace(/^www\./, '')
-            return hostname === target || hostname.endsWith(`.${target}`)
-          } catch {
-            return false
-          }
-        })
-        .map((t) => ({ id: t.id ?? -1, title: t.title || '', url: t.url || '' }))
-    }
+  // SW children 为空时，前端补一次（覆盖所有 dangerous 工具，不止 domain 类）
+  if (children.length === 0) {
+    children = await backfillChildren(tool, args)
   }
 
   ctx.setPendingConfirm({
@@ -775,7 +734,14 @@ async function showAiConfirmCard(
       const allSelected = selectedTabIds.length === 0 ? children.map((c) => c.id) : selectedTabIds
       const token =
         typeof detail.confirmationToken === 'string' ? detail.confirmationToken : undefined
-      await handleConfirm(plan, { id: needsConfirm.itemId, tool }, allSelected, ctx, token)
+      await handleConfirm(
+        plan,
+        userText,
+        { id: needsConfirm.itemId, tool },
+        allSelected,
+        ctx,
+        token
+      )
     },
     onCancel: () => {
       ctx.addMessage('ai-chat', wrapCatReply('好嘞，已帮你取消啦~'))
@@ -784,35 +750,95 @@ async function showAiConfirmCard(
   })
 }
 
-/** 最终汇总消息（plan 完成或全部成功） */
-function emitFinalChat(report: PlanExecutionReport, thought: string, ctx: PlanRunnerContext): void {
-  const succeeded = report.items.filter((i) => i.result.success !== false).length
-  const failed = report.items.length - succeeded
-  const base =
-    thought || (failed > 0 ? `完成 ${succeeded} 步，${failed} 步失败` : `已完成 ${succeeded} 步`)
-  ctx.addMessage('ai-chat', wrapCatReply(base))
-}
-
 /**
- * 检测 AI 返回的"半成品 plan"：只观察但没真执行操作。
- *
- * 典型场景：用户输入"关闭所有百度标签页"，
- * AI 返回 plan=[{tabs_observe query=baidu}]，没接着调 tabs_remove，
- * 用户看到的是"已完成 1 步"，但实际什么都没关。
- *
- * 委派给 src/shared/ai/intent-rules.ts detectHalfPlan：
- *   - 18 域 verb 表覆盖（不仅关闭 / 静音 / 休眠 / 分组）
- *   - 多步 connector 拆分（"关闭 A 然后关闭 B 然后截图"）
- *   - 参数抽取优先级：plan args → userText URL → domain → 引号 → 残余文本
- *   - 必需参数拿不到 → 跳过该合成，绝不猜测
- *
- * 该函数仅适配层：把 AIPlan 适配成 detectHalfPlan 的输入，
- * 并把 userText 作为补充上下文传入；其余逻辑全部在 intent-rules.ts。
+ * P1-5：根据 tool + args 在前端 contextCache 里反查 children 列表。
+ * 覆盖所有 dangerous 工具（不仅限 domain 类）。
  */
-function detectAndCompleteHalfPlan(
-  parsed: AIPlan,
-  userText: string,
-  existingResults?: PlanExecutionReport['items']
-): { completed: boolean; newPlan?: NonNullable<AIPlan['plan']>; diagnostics?: { matchedRule?: string; segments?: string[]; reason?: string } } {
-  return detectHalfPlan(parsed, userText, existingResults)
+async function backfillChildren(
+  tool: string,
+  args: Record<string, unknown>
+): Promise<Array<{ id: string | number; title?: string; url?: string }>> {
+  const { contextCache, refreshContext } = await import('./usePrecompute')
+  if (!contextCache.value) await refreshContext()
+  const tabs = contextCache.value?.tabs ?? []
+  const domain = ((args.domain as string) || '').toLowerCase().trim()
+  const query = ((args.query as string) || '').toLowerCase().trim()
+
+  const matchesDomain = (t: { url?: string; pinned?: boolean }) => {
+    if (!t.url || t.pinned) return false
+    try {
+      const hostname = new URL(t.url).hostname.toLowerCase().replace(/^www\./, '')
+      const target = domain.replace(/^www\./, '')
+      return hostname === target || hostname.endsWith(`.${target}`)
+    } catch {
+      return false
+    }
+  }
+  const matchesQuery = (t: { title?: string; url?: string; pinned?: boolean }) => {
+    if (!t.url || t.pinned) return false
+    const lowerUrl = (t.url || '').toLowerCase()
+    const title = (t.title || '').toLowerCase()
+    return lowerUrl.includes(query) || title.includes(query)
+  }
+
+  switch (tool) {
+    case 'close_tabs_by_domain':
+    case 'mute_tabs_by_domain':
+    case 'unmute_tabs_by_domain':
+    case 'tabs_remove':
+      return domain
+        ? tabs
+            .filter(matchesDomain)
+            .map((t) => ({ id: t.id ?? -1, title: t.title || '', url: t.url || '' }))
+        : []
+    case 'close_tabs_by_url':
+    case 'tabs_remove_by_url':
+      return query
+        ? tabs
+            .filter(matchesQuery)
+            .map((t) => ({ id: t.id ?? -1, title: t.title || '', url: t.url || '' }))
+        : []
+    case 'close_duplicate_tabs': {
+      const seen = new Map<string, number>()
+      const dupIds: number[] = []
+      for (const t of tabs) {
+        const url = (t.url || '').replace(/\/$/, '')
+        if (args.url && !url.includes(args.url as string)) continue
+        if (seen.has(url)) dupIds.push(t.id ?? -1)
+        else seen.set(url, t.id ?? -1)
+      }
+      return dupIds
+        .map((id) => tabs.find((t) => t.id === id))
+        .filter((t): t is NonNullable<typeof t> => !!t)
+        .map((t) => ({ id: t.id!, title: t.title || '', url: t.url || '' }))
+    }
+    case 'ungroup_all': {
+      const grouped = new Map<number, { groupId: number; tabCount: number; title: string }>()
+      for (const t of tabs) {
+        if (t.groupId === undefined || t.groupId === -1) continue
+        const entry = grouped.get(t.groupId) ?? {
+          groupId: t.groupId,
+          tabCount: 0,
+          title: t.title || `分组 ${t.groupId}`,
+        }
+        entry.tabCount++
+        grouped.set(t.groupId, entry)
+      }
+      return Array.from(grouped.values()).map((g) => ({
+        id: g.groupId,
+        title: g.title,
+        url: `${g.tabCount} 个标签`,
+      }))
+    }
+    case 'bookmarks_remove_node':
+      // 由 SW buildConfirmChildren 从 nodeId 拉取；前端无 bookmarks 上下文，兜底
+      return typeof args.nodeId === 'string' && args.nodeId
+        ? [{ id: args.nodeId, title: '书签', url: '' }]
+        : []
+    case 'history_remove':
+      // history_remove 的 children 是 URL 字符串，ConfirmCard 过滤掉无 tabId 的
+      return query ? [{ id: query, title: `搜索: ${query}`, url: '' }] : []
+    default:
+      return []
+  }
 }

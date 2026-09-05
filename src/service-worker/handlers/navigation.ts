@@ -21,6 +21,13 @@ export async function navigate(payload: Record<string, unknown>): Promise<Execut
   if (parsed.hostname === 'chrome.google.com' && parsed.pathname.startsWith('/webstore')) {
     return { success: false, code: 'PAGE_BLOCKED', message: '无法导航到 Web Store' }
   }
+  // B28: chromewebstore.google.com 是新版 Web Store 域名，老黑名单漏掉了它。
+  const isWebStore =
+    parsed.hostname === 'chromewebstore.google.com' ||
+    (parsed.hostname === 'chrome.google.com' && parsed.pathname.startsWith('/webstore'))
+  if (isWebStore) {
+    return { success: false, code: 'PAGE_BLOCKED', message: '无法导航到 Web Store' }
+  }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
   if (payload.newTab) {

@@ -30,26 +30,25 @@ function isSensitiveKey(key: string): boolean {
 }
 
 export async function areaGet(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  // 默认 area 为 local（向后兼容旧命令）
-  const area = parseArea(payload.area) ?? 'local'
+  // 必须显式指定 area，避免误读整个默认存储
+  const parsedArea = parseArea(payload.area)
+  if (!parsedArea) {
+    return { success: false, code: 'INVALID_PARAMS', message: '必须明确指定 storage area' }
+  }
+  const area = parsedArea
   const key = payload.key === undefined ? undefined : validateKey(payload.key)
   if (payload.key !== undefined && key === null) {
     return { success: false, code: 'INVALID_PARAMS', message: 'key 必须是非空字符串' }
   }
-  // 不允许读取敏感 key，但允许读取整个 area（列出全部键）
-  if (key && isSensitiveKey(key)) {
+  // 必须指定 key；不允许读取整个 area（避免大体积 + 敏感键泄露）
+  if (key === undefined || key === null || key === '') {
+    return { success: false, code: 'ACCESS_DENIED', message: '必须指定 key，禁止读取整个 area' }
+  }
+  if (isSensitiveKey(key)) {
     return { success: false, code: 'ACCESS_DENIED', message: '禁止读取敏感配置键' }
   }
-  const all = (await getArea(area).get(null)) as Record<string, unknown>
-  // 过滤掉敏感键
-  const filteredAll: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(all)) {
-    if (!isSensitiveKey(k)) filteredAll[k] = v
-  }
-  if (key === undefined || key === '') {
-    return { success: true, area, key: undefined, value: filteredAll }
-  }
-  return { success: true, area, key, value: filteredAll[key as string] }
+  const value = (await getArea(area).get(key)) as Record<string, unknown>
+  return { success: true, area, key, value: value[key as string] }
 }
 
 /** 写入 local/session/sync storage；managed area 不允许写入。 */
@@ -98,9 +97,19 @@ export async function areaClear(payload: Record<string, unknown>): Promise<Execu
   return { success: true, area, cleared: true }
 }
 
-/** 保留原有 storage_get 行为，避免斜杠命令回归。 */
+/** 保留原有 storage_get 行为：默认 area 为 local，兼容 slash 命令。 */
 export async function get(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  return areaGet({ ...payload, area: payload.area ?? 'local' })
+  // slash /storage-get 的旧路径：默认 area=local；无 key → 列出 local 全部
+  if (payload.area === undefined && payload.key === undefined) {
+    const area = chrome.storage.local as StorageArea
+    const all = (await area.get(null)) as Record<string, unknown>
+    const filtered: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(all)) {
+      if (!isSensitiveKey(k)) filtered[k] = v
+    }
+    return { success: true, area: 'local', value: filtered }
+  }
+  return areaGet(payload)
 }
 
 /** 保留原有 storage_set 行为，避免斜杠命令回归。 */

@@ -21,7 +21,7 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 export function isValidPlanItem(value: unknown): value is PlanItem {
   if (
     !isPlainObject(value) ||
-    !hasOnlyKeys(value, ['id', 'tool', 'args', 'deps', 'mergedFrom', 'seededResults'])
+    !hasOnlyKeys(value, ['id', 'tool', 'args', 'deps', 'mergedFrom', 'seededResults', 'candidates'])
   )
     return false
   return (
@@ -38,7 +38,11 @@ export function isValidPlanItem(value: unknown): value is PlanItem {
     (value.mergedFrom === undefined ||
       (Array.isArray(value.mergedFrom) &&
         value.mergedFrom.every((item) => typeof item === 'string'))) &&
-    (value.seededResults === undefined || isPlainObject(value.seededResults))
+    (value.seededResults === undefined || isPlainObject(value.seededResults)) &&
+    // candidates：usePlanRunner 在 dangerous 工具 precompute 阶段注入的候选 tabIds，
+    // 仅作为 SW buildConfirmChildren 的兜底数据源；dispatchTool 仍走 NEEDS_CONFIRM 路径，
+    // 它本身不参与 args 校验，所以仅校验「必须是数组」即可。
+    (value.candidates === undefined || Array.isArray(value.candidates))
   )
 }
 

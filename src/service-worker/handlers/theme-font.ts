@@ -15,9 +15,16 @@ export async function observeTheme(): Promise<ExecutionResult> {
   }
 }
 
-/** 设置主题模式（light/dark/device）或颜色 */
-export async function updateTheme(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  return { success: true, themeMode: payload.mode || 'device' }
+/** 设置主题模式（light/dark/device）或颜色。
+ * Chrome MV3 扩展无法修改浏览器主题（theme.* API 仅原生扩展使用）；
+ * 任何"切换深色主题"类请求都应让 AI 复盘如实告知用户。
+ */
+export async function updateTheme(_payload: Record<string, unknown>): Promise<ExecutionResult> {
+  return {
+    success: false,
+    code: 'NOT_SUPPORTED',
+    message: 'Chrome 不支持通过扩展修改浏览器主题',
+  }
 }
 
 /** 查看浏览器默认字号（pixelSize + fontSize label） */

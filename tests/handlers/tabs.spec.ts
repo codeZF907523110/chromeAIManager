@@ -105,4 +105,90 @@ describe('tabs.remove', () => {
     expect(result.removed).toBe(0)
     expect(chromeMock.tabs.remove).not.toHaveBeenCalled()
   })
+
+  it('__preConfirmed=true 时 domain 模式也包含 pinned', async () => {
+    chromeMock.tabs.query.mockResolvedValueOnce([
+      { id: 60, url: 'https://baidu.com/pinned', pinned: true },
+      { id: 61, url: 'https://baidu.com/normal', pinned: false },
+    ])
+    const result = await tabs.remove({ domain: 'baidu.com', __preConfirmed: true })
+    expect(result.removed).toBe(2)
+    expect(chromeMock.tabs.remove).toHaveBeenCalledWith([60, 61])
+  })
+
+  it('未 preConfirmed + 显式 pinned tabId：仍按用户显式选择执行', async () => {
+    // 显式 tabIds 是用户精确选择，不被 domain 二次扩展过滤。
+    const result = await tabs.remove({ tabIds: [70] })
+    expect(result.removed).toBe(1)
+    expect(chromeMock.tabs.remove).toHaveBeenCalledWith([70])
+  })
+})
+
+describe('tabs.removeByUrl', () => {
+  it('__preConfirmed=true 时显式 tabIds 包含 pinned 也关闭', async () => {
+    chromeMock.tabs.query.mockReset()
+    chromeMock.tabs.remove.mockClear()
+    chromeMock.tabs.query.mockResolvedValueOnce([
+      { id: 100, url: 'https://example.com/foo', title: 'foo', pinned: true },
+      { id: 101, url: 'https://github.com/bar', title: 'bar', pinned: false },
+    ])
+    const result = await tabs.removeByUrl({
+      query: 'github',
+      tabIds: [100, 101],
+      __preConfirmed: true,
+    })
+    expect(result.removed).toBe(2)
+    expect(chromeMock.tabs.remove).toHaveBeenLastCalledWith([100, 101])
+  })
+
+  it('显式 tabIds + 未 preConfirmed：默认跳过 pinned', async () => {
+    chromeMock.tabs.query.mockReset()
+    chromeMock.tabs.remove.mockClear()
+    chromeMock.tabs.query.mockResolvedValueOnce([
+      { id: 110, url: 'https://github.com/a', pinned: true },
+      { id: 111, url: 'https://github.com/b', pinned: false },
+    ])
+    const result = await tabs.removeByUrl({ query: 'github', tabIds: [110, 111] })
+    expect(result.removed).toBe(1)
+    expect(chromeMock.tabs.remove).toHaveBeenLastCalledWith([111])
+  })
+
+  it('query 隐式模式：跳过 pinned', async () => {
+    chromeMock.tabs.query.mockReset()
+    chromeMock.tabs.remove.mockClear()
+    chromeMock.tabs.query.mockResolvedValueOnce([
+      { id: 120, url: 'https://github.com/a', pinned: true },
+      { id: 121, url: 'https://github.com/b', pinned: false },
+    ])
+    const result = await tabs.removeByUrl({ query: 'github' })
+    expect(result.removed).toBe(1)
+    expect(chromeMock.tabs.remove).toHaveBeenLastCalledWith([121])
+  })
+})
+
+describe('tabs.groupByDomain', () => {
+  it('同窗口同域名重复 tabId 去重', async () => {
+    const groups = await import('../../src/service-worker/handlers/tab-groups')
+    vi.spyOn(groups, 'query').mockResolvedValue({ success: true, groups: [] } as never)
+    const chromeMock2 = {
+      tabs: {
+        query: vi.fn(async () => [
+          { id: 200, url: 'https://github.com/a', windowId: 1 },
+          { id: 200, url: 'https://github.com/a', windowId: 1 },
+          { id: 201, url: 'https://github.com/b', windowId: 1 },
+        ]),
+      },
+      windows: {
+        getLastFocused: vi.fn(async () => ({ id: 1 })),
+      },
+    }
+    vi.stubGlobal('chrome', chromeMock2)
+    const result = await tabs.groupByDomain({ allWindows: false })
+    expect(result.success).toBe(true)
+    const groupArr = (result.groups as Array<{ tabIds: number[] }>).filter(
+      (g) => g.tabIds.length >= 1
+    )
+    // tabId 200 不应该出现两次
+    expect(groupArr[0].tabIds.filter((id) => id === 200).length).toBe(1)
+  })
 })

@@ -105,8 +105,9 @@ describe('executePlan', () => {
         { id: 'p1', tool: 'NEEDS_CONFIRM_TOOL', args: { x: 1 }, deps: [] },
         {
           id: 'p2',
-          tool: 'tabs_remove',
-          args: { tabIds: [1], force: true },
+          // 非 dangerous 的依赖项：验证 NEEDS_CONFIRM 触发后下游被阻断
+          tool: 'mute_tabs_by_domain',
+          args: { domain: 'github.com' },
           deps: ['p1'],
         },
       ],
@@ -125,6 +126,57 @@ describe('executePlan', () => {
     } as AIPlan)
     expect(report.success).toBe(false)
     expect(report.items[0].result.code).toBe('DUPLICATE_ITEM_ID')
+  })
+
+  it('多个 dangerous item → 整 plan 拒绝（MULTIPLE_DANGEROUS_ITEMS）', async () => {
+    // 新策略：plan 内 dangerous item > 1 直接拒绝整 plan，避免"一卡多项"误判。
+    // 旧期望是"force:true 全跑通再让 NEEDS_CONFIRM 推进"——已废弃。
+    const report = await executePlan({
+      thought: '',
+      plan: [
+        { id: 'p1', tool: 'tabs_remove', args: { tabIds: [1], force: true }, deps: [] },
+        { id: 'p2', tool: 'NEEDS_CONFIRM_TOOL', args: { x: 2, force: true }, deps: [] },
+        { id: 'p3', tool: 'observe_tabs', args: {}, deps: [] },
+      ],
+    } as AIPlan)
+    expect(report.success).toBe(false)
+    expect(report.needsConfirm).toBeUndefined()
+    for (const item of report.items) {
+      expect(item.result.code).toBe('MULTIPLE_DANGEROUS_ITEMS')
+    }
+  })
+
+  it('单 dangerous + safe：dangerous 一项先行，safe 被阻断', async () => {
+    // 验证多 dangerous 场景：每轮只跑一项 dangerous，其余（包括非 dangerous）也走 BLOCKED。
+    const report = await executePlan({
+      thought: '',
+      plan: [
+        { id: 'p1', tool: 'NEEDS_CONFIRM_TOOL', args: { x: 1 }, deps: [] },
+        { id: 'p2', tool: 'observe_tabs', args: {}, deps: [] },
+      ],
+    } as AIPlan)
+    expect(report.needsConfirm?.itemId).toBe('p1')
+    expect(report.items.find((i) => i.id === 'p2')?.result.code).toBe('BLOCKED_BY_FAILED_DEP')
+  })
+
+  it('单源 DANGEROUS_TOOLS：注册的 dangerous 工具被识别（bookmarks_remove_node 走 danger 分支）', async () => {
+    // 先扩展 mock 让 bookmarks_remove_node 被加入 DANGEROUS_TOOLS，
+    // 验证 plan-runner 用同一份 DANGEROUS_TOOLS 拦截，不会因为双源漂移而漏掉。
+    const handlers = await import('../src/service-worker/handlers')
+    ;(handlers.DANGEROUS_TOOLS as Set<string>).add('bookmarks_remove_node')
+    try {
+      const report = await executePlan({
+        thought: '',
+        plan: [
+          { id: 'p1', tool: 'bookmarks_remove_node', args: { nodeId: '1', force: true }, deps: [] },
+        ],
+      } as AIPlan)
+      // mock 没有 NEEDS_CONFIRM 分支处理 bookmarks_remove_node，dispatchTool 直接成功
+      expect(report.success).toBe(true)
+      expect(report.items[0].result.success).toBe(true)
+    } finally {
+      ;(handlers.DANGEROUS_TOOLS as Set<string>).delete('bookmarks_remove_node')
+    }
   })
 
   it('顶层失败不阻断其他并行项', async () => {

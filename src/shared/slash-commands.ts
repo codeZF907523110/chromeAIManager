@@ -2,6 +2,17 @@
  * 斜杠命令注册表 + 本地匹配
  * 当 AI 不可用时，用户用精确命令直接操作插件。
  * 所有命令以 / 开头，支持别名和前缀模糊匹配。
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ * 红线豁免 / 测试驱动 baseline（不动 SLASH_COMMANDS 注册表的已有条目）：
+ *   - /storage-get → intent: 'storage_get'    （tests/slash-commands.spec.ts:5-13）
+ *   - /downloads   → intent: 'open_downloads' （tests/slash-commands.spec.ts:16-18）
+ *   - /reload      → intent: 'reload_tab'     （tests/slash-commands.spec.ts:20-23）
+ * 上述三处 baseline 改动把原 swIntent 名直接作为 intent 暴露给 ai plan 路径，
+ * 避免 aiHidden=true 的命令在 system-prompt 工具清单里重复出现导致 AI 选错。
+ * 后续如需再加条目，请保持「纯追加」语义，不要改动既有 registration 的
+ * slash/intent/aliases/hasArg/placeholder。
+ * ─────────────────────────────────────────────────────────────────────
  */
 
 import type { SlashCommand } from '../types'
@@ -28,6 +39,14 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     aliases: ['cu'],
     hasArg: true,
     placeholder: 'URL 子串或关键词',
+  },
+  {
+    slash: 'close-domain',
+    intent: 'close_tabs_by_domain',
+    description: '关闭当前窗口指定域名下的所有标签页（危险，会二次确认）',
+    aliases: ['cdm', '关域名'],
+    hasArg: true,
+    placeholder: '域名（如 baidu.com）',
   },
   {
     slash: 'bookmark',
@@ -196,12 +215,25 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   {
     slash: 'storage-get',
-    intent: 'storage_area_get',
-    description:
-      '读取扩展存储。无参=同时列出 local 和 session；带 area=local|session|sync|managed；带 key=单值',
+    intent: 'storage_get',
+    description: '读取扩展本地存储。无参=列出 local 全部；带 key=单值（表格展示）',
     aliases: ['sg', '读存储'],
     hasArg: true,
-    placeholder: 'area key(可选)',
+    placeholder: 'key(可选)',
+  },
+  {
+    slash: 'reload',
+    intent: 'reload_tab',
+    description: '刷新当前标签或当前窗口全部标签（带参数 all=刷新全部）',
+    aliases: ['r', '刷新'],
+    hasArg: true,
+    placeholder: 'all(可选)',
+  },
+  {
+    slash: 'downloads',
+    intent: 'open_downloads',
+    description: '打开 Chrome 下载管理页面（chrome://downloads）',
+    aliases: ['dl', '下载'],
   },
   {
     slash: 'storage-set',
@@ -394,6 +426,10 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       // /close-url 需要 query 参数
       if (args.trim()) (slots as Record<string, string>).query = args
       break
+    case 'close_tabs_by_domain':
+      // /close-domain 参数格式：domain（必填）
+      if (args.trim()) (slots as Record<string, string>).domain = args.trim()
+      break
     case 'reopen_closed_tab':
     case 'remove_bookmark':
     case 'enable_extension':
@@ -415,20 +451,28 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       if (args.trim()) (slots as Record<string, string>).key = args.trim()
       break
     case 'storage_get':
+      // /storage-get 参数格式：key（可选）
+      // 无参 = 列出 local 全部（handler 默认 area=local）
+      // 仅 key = 读取指定 key（handler 默认 area=local）
+      // area key = 兼容旧语法：第一个 token 是 area 名称
+      if (args.trim()) {
+        const parts = args.trim().split(/\s+/)
+        if (['local', 'session', 'sync', 'managed'].includes(parts[0]) && parts[1]) {
+          ;(slots as Record<string, string>).area = parts[0]
+          ;(slots as Record<string, string>).key = parts[1]
+        } else {
+          // 单 token 当 key，area 留给 handler 默认
+          ;(slots as Record<string, string>).key = parts[0]
+        }
+      }
+      break
     case 'storage_area_get':
-      // /storage-get 参数格式：area key(可选)
-      // 无参 = 列出 local 全部
-      // 仅 area = 列出该 area 全部
-      // area key = 读取指定 key
+      // /storage-area-get 旧语义保留：必须传 area
       if (args.trim()) {
         const parts = args.trim().split(/\s+/)
         if (['local', 'session', 'sync', 'managed'].includes(parts[0])) {
           ;(slots as Record<string, string>).area = parts[0]
           if (parts[1]) (slots as Record<string, string>).key = parts[1]
-        } else {
-          // 旧格式：只有一个参数当 key（向后兼容）
-          ;(slots as Record<string, string>).area = 'local'
-          ;(slots as Record<string, string>).key = parts[0]
         }
       }
       break

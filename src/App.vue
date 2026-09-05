@@ -219,7 +219,7 @@ import ConfirmCard from './components/ConfirmCard.vue'
 import { useAIEngine } from './composables/useAIEngine'
 import { useSlashCommandRunner } from './composables/useSlashCommandRunner'
 import { useSettings } from './composables/useSettings'
-import { isRunning } from './composables/usePlanRunner'
+import { runningRef } from './composables/usePlanRunner'
 import type { AIModel, AIProvider } from './types'
 
 type SettingsPage = 'home' | 'models' | 'about'
@@ -284,10 +284,9 @@ async function copyScreenshotToClipboard(dataUrl: string): Promise<void> {
   }
 }
 
-const isPlanRunning = ref(isRunning())
-const pollTimer = window.setInterval(() => {
-  isPlanRunning.value = isRunning()
-}, 200)
+// B33: 删 200ms setInterval 轮询；usePlanRunner 已把 runningRef 暴露成响应式 ref，
+// 模板直接绑定 runningRef 即可，自动随 ref 变化触发重新渲染。
+const isPlanRunning = runningRef
 
 const { themeMode, setThemeMode } = useSettings()
 
@@ -397,7 +396,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', saveSession)
-  window.clearInterval(pollTimer)
+  // B33: setInterval 已移除，无需 clearInterval
 })
 
 function saveSession() {

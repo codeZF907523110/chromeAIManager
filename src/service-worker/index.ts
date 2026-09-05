@@ -138,13 +138,11 @@ export async function handleMessage(
       console.warn(`[SW][MSG_EXECUTE] reject: UNKNOWN_TOOL intent=${intent}`)
       return { success: false, code: 'UNKNOWN_TOOL', message: `未知工具: ${intent}` }
     }
-    // __preConfirmed: true 表示前端已通过自己的确认卡二次确认过，直接跳过危险检查
-    const skipDangerousCheck = payload.__preConfirmed === true
-    console.log(`[SW][MSG_EXECUTE] dispatch intent=${intent}, __preConfirmed=${skipDangerousCheck}`)
+    // C14-P0-1：__preConfirmed 不再作为信任旁路；所有 MSG_EXECUTE 统一交给 dispatchTool
+    // 走 needs_confirm / consume_confirmation 路径（详情见 handlers/index.ts:541-555）。
+    console.log(`[SW][MSG_EXECUTE] dispatch intent=${intent}`)
     try {
-      const result = skipDangerousCheck
-        ? await dispatchTool(intent, payload as Record<string, unknown>)
-        : await dispatchTool(intent, payload)
+      const result = await dispatchTool(intent, payload as Record<string, unknown>)
       console.log(
         `[SW][MSG_EXECUTE] done intent=${intent}, success=${result?.success !== false}, code=${result?.code ?? '-'}`
       )

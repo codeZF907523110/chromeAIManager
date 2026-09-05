@@ -1,6 +1,7 @@
 import type { ExecutionResult } from '../../types/execution'
 
-const SENSITIVE_TYPES = new Set(['passwords', 'downloads'])
+// 注：cookies / history 也属于敏感数据 — 清空后影响登录态与浏览轨迹。
+const SENSITIVE_TYPES = new Set(['passwords', 'downloads', 'cookies', 'history'])
 const ALLOWED_TYPES = new Set([
   'cache',
   'cookies',

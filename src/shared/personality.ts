@@ -56,6 +56,26 @@ export function wrapCatReply(text: string): string {
 }
 
 /**
+ * 用于"AI 已经生成完整自然语言回复时"的收尾包装。
+ * 只补一个收尾 emoji，不再强行拼 opener/follow-up，避免出现
+ * 「AI 已经写好自然语言回复，却又被加上"还有什么想让我做的吗"」的拼接感。
+ *
+ * 用例：plan 跑完后由 post-plan-summarizer 生成的复盘回复。
+ * 与 wrapCatReply 的区别：wrapCatReply 给短文案套人设头尾；本函数给长文案只补 emoji。
+ *
+ * emoji 去重：剥离尾部已存在的收尾标点 + emoji + 空白再加新 emoji，避免
+ * "..."、"喵~"、"🐾" 等后缀叠加出 "已经关闭了 X 个百度页面~ 🐾 🐾"。
+ */
+const TRAILING_PUNCT = /[\s.，,！!？?~～🐾🐱✨💕💫🌟⭐🎉😊💪]+$/u
+
+export function wrapCatReplyFinal(text: string): string {
+  if (!text || text.startsWith('⚠')) return text
+  const trimmed = text.replace(TRAILING_PUNCT, '')
+  const emoji = pick(CLOSING_EMOJIS)
+  return `${trimmed} ${emoji}`
+}
+
+/**
  * 获取 cat 的系统提示词（自我介绍部分）
  */
 export function getCatSystemIntro(): string {

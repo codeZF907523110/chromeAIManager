@@ -280,9 +280,13 @@ export function useSlashCommandRunner(deps: SlashRunnerDeps): SlashRunner {
 
   // ──── 主入口：处理一条斜杠命令 ────
   async function run(text: string): Promise<void> {
-    deps.setPendingConfirm(null)
     const result = matchSlashCommand(text)
     if (!result) return
+    // B25: early branch clear_chat / reset_context only
+    const { intent: preIntent } = result as { intent?: string }
+    if (preIntent === 'clear_chat' || preIntent === 'reset_context') {
+      deps.setPendingConfirm(null)
+    }
     if ('error' in result) {
       deps.addMessage(
         'ai-chat',

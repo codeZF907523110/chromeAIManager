@@ -53,6 +53,12 @@ function summarizeUrl(url: string | undefined): string | undefined {
 }
 
 export async function restore(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // sessionId 模式：直接根据指定 sessionId 恢复
+  if (typeof payload.sessionId === 'string' && payload.sessionId.trim()) {
+    const sessionId = payload.sessionId.trim()
+    await chrome.sessions.restore(sessionId)
+    return { success: true, sessionId, restored: 1 }
+  }
   // query 模式：从最近关闭的会话中查找匹配的标签恢复
   if (typeof payload.query === 'string' && payload.query.trim()) {
     const query = payload.query.trim().toLowerCase()

@@ -25,6 +25,12 @@ export interface RenderResultDeps {
   addSystem?: (text: string) => void
   /** 截图 dataUrl 渲染：默认 addAIChat + 占位文本，调用方可在 deps 里覆盖 */
   showScreenshot?: (dataUrl: string, tabTitle?: string) => void
+  /**
+   * 调用方注入：renderExecutionResult 进入函数体后回填一次，
+   * 告知 plan 汇总层"本步已渲染过 ai-chat，无需再汇总"。
+   * 避免维护一份 17 intent 白名单（usePlanRunner.run 旧 hasRendered 判定）。
+   */
+  markRendered?: () => void
 }
 
 /**
@@ -41,16 +47,20 @@ export async function renderExecutionResult(
   deps: RenderResultDeps
 ): Promise<void> {
   const result = response as ExecutionResult
+  // 进入函数体即视为"本步将由 renderExecutionResult 渲染"；
+  // 仅当真正写过 addAIChat / showScreenshot 时才通知调用方，避免 stopped 等早退误报。
   if (result.success === false && result.code) {
     const message = result.message || '失败'
     const suggestion = result.suggestion ? `（${result.suggestion}）` : ''
     deps.addAIChat(
       wrapCatReply(`抱歉，操作 "${message}" 失败喵${suggestion ? ' ' + suggestion : ''}`)
     )
+    deps.markRendered?.()
     return
   }
   if (result.error) {
     deps.addAIChat(wrapCatReply('抱歉，操作失败了喵~'))
+    deps.markRendered?.()
     return
   }
 
@@ -61,6 +71,7 @@ export async function renderExecutionResult(
       r.groups as Array<{ title: string; tabIds: number[]; windowId: number }>,
       deps
     )
+    deps.markRendered?.()
     return
   }
 
@@ -69,14 +80,17 @@ export async function renderExecutionResult(
       r.groups as Array<{ groupId: number; tabIds: number[] }>,
       deps
     )
+    deps.markRendered?.()
     return
   }
 
   if (r.screenshot && typeof r.screenshot === 'string') {
     deps.showScreenshot?.(r.screenshot, r.tabTitle as string | undefined) ??
       defaultShowScreenshot(r.screenshot, r.tabTitle as string | undefined, deps)
+    deps.markRendered?.()
     return
   }
+  // stopped（用户取消录制）—— 不产生气泡，不视为已渲染；调用方需走汇总/复盘路径。
   if (r.stopped) {
     return
   }
@@ -84,8 +98,102 @@ export async function renderExecutionResult(
   if (intent === 'find_tab') {
     const tabs = (r.tabs as Array<{ id?: number; title?: string; url?: string }> | undefined) ?? []
     const body = buildMarkdownBody(intent, { success: true, tabs } as ExecutionResult)
-    deps.addAIChat(body ?? { markdown: wrapCatReply(`找到 ${tabs.length} 个匹配的标签`) })
+    if (body) {
+      deps.addAIChat(body)
+      deps.markRendered?.()
+      return
+    }
+    deps.addAIChat({ markdown: wrapCatReply(`找到 ${tabs.length} 个匹配的标签`) })
+    deps.markRendered?.()
     return
+  }
+
+  // P2-3：find_tab 激活后明确告诉用户切到哪个标签
+  if (intent === 'tabs_observe' && (r as Record<string, unknown>).active === true) {
+    const tab = (r as { tab?: { title?: string; url?: string } }).tab
+    const label = tab?.title || tab?.url
+    if (label) {
+      deps.addAIChat({ markdown: wrapCatReply(`已切换到标签：${label}`) })
+      deps.markRendered?.()
+      return
+    }
+  }
+
+  // P2-2：aiHidden 工具专属文案
+  if (intent === 'reload_tab') {
+    const reloaded = typeof r.reloaded === 'number' ? r.reloaded : 1
+    deps.addAIChat({
+      markdown: wrapCatReply(reloaded > 1 ? `已刷新 ${reloaded} 个标签` : '已刷新当前标签'),
+    })
+    deps.markRendered?.()
+    return
+  }
+  if (intent === 'move_tab') {
+    const moved = typeof r.moved === 'number' ? r.moved : 1
+    const newIndex = typeof r.newIndex === 'number' ? r.newIndex + 1 : undefined
+    deps.addAIChat({
+      markdown: wrapCatReply(
+        newIndex !== undefined
+          ? `已移动 ${moved} 个标签到第 ${newIndex} 位`
+          : `已移动 ${moved} 个标签`
+      ),
+    })
+    deps.markRendered?.()
+    return
+  }
+  if (intent === 'sort_tabs') {
+    const reordered = typeof r.reordered === 'number' ? r.reordered : 0
+    deps.addAIChat({
+      markdown: wrapCatReply(
+        reordered > 0 ? `已按域名重新排序 ${reordered} 个标签` : '没有可排序的标签'
+      ),
+    })
+    deps.markRendered?.()
+    return
+  }
+  if (intent === 'discard_tabs') {
+    const discarded = typeof r.discarded === 'number' ? r.discarded : 0
+    if (discarded > 0) {
+      deps.addAIChat({ markdown: wrapCatReply(`已休眠 ${discarded} 个标签`) })
+    } else {
+      deps.addAIChat({ markdown: wrapCatReply('没有可休眠的标签') })
+    }
+    deps.markRendered?.()
+    return
+  }
+  if (intent === 'reopen_closed_tab') {
+    const restored = typeof r.restored === 'number' ? r.restored : 0
+    deps.addAIChat({
+      markdown: wrapCatReply(restored > 0 ? '已恢复最近关闭的标签' : '没有找到可恢复的标签'),
+    })
+    deps.markRendered?.()
+    return
+  }
+  if (intent === 'list_groups' || intent === 'tabs_observe_groups') {
+    const body = buildMarkdownBody(intent, result)
+    if (body) {
+      deps.addAIChat(body)
+      deps.markRendered?.()
+      return
+    }
+    const groups = (r.groups as unknown[] | undefined) ?? []
+    deps.addAIChat({
+      markdown: wrapCatReply(
+        groups.length > 0 ? `当前有 ${groups.length} 个标签分组` : '当前窗口没有标签分组'
+      ),
+    })
+    deps.markRendered?.()
+    return
+  }
+
+  // P2-5：tabs_observe 走 markdownFactory 富组件表格，不漏 JSON
+  if (intent === 'tabs_observe') {
+    const body = buildMarkdownBody(intent, result)
+    if (body) {
+      deps.addAIChat(body)
+      deps.markRendered?.()
+      return
+    }
   }
 
   if (intent === 'reopen_closed_tab') {
@@ -131,14 +239,22 @@ export async function renderExecutionResult(
   }
   if (intent === 'clear_cookies') {
     const removed = r.removed as number | undefined
+    const domain = r.domain as string | undefined
     if (removed !== undefined) {
       if (removed > 0) {
         deps.addAIChat({
-          markdown: wrapCatReply(`已清除 ${r.domain || ''} 的 ${removed} 个 Cookie`),
+          markdown: wrapCatReply(
+            domain ? `已清除 ${domain} 的 ${removed} 个 Cookie` : `已清除 ${removed} 个 Cookie`
+          ),
         })
       } else {
+        // B15: removed=0 时区分「按域查询无结果」与「用户没传域直接清」两种语义，
+        // 旧实现两种情况都说"当前没有 Cookie 可清除"，误导用户以为域下真的没有 cookie。
+        // 没传域时 → "Cookie 已是空的"。
         deps.addAIChat({
-          markdown: wrapCatReply(`当前没有 ${r.domain || ''} 的 Cookie 可清除`),
+          markdown: wrapCatReply(
+            domain ? `当前没有 ${domain} 的 Cookie 可清除` : 'Cookie 已是空的，无需清理'
+          ),
         })
       }
     } else {
@@ -153,8 +269,12 @@ export async function renderExecutionResult(
       return
     }
     const deleted = r.deleted as number | undefined
+    const truncated = (r as Record<string, unknown>).truncated === true
     if (deleted !== undefined) {
-      deps.addAIChat({ markdown: wrapCatReply(`已删除 ${deleted} 条历史记录`) })
+      // P2-8: query 模式命中 SOFT_LIMIT(10000) 时告诉用户「可能还有更多」，
+      // 与 SW history.remove 返回的 truncated + suggestion 字段对齐。
+      const tail = truncated ? '（结果已达上限，可能仍有匹配项未删除）' : ''
+      deps.addAIChat({ markdown: wrapCatReply(`已删除 ${deleted} 条历史记录${tail}`) })
     } else {
       deps.addAIChat({ markdown: wrapCatReply('已删除历史记录') })
     }
@@ -212,20 +332,57 @@ export async function renderExecutionResult(
   }
   if (intent === 'tabs_remove' || intent === 'close_tabs_by_domain') {
     const removed = typeof r.removed === 'number' ? r.removed : 0
-    const target = (_slots as { domain?: string } | undefined)?.domain
+    const target =
+      (_slots as { domain?: string } | undefined)?.domain ?? (r.domain as string | undefined)
+    // B14: 区分 0 / >0 / 缺失三种语义。
+    // - removed>0 → "已关闭 N 个标签"
+    // - removed===0 但有 target → "当前窗口没有匹配的 <domain> 标签"
+    // - removed===0 且无 target → "没有可关闭的标签"
+    // - removed 字段缺失（SW 未返回）→ 兜底说"标签操作完成"，不再伪报"已关闭 0 个"。
     if (removed > 0) {
       const label = target ? `当前窗口 ${target} 的 ${removed} 个标签` : `${removed} 个标签`
       deps.addAIChat({ markdown: wrapCatReply(`已关闭${label}`) })
+    } else if (target) {
+      deps.addAIChat({ markdown: wrapCatReply(`当前窗口没有匹配的 ${target} 标签`) })
+    } else if (typeof r.removed === 'number') {
+      deps.addAIChat({ markdown: wrapCatReply('没有可关闭的标签') })
     } else {
-      deps.addAIChat({
-        markdown: wrapCatReply(target ? `当前窗口没有匹配的 ${target} 标签` : '没有可关闭的标签'),
-      })
+      deps.addAIChat({ markdown: wrapCatReply('标签操作完成') })
     }
     return
   }
 
+  // B23: tab_groups_* clientExec 路径走 handleClientExec 已渲染；这里兜底走 formatResultDescription。
+  // 不再依赖 clientExec 判定（plan-runner 也会跳过 clientExec 重复渲染）。
+  if (
+    intent === 'tab_groups_create' ||
+    intent === 'tab_groups_update' ||
+    intent === 'tab_groups_move_tabs' ||
+    intent === 'tab_groups_ungroup_tabs'
+  ) {
+    const body = buildMarkdownBody(intent, result)
+    if (body) {
+      deps.addAIChat(body)
+      deps.markRendered?.()
+      return
+    }
+  }
+
+  // 通用 fallback：buildMarkdownBody 返回 null 时也用 wrapCatReply 包装的兜底文案，
+  // 并触发 markRendered 让汇总层不再二次渲染。
   const body = buildMarkdownBody(intent, result)
-  deps.addAIChat(body ?? { markdown: wrapCatReply(formatResultDescription(r) || '操作完成') })
+  const fallback = body ?? { markdown: wrapCatReply(formatResultDescription(r) || '操作完成') }
+  deps.addAIChat(fallback)
+  deps.markRendered?.()
+  // P2-1：兜底文案应避免泄露原始 JSON。
+  // renderExecutionResult 的调用方已在所有已知分支写入了 addAIChat，
+  // 走到这里说明 result shape 不在白名单；用「操作完成 + 字段数」替代 JSON.stringify(r).slice(0,100)
+  if (!body) {
+    console.warn(
+      '[render-result] 未命中已知分支,result keys=',
+      Object.keys(r).join(',') || '<empty>'
+    )
+  }
 }
 
 /**
@@ -389,7 +546,10 @@ export function formatResultDescription(r: Record<string, unknown>): string {
   if (r.bookmark) return `添加书签 *${(r.bookmark as { title: string }).title}*`
   if (r.windows) return `列出 ${(r.windows as unknown[]).length} 个窗口`
   if (r.window) return '创建窗口'
-  if (r.items) return `搜索到 ${r.found} 条历史`
+  if (r.items)
+    return `搜索到 ${r.found} 条历史${(r as Record<string, unknown>).truncated === true ? '（已达上限）' : ''}`
+  if (r.deleted !== undefined && r.truncated === true)
+    return `删除 ${r.deleted} 条历史（结果已达上限，可能仍有匹配项未删除）`
   if (r.deleted !== undefined && r.timeRange) return `删除 ${r.deleted} 条历史 (${r.timeRange})`
   if (r.deleted !== undefined) return `删除 ${r.deleted} 条记录`
   if (r.navigated) return `导航至 ${r.navigated}`
@@ -427,5 +587,7 @@ export function formatResultDescription(r: Record<string, unknown>): string {
     return `创建文件夹 *${(r.folder as { title: string }).title}*`
   if (r.renamed && r.to) return `重命名 *${r.renamed}* -> *${r.to}*`
   if (r.renamed) return `重命名 *${r.renamed}*`
-  return JSON.stringify(r).slice(0, 100)
+  // P2-1：renderExecutionResult 的兜底已经走「操作完成」+ 字段数，
+  // 这里仅作为 formatResultDescription 的纯文本辅助函数，不再向用户暴露 JSON。
+  return `操作完成（未知字段 ${Object.keys(r).length} 个）`
 }

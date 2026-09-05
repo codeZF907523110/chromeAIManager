@@ -18,25 +18,16 @@ import { MSG_GET_CONTEXT } from '../shared/constants'
 /** 模块级单例 — 跨 useAIEngine 与 usePlanRunner 共享 */
 export const contextCache = ref<Context | null>(null)
 
-/** 暴露给 intent-rules.ts 等纯函数模块复用，避免重写。
+/** 纯函数版本的 tab 匹配工具，可被任意模块复用。
  *  签名必须与 usePrecompute 内部 matchesQuery/matchesDomain 完全一致；
  *  内部函数因闭包捕获 tabs 不可直接 export，故在此处再写一份纯函数版本。
  */
-export function matchesQueryUtil(
-  tab: { title?: string; url?: string },
-  query: string
-): boolean {
+export function matchesQueryUtil(tab: { title?: string; url?: string }, query: string): boolean {
   const q = query.toLowerCase().trim()
-  return (
-    (tab.title || '').toLowerCase().includes(q) ||
-    (tab.url || '').toLowerCase().includes(q)
-  )
+  return (tab.title || '').toLowerCase().includes(q) || (tab.url || '').toLowerCase().includes(q)
 }
 
-export function matchesDomainUtil(
-  tab: { url?: string },
-  domain: string
-): boolean {
+export function matchesDomainUtil(tab: { url?: string }, domain: string): boolean {
   try {
     const hostname = new URL(tab.url || '').hostname.toLowerCase().replace(/^www\./, '')
     const target = domain
@@ -62,7 +53,10 @@ export async function refreshContext(): Promise<Context> {
   contextCache.value = next
   console.log(
     `[usePrecompute] refreshContext OK tabs=${next?.tabs?.length ?? 0}`,
-    `firstTabs=${(next?.tabs ?? []).slice(0, 3).map((t) => `${t.id}:${(t.url || '').slice(0, 50)}`).join(',')}`
+    `firstTabs=${(next?.tabs ?? [])
+      .slice(0, 3)
+      .map((t) => `${t.id}:${(t.url || '').slice(0, 50)}`)
+      .join(',')}`
   )
   return next
 }
@@ -123,7 +117,10 @@ export async function precompute(
       const query = typeof slots.query === 'string' ? slots.query : ''
       const target = query ? currentWindowTabs.find((tab) => matchesQuery(tab, query)) : activeTab
       const out = target?.id === undefined ? {} : { tabId: target.id }
-      console.log(`[usePrecompute] result intent=screenshot query=${query} target=${target?.id}`, out)
+      console.log(
+        `[usePrecompute] result intent=screenshot query=${query} target=${target?.id}`,
+        out
+      )
       return out
     }
 
@@ -163,19 +160,36 @@ export async function precompute(
     case 'close_tabs_by_domain':
     case 'mute_tabs_by_domain':
     case 'unmute_tabs_by_domain': {
-      const domain = typeof slots.domain === 'string' ? slots.domain : ''
+      const domain = typeof slots.domain === 'string' ? slots.domain.trim() : ''
+      if (!domain) {
+        // B18: 空域名静默吞掉 tabIds=[] 让用户看不到原因；显式 warn 让上层（confirm 卡 / AI 复盘）拿到线索。
+        console.warn(`[usePrecompute] ${intent} missing domain slots=${JSON.stringify(slots)}`)
+        return { tabIds: [], unmatched: true, reason: 'missing_domain' }
+      }
       const matches = currentWindowTabs.filter((tab) => matchesDomain(tab, domain))
       const tabIds = matches.map((tab) => tab.id)
-      const out =
+      const out: Record<string, unknown> =
         intent === 'mute_tabs_by_domain'
           ? { tabIds, muted: true }
           : intent === 'unmute_tabs_by_domain'
             ? { tabIds, muted: false }
             : { tabIds }
+      if (matches.length === 0) {
+        // B18: 让上层通过 unmatched/reason 知道"无匹配"，便于 AI 复盘与 confirm 卡给用户明确反馈。
+        out.unmatched = true
+        out.reason = 'no_match'
+        out.domain = domain
+        console.warn(
+          `[usePrecompute] ${intent} no match domain=${domain} windowTabs=${currentWindowTabs.length}`
+        )
+      }
       console.log(
         `[usePrecompute] domain match intent=${intent} domain=${domain} matches=${matches.length}`,
         `matchedIds=${JSON.stringify(tabIds)}`,
-        `sample=${matches.slice(0, 5).map((t) => `${t.id}:${(t.url || '').slice(0, 80)}`).join(',')}`
+        `sample=${matches
+          .slice(0, 5)
+          .map((t) => `${t.id}:${(t.url || '').slice(0, 80)}`)
+          .join(',')}`
       )
       return out
     }

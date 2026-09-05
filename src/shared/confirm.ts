@@ -7,6 +7,78 @@ import { findDuplicateGroups } from '../service-worker/utils/tab-matcher'
 import type { Context } from '../types'
 import type { AIPlan } from './ai/plan-types'
 
+/**
+ * 危险操作确认后，二次发送时由前端勾选结果注入到 args 的字段名。
+ *
+ * 这些字段是用户在确认卡里主动勾选出的「合法差异」，不属于攻击者替换
+ * 操作目标的注入，因此指纹校验时允许它们在重发时新增到 args。
+ *
+ * 单一来源：buildReconfirmPayload 与 service-worker/confirmation.ts 的
+ * RECONFIRM_DERIVED_FIELDS_BY_TOOL / consumeConfirmation 都从这里读，
+ * 避免再出现"重发加字段导致 token 不匹配"这类 bug。
+ *
+ * 注意：本常量已与 RECONFIRM_DERIVED_FIELDS_BY_TOOL 双轨并存；前者仍保留
+ * 作为消费端的 fallback，未来会逐步下线。所有新增逻辑请使用
+ * `derivedFieldsFor(tool)` 取得工具专属白名单。
+ */
+export const RECONFIRM_DERIVED_FIELDS: ReadonlySet<string> = new Set([
+  'tabIds',
+  'keepIds',
+  'removeIds',
+  'selectedIds',
+  'selectedUrls',
+  'selectedNames',
+  'selectedGroupIds',
+])
+
+/** 控制流程字段：存在 args 中但不参与指纹比较。 */
+export const CONTROL_FIELDS: ReadonlySet<string> = new Set([
+  'force',
+  'confirmationToken',
+  '__preConfirmed',
+])
+
+/** 复制 args 时剥离控制字段，给 handler 留一个干净的入参。 */
+export function stripControlFields(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(args)) {
+    if (!CONTROL_FIELDS.has(k)) out[k] = v
+  }
+  return out
+}
+
+/**
+ * 按工具映射的派生字段白名单：
+ *   - 每个危险工具只允许自身契约声明的派生字段在重发时新增；
+ *   - 与全局白名单 RECONFIRM_DERIVED_FIELDS 的差异：
+ *     1) 不再放行任意「白名单字段」组合，避免「重发时新增 tabIds 改目标」类注入；
+ *     2) 类型归一化（bookmark ID 保留 string / tabIds 保留 number）由 buildReconfirmPayload 内部负责。
+ *
+ * 单一来源：buildReconfirmPayload 与 confirmation.matchesReconfirmArgs 都从这里读。
+ */
+export const RECONFIRM_DERIVED_FIELDS_BY_TOOL: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['tabs_remove', new Set(['tabIds', 'selectedIds'])],
+  ['tabs_remove_by_url', new Set(['tabIds', 'selectedIds'])],
+  ['close_duplicate_tabs', new Set(['keepIds', 'removeIds', 'tabIds'])],
+  ['close_tabs_by_url', new Set(['tabIds'])],
+  ['close_tabs_by_domain', new Set(['tabIds'])],
+  ['ungroup_all', new Set(['selectedGroupIds', 'groupIds'])],
+  ['bookmarks_remove_node', new Set(['selectedIds', 'nodeIds'])],
+  ['history_remove', new Set(['selectedUrls'])],
+  ['cookies_remove', new Set(['selectedNames'])],
+  ['delete_history', new Set(['selectedUrls'])],
+  ['clear_cookies', new Set(['selectedNames'])],
+  ['remove_bookmark', new Set(['selectedIds'])],
+  ['clear_storage', new Set(['selectedKeys'])],
+])
+
+/** 获取工具对应的派生字段白名单；缺省返回空集（不允许新增任何字段）。 */
+export function derivedFieldsFor(tool: string): ReadonlySet<string> {
+  return RECONFIRM_DERIVED_FIELDS_BY_TOOL.get(tool) ?? EMPTY_DERIVED_FIELDS
+}
+
+const EMPTY_DERIVED_FIELDS: ReadonlySet<string> = new Set()
+
 export interface ConfirmPreview {
   title: string
   description: string
@@ -32,11 +104,17 @@ export interface ConfirmPreview {
  * children 的 id 可能是 string（书签节点 / history URL）或 number（tabId）；
  * 按 tool 类型归一化到对应字段，避免 SW 端做错类型转换。
  *
- * 规则（与旧 useAIEngine.ts:673-683 完全一致）：
- *   - history_remove → selectedUrls (string[])
- *   - bookmarks_remove_node → selectedIds (number[])
- *   - tabs_remove / tabs_remove_by_url → tabIds (number[])
- *   - 其他 → 透传 selectedIds
+ * 字段映射策略（单一来源：RECONFIRM_DERIVED_FIELDS_BY_TOOL）：
+ *   - tabs_remove / tabs_remove_by_url / close_tabs_by_url → tabIds (number[])
+ *   - close_duplicate_tabs → keepIds + removeIds (number[])，未选中视为要关闭
+ *   - ungroup_all → selectedGroupIds (number[])
+ *   - history_remove / delete_history → selectedUrls (string[])
+ *   - bookmarks_remove_node → selectedIds (string[]，保持字符串 ID)
+ *   - remove_bookmark → selectedIds (string[])
+ *   - cookies_remove / clear_cookies → selectedNames (string[])
+ *
+ * 派生字段白名单统一由 `derivedFieldsFor(tool)` 提供，
+ * 防止 buildReconfirmPayload 与 confirmation.matchesReconfirmArgs 漂移。
  */
 export function buildReconfirmPayload(
   originalPlan: AIPlan,
@@ -45,6 +123,7 @@ export function buildReconfirmPayload(
   options: { confirmationToken?: string } = {}
 ): AIPlan {
   const tool = confirmItem.tool
+  const allowed = derivedFieldsFor(tool)
   return {
     thought: originalPlan.thought,
     plan: originalPlan.plan?.map((it) => {
@@ -53,21 +132,10 @@ export function buildReconfirmPayload(
         force: true,
         ...(options.confirmationToken ? { confirmationToken: options.confirmationToken } : {}),
       }
-      if (tool === 'history_remove') {
-        extra.selectedUrls = selectedIds.map((id) => String(id))
-      } else if (tool === 'bookmarks_remove_node') {
-        extra.selectedIds = selectedIds
-          .map((id) => (typeof id === 'number' ? id : Number(id)))
-          .filter((id): id is number => Number.isFinite(id) && id > 0)
-      } else if (tool === 'tabs_remove' || tool === 'tabs_remove_by_url') {
-        extra.tabIds = selectedIds
-          .map((id) => (typeof id === 'number' ? id : Number(id)))
-          .filter((id): id is number => Number.isInteger(id) && id >= 0)
-      } else if (tool === 'cookies_remove') {
-        // selectedIds 是 cookie name（字符串）
-        extra.selectedNames = selectedIds.map((id) => String(id))
-      } else {
-        extra.selectedIds = selectedIds
+      const normalized = buildDerivedForTool(tool, selectedIds, confirmItem)
+      for (const [field, value] of Object.entries(normalized)) {
+        // 仅写入按工具映射允许的派生字段，丢弃任何意外 key（如 caller 串扰）
+        if (allowed.has(field)) extra[field] = value
       }
       return {
         ...it,
@@ -76,6 +144,76 @@ export function buildReconfirmPayload(
       }
     }),
   }
+}
+
+/**
+ * 把 selectedIds 按 tool 归一化为一个或多个派生字段。
+ * - tabs 类工具 → number[]
+ * - bookmark / history / cookie / storage 类工具 → string[]
+ * - close_duplicate_tabs → keep/remove 两段式
+ */
+function buildDerivedForTool(
+  tool: string,
+  selectedIds: Array<string | number>,
+  confirmItem: { id: string; tool: string; detail?: { children?: unknown[] } }
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  // 通用：bookmark 类（Chrome 节点 ID 是 string，原样保留）
+  if (
+    tool === 'bookmarks_remove_node' ||
+    tool === 'remove_bookmark' ||
+    tool === 'bookmarks_delete_node'
+  ) {
+    out.selectedIds = selectedIds.map((id) => String(id))
+    return out
+  }
+  // 通用：history / cookie / storage 类（字符串 ID）
+  if (tool === 'history_remove' || tool === 'delete_history') {
+    out.selectedUrls = selectedIds.map((id) => String(id))
+    return out
+  }
+  if (tool === 'cookies_remove' || tool === 'clear_cookies') {
+    out.selectedNames = selectedIds.map((id) => String(id))
+    return out
+  }
+  if (tool === 'clear_storage' || tool === 'storage_remove') {
+    out.selectedKeys = selectedIds.map((id) => String(id))
+    return out
+  }
+  // tabs_remove / tabs_remove_by_url / close_tabs_by_url：number[]
+  if (
+    tool === 'tabs_remove' ||
+    tool === 'tabs_remove_by_url' ||
+    tool === 'close_tabs_by_url' ||
+    tool === 'close_tabs_by_domain'
+  ) {
+    out.tabIds = selectedIds
+      .map((id) => (typeof id === 'number' ? id : Number(id)))
+      .filter((id): id is number => Number.isInteger(id) && id >= 0)
+    return out
+  }
+  // ungroup_all：groupId 是 number
+  if (tool === 'ungroup_all') {
+    out.selectedGroupIds = selectedIds
+      .map((id) => (typeof id === 'number' ? id : Number(id)))
+      .filter((id): id is number => Number.isInteger(id) && id >= 0)
+    return out
+  }
+  // close_duplicate_tabs：keep/remove 两段式
+  if (tool === 'close_duplicate_tabs') {
+    const groupCount =
+      (confirmItem.detail?.children as unknown[] | undefined)?.length ?? selectedIds.length
+    const allGroupIds = Array.from({ length: groupCount }, (_, i) => i)
+    const keepIds = selectedIds
+      .map((id) => (typeof id === 'number' ? id : Number(id)))
+      .filter((id): id is number => Number.isInteger(id) && id >= 0 && id < groupCount)
+    out.keepIds = keepIds
+    out.removeIds = allGroupIds.filter((id) => !keepIds.includes(id))
+    return out
+  }
+  // fallback：按 tool 原始期望类型输出（保持单点可控）
+  out.selectedIds = selectedIds
+  return out
 }
 
 /**

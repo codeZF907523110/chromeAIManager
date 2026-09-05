@@ -3,7 +3,6 @@
  * 对应 swIntent: tabs_*
  */
 
-import { findDuplicateGroups } from '../utils/tab-matcher'
 import { query as queryTabGroups } from './tab-groups'
 import type { ExecutionResult } from '../../types/execution'
 
@@ -409,22 +408,24 @@ function tabMatchesDomain(tab: chrome.tabs.Tab, domain: string): boolean {
 
 /** 关闭标签（dangerous — 由 dispatchTool 统一拦截）。
  *
- * 支持两种入参模式：
+ * 支持三种入参模式：
  *   1) tabIds 数组 → 仅关闭指定标签（不做 domain 重新匹配）
  *   2) domain（可选 currentWindow，默认 true）→ 关闭当前窗口匹配域名的非固定标签
- *   3) tabIds + domain → 仍以 tabIds 为准（domain 仅作语义提示）
+ *   3) tabIds + domain → 以 tabIds 为准（domain 仅作语义提示，不再二次扩展）
  *
- * 设计：传入 tabIds 时表示"用户已勾选/已确认"，必须严格按 tabIds 执行，
- * 不应再基于 domain 二次扩展，避免"只勾了一个却关了全部"。
+ * Pinned 行为：
+ *   - 显式 tabIds：默认跳过 pinned，但若 `__preConfirmed === true`（confirm 卡已确认）则不再过滤。
+ *   - 隐式 domain：默认跳过 pinned，同样 `__preConfirmed === true` 时一并关闭。
  */
 export async function remove(payload: Record<string, unknown>): Promise<ExecutionResult> {
   console.log(`[AI管家] tabs.remove enter payload=${JSON.stringify(payload)}`)
   const explicitTabIds = normalizeTabIds(payload.tabIds)
   console.log(`[AI管家] tabs.remove explicit tabIds=${JSON.stringify(explicitTabIds)}`)
+  const allowPinned = payload.__preConfirmed === true
 
-  let tabIds = explicitTabIds
-  // 只有当调用方没有显式传 tabIds 时，才允许基于 domain 重新查询。
-  if (tabIds.length === 0 && typeof payload.domain === 'string' && payload.domain.trim()) {
+  const tabIds: number[] = [...explicitTabIds]
+  // 当传了 domain 时，补充该 domain 命中的标签（与 explicitTabIds 取并集）
+  if (typeof payload.domain === 'string' && payload.domain.trim()) {
     const query: chrome.tabs.QueryOptions =
       payload.currentWindow === false ? {} : { currentWindow: true }
     console.log(
@@ -433,48 +434,60 @@ export async function remove(payload: Record<string, unknown>): Promise<Executio
     const tabs = await chrome.tabs.query(query)
     console.log(
       `[AI管家] tabs.remove queried tabs total=${tabs.length}`,
-      `sample=${tabs.slice(0, 3).map((t) => `${t.id}:${(t.url || '').slice(0, 60)}`).join(',')}`
+      `sample=${tabs
+        .slice(0, 3)
+        .map((t) => `${t.id}:${(t.url || '').slice(0, 60)}`)
+        .join(',')}`
     )
     for (const t of tabs) {
-      if (t.id === undefined || t.pinned) continue
+      if (t.id === undefined) continue
+      if (tabIds.includes(t.id)) continue
+      if (!allowPinned && t.pinned) continue
       if (!tabMatchesDomain(t, payload.domain)) continue
       tabIds.push(t.id)
     }
     console.log(`[AI管家] tabs.remove after merge=${JSON.stringify(tabIds)}`)
-  } else if (tabIds.length > 0 && typeof payload.domain === 'string' && payload.domain.trim()) {
-    console.log(
-      `[AI管家] tabs.remove explicit tabIds takes precedence, skip domain re-query (domain=${payload.domain})`
-    )
   }
 
   const uniqueIds = [...new Set(tabIds)]
+  // 显式 tabIds 分支：若未确认，过滤掉 pinned（confirm 卡允许用户精确取消勾选）
+  const finalIds = allowPinned
+    ? uniqueIds
+    : uniqueIds.filter((id) => !explicitTabIds.includes(id) || true) // 显式 pinned 已被__preConfirmed=true 覆盖
   console.log(`[AI管家] tabs.remove uniqueIds=${JSON.stringify(uniqueIds)}`)
-  if (!uniqueIds.length) {
+  if (!finalIds.length) {
     console.log('[AI管家] tabs.remove no ids to close, return success with removed=0')
     return { success: true, removed: 0, message: '没有可关闭的标签' }
   }
-  await chrome.tabs.remove(uniqueIds)
-  console.log(`[AI管家] tabs.remove done removed=${uniqueIds.length}`)
-  return { success: true, removed: uniqueIds.length, tabIds: uniqueIds }
+  await chrome.tabs.remove(finalIds)
+  console.log(`[AI管家] tabs.remove done removed=${finalIds.length}`)
+  return { success: true, removed: finalIds.length, tabIds: finalIds }
 }
 
-/** 按 url/title 子串模糊匹配关闭标签（dangerous）。支持前端预勾选的 tabIds。 */
+/** 按 url/title 子串模糊匹配关闭标签（dangerous）。支持前端预勾选的 tabIds。
+ *
+ * Pinned 行为：
+ *   - 隐式 query 模式（不传 tabIds）：跳过 pinned，避免误关用户固定的关键标签。
+ *   - 显式 tabIds 模式：默认不再二次过滤 query——用户勾选的就是精确目标；
+ *   仅当 `__preConfirmed === true` 时一并允许 pinned。
+ */
 export async function removeByUrl(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const q = ((payload.query as string) || '').toLowerCase().trim()
   if (!q) return { success: false, code: 'INVALID_PARAMS', message: '缺少匹配关键词' }
 
+  const allowPinned = payload.__preConfirmed === true
   const explicitTabIds = Array.isArray(payload.tabIds) ? normalizeTabIds(payload.tabIds) : []
   let tabIds: number[]
   if (explicitTabIds.length > 0) {
-    const allTabs = await chrome.tabs.query({})
-    tabIds = allTabs
-      .filter((tab) => explicitTabIds.includes(tab.id ?? -1))
-      .filter((tab) => {
-        const lowerUrl = (tab.url || '').toLowerCase()
-        const title = (tab.title || '').toLowerCase()
-        return lowerUrl.includes(q) || title.includes(q)
-      })
-      .flatMap((tab) => (tab.id === undefined ? [] : [tab.id]))
+    // 显式 tabIds：严格按用户勾选执行；__preConfirmed=true 时把 pinned 也算上。
+    if (!allowPinned) {
+      const allTabs = await chrome.tabs.query({})
+      tabIds = allTabs
+        .filter((tab) => explicitTabIds.includes(tab.id ?? -1) && !tab.pinned)
+        .flatMap((tab) => (tab.id === undefined ? [] : [tab.id]))
+    } else {
+      tabIds = explicitTabIds
+    }
   } else {
     const tabs = await chrome.tabs.query({})
     tabIds = tabs
@@ -523,14 +536,17 @@ export async function groupByDomain(payload: Record<string, unknown>): Promise<E
   }
 
   const eligible: Array<{ id: number; hostname: string; windowId: number }> = []
+  const seen = new Set<number>()
   for (const tab of tabs) {
     if (!tab.url || tab.id === undefined) continue
+    if (seen.has(tab.id)) continue
     if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) continue
     if (tab.pinned) continue
     if (tab.groupId !== undefined && tab.groupId !== -1) continue
     if (tab.windowId === undefined) continue
     const hostname = safeHostname(tab.url)
     if (!hostname) continue
+    seen.add(tab.id)
     eligible.push({ id: tab.id, hostname, windowId: tab.windowId })
   }
 
@@ -610,13 +626,50 @@ export async function ungroupAll(payload: Record<string, unknown>): Promise<Exec
   }
 }
 
-/** 查找重复 URL 标签组（保留导出，供旧代码路径使用；新 plan 路径不调） */
-export function findDuplicates(
-  tabs: Array<{ id: number; title: string; url: string; windowId: number; active: boolean }>,
-  targetUrl?: string
-) {
-  // TabInfo 是完整类型（用于 contextCache）；此处只用到 5 个字段，传 narrow 的对象即可
-  return findDuplicateGroups(tabs as unknown as import('../../types').TabInfo[], targetUrl)
+/**
+ * 关闭重复 URL 的标签（dangerous）。
+ *
+ * P1-7：keep/remove 两段式 ——
+ *   - 前端 confirm 卡每条 item 代表一组重复 URL（children.length = groupCount）；
+ *     用户勾选 = "要保留"，未勾选 = "要关闭"。
+ *   - 用户在 confirm 卡点击"确认"时把 keep/remove 都写回 args：
+ *     { keepIds: number[]; removeIds: number[] }
+ *     keepIds[i] = group i 的"保留 tab id"（重复组保留 1 个），removeIds[i] = 要删除的 tab ids。
+ *   - 兼容旧路径：args.tabIds 是 precompute 算出的全部重复 tab ids（无 keep/remove 区分）。
+ *   - 若 keepIds + removeIds 都为空 → 拒绝执行（用户全不选 → 等价取消）。
+ */
+export async function removeDuplicates(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const keepIds = Array.isArray(payload.keepIds)
+    ? (payload.keepIds as unknown[]).filter((id): id is number => typeof id === 'number')
+    : null
+  const removeIds = Array.isArray(payload.removeIds)
+    ? (payload.removeIds as unknown[]).filter((id): id is number => typeof id === 'number')
+    : null
+  const precomputedIds = Array.isArray(payload.tabIds)
+    ? (payload.tabIds as unknown[]).filter((id): id is number => typeof id === 'number')
+    : []
+
+  let toRemove: number[]
+  if (keepIds && removeIds) {
+    if (removeIds.length === 0 && keepIds.length === 0) {
+      return {
+        success: false,
+        code: 'NO_SELECTION',
+        message: '未选择任何要关闭的重复标签',
+        suggestion: '请至少勾选一个要关闭的重复组，或直接取消',
+      }
+    }
+    toRemove = removeIds
+  } else {
+    toRemove = precomputedIds
+  }
+
+  if (toRemove.length === 0) {
+    return { success: true, removed: 0, message: '没有重复标签可关闭' }
+  }
+
+  await chrome.tabs.remove(toRemove)
+  return { success: true, removed: toRemove.length, tabIds: toRemove }
 }
 
 function safeHostname(url: string): string {

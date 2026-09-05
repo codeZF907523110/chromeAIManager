@@ -13,7 +13,8 @@ const ALLOWED_ICON_PATHS = new Set([
 const SENSITIVE_PATTERN = /cookie|password|token|secret|api[_-]?key/i
 
 function sanitizeNotificationText(value: string): string {
-  return SENSITIVE_PATTERN.test(value) ? value.replace(/./g, '*') : value
+  // B24: 用正则替换敏感词为等长 *，避免整串替换导致无法分辨上下文。
+  return value.replace(SENSITIVE_PATTERN, (match) => '*'.repeat(match.length))
 }
 
 function pickIcon(value: unknown): string {

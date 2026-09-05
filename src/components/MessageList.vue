@@ -12,7 +12,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import type { MessageLog, ExecutionResult } from '../types'
 import MessageBubble from './MessageBubble.vue'
 
@@ -43,6 +43,7 @@ function scrollToBottom() {
 function scheduleScroll() {
   if (scrollTimer) clearTimeout(scrollTimer)
   scrollTimer = setTimeout(() => {
+    scrollTimer = null
     nextTick(() => {
       scrollToBottom()
     })
@@ -60,6 +61,16 @@ watch(
 // 初始化时滚动
 onMounted(() => {
   scheduleScroll()
+})
+
+// B32: 组件卸载时清掉未触发的 setTimeout，避免在已销毁实例上调用 nextTick / scrollToBottom。
+// 旧实现只 watch messages.length + onMounted 触发滚动，组件被卸载后 timer 仍可能排队；
+// HMR / 路由切换 / side panel 关闭瞬间触发的 scrollToBottom 会访问 null 容器或重复 setter。
+onBeforeUnmount(() => {
+  if (scrollTimer) {
+    clearTimeout(scrollTimer)
+    scrollTimer = null
+  }
 })
 </script>
 

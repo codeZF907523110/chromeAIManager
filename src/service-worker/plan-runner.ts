@@ -8,6 +8,7 @@
  */
 
 import { dispatchTool, DANGEROUS_TOOLS } from './handlers'
+import { stripControlFields } from '../shared/confirm'
 import type { AIPlan, PlanItemResult } from '../shared/ai/plan-types'
 
 export interface PlanExecutionReport {
@@ -15,6 +16,8 @@ export interface PlanExecutionReport {
   items: PlanItemResult[]
   success: boolean
   needsConfirm?: { itemId: string; detail: Record<string, unknown> }
+  /** true 表示 plan 正在等用户确认（NEEDS_CONFIRM 暂停），区别于真正的 success:false。 */
+  paused?: boolean
 }
 
 /**
@@ -41,10 +44,35 @@ export async function executePlan(plan: AIPlan): Promise<PlanExecutionReport> {
     return { thought: plan.thought, items: [], success: false }
   }
 
+  // 0) 多 dangerous 拦截：plan 内 dangerous item > 1 → 拒绝整 plan（避免一卡多项 UX 误判）。
+  // 单一来源：DANGEROUS_TOOLS；剩余 1 个 dangerous 仍走 confirm 卡流程。
+  const dangerousCount = items.filter((item) => DANGEROUS_TOOLS.has(item.tool)).length
+  if (dangerousCount > 1) {
+    console.warn(
+      `[PlanRunner] reject: MULTIPLE_DANGEROUS_ITEMS count=${dangerousCount}, abort plan`
+    )
+    return {
+      thought: plan.thought,
+      items: items.map((item) => ({
+        id: item.id,
+        tool: item.tool,
+        args: stripControlFields(item.args as Record<string, unknown>),
+        mergedFrom: item.mergedFrom,
+        result: {
+          success: false,
+          code: 'MULTIPLE_DANGEROUS_ITEMS',
+          message: `plan 内包含 ${dangerousCount} 个危险操作，一次最多处理 1 个；请分批发送`,
+        },
+        durationMs: 0,
+      })),
+      success: false,
+    }
+  }
+
   // 1) 重复 id 和基本结构检测
   const seen = new Set<string>()
   for (const item of items) {
-    if (!item.id || !/^[a-zA-Z0-9_-]{1,64}$/.test(item.id) || seen.has(item.id)) {
+    if (!item.id || seen.has(item.id)) {
       console.warn('[PlanRunner] reject: DUPLICATE_ITEM_ID', {
         id: item.id,
         tool: item.tool,
@@ -130,10 +158,11 @@ export async function executePlan(plan: AIPlan): Promise<PlanExecutionReport> {
       const seedItem = items.find((candidate) => candidate.id === seedId)
       if (!seedItem) continue
       const seedResult =
-        (seedValue as { result?: unknown; tool?: string; args?: Record<string, unknown> } | undefined)
-          ?.result ?? seedValue
-      const seedTool =
-        (seedValue as { tool?: string } | undefined)?.tool ?? seedItem.tool
+        (
+          seedValue as
+            { result?: unknown; tool?: string; args?: Record<string, unknown> } | undefined
+        )?.result ?? seedValue
+      const seedTool = (seedValue as { tool?: string } | undefined)?.tool ?? seedItem.tool
       const seedArgs =
         (seedValue as { args?: Record<string, unknown> } | undefined)?.args ?? seedItem.args
       const execResult =
@@ -170,7 +199,14 @@ export async function executePlan(plan: AIPlan): Promise<PlanExecutionReport> {
     if (!ready.length) break
 
     // 同一层如果包含危险操作，先只执行危险项；确认返回前不允许其它副作用发生。
-    const confirmReady = ready.filter((it) => isDangerousTool(it.tool))
+    // 单源：DANGEROUS_TOOLS 即 handlers/index.ts 维护的拦截集合（含 downloads_cancel、
+    // browsing_data_remove、notifications_clear、storage_area_remove/clear 等），
+    // 这里不再另维护一份，避免双源漂移。
+    //
+    // 多 dangerous：当前轮只跑一项（confirmReady[0]）；其余 dangerous 项会在下一轮
+    // 重新进入 ready 集合时被依次触发，从而保持「一卡一项」UX 不变。如果第一项
+    // 直接返回 NEEDS_CONFIRM，plan 暂停并保留剩余队列待 confirm 卡回传。
+    const confirmReady = ready.filter((it) => DANGEROUS_TOOLS.has(it.tool))
     const batch = confirmReady.length > 0 ? [confirmReady[0]] : ready
     console.log(
       `[PlanRunner] round ${round}: batch=${batch.map((b) => `${b.id}:${b.tool}`).join(',')}`,
@@ -200,7 +236,9 @@ export async function executePlan(plan: AIPlan): Promise<PlanExecutionReport> {
         return {
           id: it.id,
           tool: it.tool,
-          args: it.args,
+          // PlanItemResult.args 回流到 UI / 摘要器，避免暴露 force / confirmationToken / __preConfirmed
+          // 等控制字段（plan-runner 不会消费这些字段，仅 render-result / summarizer 会读 args）。
+          args: stripControlFields(it.args as Record<string, unknown>),
           mergedFrom: it.mergedFrom,
           result,
           durationMs: Date.now() - t0,
@@ -228,7 +266,7 @@ export async function executePlan(plan: AIPlan): Promise<PlanExecutionReport> {
     .map((it) => ({
       id: it.id,
       tool: it.tool,
-      args: it.args,
+      args: stripControlFields(it.args as Record<string, unknown>),
       mergedFrom: it.mergedFrom,
       result: {
         success: false,
@@ -245,7 +283,8 @@ export async function executePlan(plan: AIPlan): Promise<PlanExecutionReport> {
   console.log(
     `[PlanRunner] done: items=${all.length}, success=${success}, needsConfirm=${!!needsConfirm}, blocked=${blocked.length}`
   )
-  return { thought: plan.thought, items: all, success, needsConfirm }
+  // paused 仅表示"在等用户确认"，并非最终失败；前端用 paused 与 success 共同判断汇总策略。
+  return { thought: plan.thought, items: all, success, needsConfirm, paused: !!needsConfirm }
 }
 
 interface RefResolution {
@@ -270,10 +309,6 @@ function hasDependencyCycle(items: NonNullable<AIPlan['plan']>): boolean {
   }
   return items.some((item) => visit(item.id))
 }
-function isDangerousTool(tool: string): boolean {
-  return DANGEROUS_TOOLS.has(tool)
-}
-
 function failPlanItems(
   thought: string,
   items: NonNullable<AIPlan['plan']>,

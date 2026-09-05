@@ -28,6 +28,12 @@ export interface MessageLog {
   image?: string // base64 data URL for screenshots
   video?: string // base64 data URL for video preview
   recordingFile?: { url: string; name: string; size?: number; preview?: string } // recording download card
+  /**
+   * B29: 标记为「临时」的消息（思考中 / 执行中等状态通道消息）。
+   * 不写入 IndexedDB；已写入的也由 removeStatusText 主动清理。
+   * 避免重启后残留「思考中...」在历史记录里。
+   */
+  __ephemeral?: boolean
 }
 
 // ──── AI Plan-First 协议（替代旧 AIResponse）─────

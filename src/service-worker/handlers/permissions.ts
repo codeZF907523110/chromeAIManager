@@ -88,14 +88,27 @@ export async function observe(payload: Record<string, unknown>): Promise<Executi
   const entries: Array<Record<string, unknown>> = []
   for (const t of OBSERVABLE_PERMISSION_TYPES) {
     try {
-      const result = (await chrome.contentSettings.get({
-        primaryPattern: `https://${domain}/*`,
-        resourceIdentifier: { id: t.resourceId },
-      })) as ContentSettingResult
+      // B26: 同时查 https://${domain}/* 和 http://${domain}/*，返回第一个非 default 值。
+      // HTTP-only 站点的设置只会落在 http://… 下，原先只查 https 会漏。
+      const patterns = [`https://${domain}/*`, `http://${domain}/*`]
+      let resolvedValue: string | undefined
+      let matchedPattern: string | undefined
+      for (const pattern of patterns) {
+        const result = (await chrome.contentSettings.get({
+          primaryPattern: pattern,
+          resourceIdentifier: { id: t.resourceId },
+        })) as ContentSettingResult
+        if (result?.setting && result.setting !== 'default') {
+          resolvedValue = result.setting
+          matchedPattern = pattern
+          break
+        }
+      }
       entries.push({
         key: t.key,
         label: t.label,
-        value: result?.setting || 'default',
+        value: resolvedValue || 'default',
+        matchedPattern,
       })
     } catch {
       entries.push({ key: t.key, label: t.label, value: 'default' })
@@ -155,7 +168,8 @@ export async function update(payload: Record<string, unknown>): Promise<Executio
       success: false,
       code: 'INVALID_PARAMS',
       message: `${type.label} 的 value 必须是 ${type.legalSettings.join(' | ')}`,
-      suggestion: '不支持 "default"（如需重置，请传 allow 或 block）',
+      // B27: 错误提示改为「如需重置，请用 clear 命令」而非误导「不支持 default」。
+      suggestion: '如需恢复 Chrome 默认行为，请使用 /permissions-clear <域名>',
     }
   }
 

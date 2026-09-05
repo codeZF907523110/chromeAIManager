@@ -35,13 +35,6 @@ declare global {
     clear(): Promise<void>
   }
 
-  interface StorageArea {
-    get(keys?: string | string[] | object | null): Promise<object>
-    set(items: object): Promise<void>
-    remove(keys?: string | string[]): Promise<void>
-    clear(): Promise<void>
-  }
-
   const chrome: {
     storage: {
       local: StorageArea
@@ -85,14 +78,6 @@ declare global {
       move(tabIds: number[], options: any): Promise<number[]>
       group(properties: any): Promise<number>
       ungroup(tabIds: number[]): Promise<void>
-      captureVisibleTab(windowId: number, options?: any): Promise<string>
-      getZoom(tabId: number): Promise<number>
-      setZoom(tabId: number, zoomFactor: number): Promise<void>
-      getZoomSettings(tabId: number): Promise<any>
-      setZoomSettings(tabId: number, settings: any): Promise<void>
-      highlight(options: any): Promise<any>
-      goBack(tabId: number): Promise<void>
-      goForward(tabId: number): Promise<void>
       reload(tabId?: number, reloadProperties?: any): Promise<void>
       duplicate(tabId: number): Promise<any>
       discard(tabId: number): Promise<any>
@@ -339,7 +324,6 @@ declare global {
         autoDiscardable?: boolean
         incognito?: boolean
         url?: string
-        highlighted?: boolean
         openerTabId?: number
         [key: string]: any
       }
@@ -367,7 +351,6 @@ declare global {
         evalIndex?: number
         evalAllowed?: boolean
         opTabId?: number
-        highlighted?: boolean
         discarded?: boolean
         autoDiscardable?: boolean
         lastAccessed?: number
@@ -376,7 +359,6 @@ declare global {
         favIconUrl?: string
         pendingUrl?: string
         index?: number
-        highlighted?: boolean
       }
       interface GroupQuery {
         windowId?: number

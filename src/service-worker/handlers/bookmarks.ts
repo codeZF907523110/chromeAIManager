@@ -10,16 +10,26 @@ export async function observeTree(payload: Record<string, unknown>): Promise<Exe
   const tree = await chrome.bookmarks.getTree()
   const results: Array<chrome.bookmarks.BookmarkTreeNode & { path?: string; childCount?: number }> =
     []
-  const maxDepth = (payload.maxDepth as number) || 3
-  const maxResults = (payload.maxResults as number) || 100
+  // B20: maxDepth / maxResults 用 typeof === 'number' && Number.isInteger() 校验；
+  //      0 必须被允许（表示"零深度/零结果"——少数清空场景），不能被 `|| 默认值` 覆盖。
+  const maxDepth = parseIntegerParam(payload.maxDepth, 3, 0, 20)
+  const maxResults = parseIntegerParam(payload.maxResults, 100, 0, 10000)
+  if (!maxDepth.ok) {
+    return { success: false, code: 'INVALID_PARAMS', message: maxDepth.error }
+  }
+  if (!maxResults.ok) {
+    return { success: false, code: 'INVALID_PARAMS', message: maxResults.error }
+  }
+  const maxDepthValue = maxDepth.value
+  const maxResultsValue = maxResults.value
   const nodeType = payload.nodeType as string | undefined
   const query = payload.query as string | undefined
 
   function walk(nodes: chrome.bookmarks.BookmarkTreeNode[], depth: number) {
-    if (results.length >= maxResults) return
-    if (depth > maxDepth) return
+    if (results.length >= maxResultsValue) return
+    if (depth > maxDepthValue) return
     for (const node of nodes) {
-      if (results.length >= maxResults) break
+      if (results.length >= maxResultsValue) break
       const isFolder = !!node.children
       const isBookmark = !!node.url
       if (nodeType === 'folder' && !isFolder) continue
@@ -42,7 +52,7 @@ export async function observeTree(payload: Record<string, unknown>): Promise<Exe
         path: nodePath,
         childCount: node.children?.length || 0,
         dateAdded: node.dateAdded,
-        dateGroupCreated: node.dateGroupCreated,
+        dateGroupCreated: node.dateGroupModified,
       })
       if (node.children) walk(node.children, depth + 1)
     }
@@ -50,6 +60,29 @@ export async function observeTree(payload: Record<string, unknown>): Promise<Exe
 
   walk(tree, 0)
   return { success: true, nodes: results, observed: results.length }
+}
+
+/**
+ * 整数参数解析：B20 修复。
+ *  - undefined / null：使用默认值（向后兼容）
+ *  - 非数字或非整数：返回错误（避免静默接受 0.5 / '5'）
+ *  - 越界：返回错误（避免 0 / 负数破坏逻辑）
+ */
+function parseIntegerParam(
+  raw: unknown,
+  defaultValue: number,
+  min: number,
+  max: number
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: defaultValue }
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < min || n > max) {
+    return {
+      ok: false,
+      error: `参数必须是 ${min} 到 ${max} 的整数`,
+    }
+  }
+  return { ok: true, value: n }
 }
 
 /** 按 nodeId 获取单个书签节点。 */
@@ -236,11 +269,35 @@ function isAllowedBookmarkUrl(value: string): boolean {
 
 /** 更新书签节点（title / url） */
 export async function updateNode(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const nodeId = typeof payload.nodeId === 'string' ? payload.nodeId.trim() : ''
+  if (!nodeId) return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId 参数' }
+  if (payload.title === undefined && payload.url === undefined) {
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: '至少需要提供 title 或 url 之一',
+    }
+  }
   const changes: chrome.bookmarks.BookmarkChangeInfo = {}
   if (payload.title !== undefined) changes.title = payload.title as string
-  if (payload.url !== undefined) changes.url = payload.url as string
-  const node = await chrome.bookmarks.update(payload.nodeId as string, changes)
-  return { success: true, bookmark: node }
+  if (payload.url !== undefined) {
+    if (typeof payload.url !== 'string' || !isBookmarkUrl(payload.url)) {
+      return { success: false, code: 'INVALID_PARAMS', message: '书签 URL 无效' }
+    }
+    changes.url = payload.url
+  }
+  try {
+    const node = await chrome.bookmarks.update(nodeId, changes)
+    return { success: true, bookmark: node }
+  } catch (err: unknown) {
+    const e = err as { message?: string }
+    return {
+      success: false,
+      code: 'BOOKMARK_UPDATE_FAILED',
+      message: e?.message || '更新书签失败',
+      suggestion: '请检查 nodeId 与权限后重试',
+    }
+  }
 }
 
 /** 按 nodeId 在新标签页打开书签 URL。 */
@@ -292,9 +349,15 @@ export async function removeNode(payload: Record<string, unknown>): Promise<Exec
       if (results.length === 0) {
         return { success: true, removed: 0, message: '没有找到匹配的书签' }
       }
+      // B35: 全文本匹配会把文件夹也搜出来，必须先过滤到 node.url !== undefined，
+      // 只删书签不删文件夹；否则误删文件夹会牵连整棵子树。
+      const bookmarkOnly = results.filter((n) => !!n.url)
+      if (bookmarkOnly.length === 0) {
+        return { success: true, removed: 0, message: '没有匹配的书签（仅匹配到文件夹）' }
+      }
       // 删除所有匹配的书签
       const idsToRemove: string[] = []
-      for (const node of results) {
+      for (const node of bookmarkOnly) {
         try {
           await chrome.bookmarks.remove(node.id)
           idsToRemove.push(node.id)

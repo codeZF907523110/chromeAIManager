@@ -101,12 +101,14 @@ function toggleAll(checked: boolean) {
 async function handleConfirm() {
   loading.value = true
   try {
-    // 如果存在预计算的 allTabIds（如 close_duplicate_tabs），直接使用
-    const selectedTabIds = props.allTabIds
-      ? props.allTabIds
-      : localItems.value
-          .filter((it) => it.tabId !== undefined && it.selected !== false)
-          .map((it) => it.tabId as number)
+    // B07: 即便存在 allTabIds 也按用户当前勾选收窄。
+    // 旧实现: allTabIds 直接覆盖 selectedTabIds → 用户取消勾选等于没点。
+    // 新行为: 当 allTabIds 存在时，把它当作「默认全选」，
+    // 用户实际勾选的 items（selected!==false）才会被包含；
+    // 若用户把所有 item 都取消勾选，selectedTabIds 为空数组，让上层尊重用户的"全不选"。
+    const selectedTabIds = localItems.value
+      .filter((it) => it.tabId !== undefined && it.selected !== false)
+      .map((it) => it.tabId as number)
     await props.onConfirm(selectedTabIds)
   } catch (e: unknown) {
     console.error('[AI管家] 确认操作失败:', e)

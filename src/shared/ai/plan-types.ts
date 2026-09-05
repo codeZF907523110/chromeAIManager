@@ -20,9 +20,9 @@ export interface PlanItem {
   /** AI 合并标记：本次调用由哪些用户指令合并而来；仅用于 UI 展示 */
   mergedFrom?: string[]
   /**
-   * 半成品 plan 补全时携带的种子结果（来自第一轮 SW report.items）。
+   * 预计算结果：调用方（如 precompute stage）可在 dispatch 前填入，
    * SW plan-runner 在解析 $ref 时优先使用本字段，跳过对应 deps 的重复执行。
-   * 仅在 usePlanRunner.detectAndCompleteHalfPlan 路径下填充；普通 plan 不带此字段。
+   * 普通 plan 不带此字段；保留字段以备未来优化路径使用。
    */
   seededResults?: Record<string, unknown>
 }

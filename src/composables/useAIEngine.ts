@@ -64,12 +64,12 @@ export function useAIEngine() {
   let statusMessageId: string | null = null
 
   function setStatusMessage(text: string): void {
-    addMessageLocal('system', text)
+    addMessageLocal('system', text, undefined, undefined, undefined, true)
     // 取最新 push 的消息记录其真实 id；addMessageLocal 内部分配 UUID
     const last = messageLog.value[messageLog.value.length - 1]
     statusMessageId = last?.id ?? null
-    // 状态消息也持久化（关闭重开后即使残留也能继续移除）；
-    // 完成时由 removeStatusText 同步从 IndexedDB 删除。
+    // 状态消息是临时通道（__ephemeral=true），B29 修复：
+    // persistMessage 会跳过带此 flag 的消息，避免重启后残留「思考中...」。
   }
 
   function updateStatusText(text: string): void {
@@ -89,14 +89,9 @@ export function useAIEngine() {
     if (!statusMessageId) return
     const idx = messageLog.value.findIndex((m) => m.id === statusMessageId)
     if (idx >= 0) {
-      const removed = messageLog.value.splice(idx, 1)[0]
-      // 状态消息是临时通道，不写入 IndexedDB；已写入的需要清理
-      if (removed?.id) {
-        void messageStore.remove(removed.id).catch((e: unknown) => {
-          console.warn('[AI管家] 移除状态消息失败:', e instanceof Error ? e.message : String(e))
-        })
-      }
+      messageLog.value.splice(idx, 1)
     }
+    // B29: __ephemeral=true 的消息已不写入 IndexedDB，无需再 remove。
     statusMessageId = null
   }
 
@@ -157,6 +152,16 @@ export function useAIEngine() {
         `AI 不可用: ${ai.reason || '未配置'}\n\n可用斜杠命令:\n${formatSlashCommands()}`
       )
       return
+    }
+
+    // B10: in-flight 锁 —— 若已有 plan 正在跑（runningRef=true），先 abort 旧 run。
+    // usePlanRunner.run 内部用 abortCtl?.abort() 取消旧 AbortController，
+    // 旧 run 会以 AbortError 退出且不会写出残留 system 消息；
+    // 我们仅需在 abort 之后立刻把状态消息一并清掉，避免"思考中..."残留。
+    const { isRunning, abort: abortPlan } = await import('./usePlanRunner')
+    if (isRunning()) {
+      abortPlan()
+      removeStatusText()
     }
 
     if (pendingConfirm.value) {
@@ -239,7 +244,8 @@ export function useAIEngine() {
     text: string | MessageBody,
     image?: string,
     video?: string,
-    recordingFile?: MessageLog['recordingFile']
+    recordingFile?: MessageLog['recordingFile'],
+    ephemeral?: boolean
   ): void {
     const body = normalizeBody(text)
     const msg: MessageLog = {
@@ -250,20 +256,23 @@ export function useAIEngine() {
       image,
       video,
       recordingFile,
+      __ephemeral: ephemeral === true,
     }
     messageLog.value.push(msg)
     void persistMessage(msg)
   }
 
   async function persistMessage(msg: MessageLog): Promise<void> {
+    // B29: __ephemeral=true 的状态消息不写入 IndexedDB。
+    // 这类消息是临时通道（思考中 / 执行中），不应该跨会话存活。
+    if (msg.__ephemeral) return
     try {
       await messageStore.append(msg)
     } catch (e: unknown) {
+      // B09: 持久化失败时不要再调 addMessageLocal（会再写一条 system 消息，
+      // 触发新的 persistMessage，递归触发更多写失败）。
+      // 直接 console.warn 让用户通过其他渠道（toast / UI 状态）感知失败。
       console.warn('[AI管家] 持久化消息失败:', e instanceof Error ? e.message : String(e))
-      addMessageLocal(
-        'system',
-        `⚠ 上一条消息保存失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
-      )
     }
   }
 

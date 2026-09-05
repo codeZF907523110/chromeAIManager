@@ -39,6 +39,7 @@ vi.mock('../../src/service-worker/handlers/tabs', () => {
     'move',
     'observeGroups',
     'groupByDomain',
+    'removeDuplicates',
   ]
   for (const name of exportNames) fns[name] = vi.fn(noop)
   // 测试关心的三个 handler：接 args，返回结构化 ExecutionResult

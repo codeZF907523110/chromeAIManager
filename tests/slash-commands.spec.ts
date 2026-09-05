@@ -31,4 +31,15 @@ describe('slash command compatibility', () => {
   it('does not turn a bare slash into the first command', () => {
     expect(matchSlashCommand('/')).toMatchObject({ error: 'UNKNOWN_SLASH' })
   })
+
+  it('exposes /close-domain for the by-domain slash path', () => {
+    expect(matchSlashCommand('/close-domain baidu.com')).toMatchObject({
+      intent: 'close_tabs_by_domain',
+      slots: { domain: 'baidu.com' },
+    })
+    expect(matchSlashCommand('/cdm github.com')).toMatchObject({
+      intent: 'close_tabs_by_domain',
+      slots: { domain: 'github.com' },
+    })
+  })
 })

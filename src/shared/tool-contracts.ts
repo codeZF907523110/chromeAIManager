@@ -4,6 +4,7 @@
  */
 
 import { COMMANDS } from './commands'
+import { derivedFieldsFor } from './confirm'
 
 export type ToolRisk = 'L0' | 'L1' | 'L2'
 export type ToolContext = 'service-worker' | 'extension-page' | 'content-script'
@@ -81,27 +82,95 @@ const STRING_FIELDS = new Set([
   'order',
 ])
 
+/** 推导确认卡重发字段的数组元素类型。
+ *  单一来源：derivedFieldsFor(tool) 决定哪些字段是确认卡合法新增的派生字段，
+ *  这里再根据字段名推导元素是 number 还是 string，避免在 SW 端被攻击者塞入
+ *  任意类型的元素（如 `{selectedIds: [42, {evil: 1}]}`）。
+ */
+function getDerivedArrayElementType(name: string): 'number' | 'string' | undefined {
+  // 全部为字符串 ID：书签节点、Cookie name、storage key、history URL。
+  if (
+    name === 'selectedUrls' ||
+    name === 'selectedNames' ||
+    name === 'selectedKeys' ||
+    name === 'nodeIds' ||
+    name === 'selectedIds'
+  ) {
+    return 'string'
+  }
+  // 全部为数字 ID：tabId / groupId / keep/remove index。
+  if (
+    name === 'tabIds' ||
+    name === 'keepIds' ||
+    name === 'removeIds' ||
+    name === 'selectedGroupIds' ||
+    name === 'groupIds'
+  ) {
+    return 'number'
+  }
+  return undefined
+}
+
+/** 校验数组契约的元素类型。 */
+function validateArrayElements(
+  name: string,
+  value: unknown,
+  expected: string,
+  tool?: string
+): ValidationError | undefined {
+  if (!Array.isArray(value)) return { code: 'INVALID_PARAMS', message: `${name} 必须是数组` }
+  if (expected === 'number[]') {
+    if (
+      value.some(
+        (item) =>
+          typeof item !== 'number' || !Number.isFinite(item) || !Number.isInteger(item) || item < 0
+      )
+    ) {
+      return { code: 'INVALID_PARAMS', message: `${name} 必须是非负整数数组` }
+    }
+    return undefined
+  }
+  if (expected === 'string[]') {
+    if (value.some((item) => typeof item !== 'string')) {
+      return { code: 'INVALID_PARAMS', message: `${name} 必须是字符串数组` }
+    }
+    return undefined
+  }
+  // 历史遗留的 type: 'array'：仅检查"已知是 ID 数组"的字段；
+  // 未声明为 ID 数组的（如 aiHidden 工具自定义的 array）只保证它是数组。
+  if (expected === 'array') {
+    const elemType = tool ? getDerivedArrayElementType(name) : undefined
+    if (elemType === 'number') {
+      if (
+        value.some(
+          (item) =>
+            typeof item !== 'number' ||
+            !Number.isFinite(item) ||
+            !Number.isInteger(item) ||
+            item < 0
+        )
+      ) {
+        return { code: 'INVALID_PARAMS', message: `${name} 必须是非负整数数组` }
+      }
+    } else if (elemType === 'string') {
+      if (value.some((item) => typeof item !== 'string')) {
+        return { code: 'INVALID_PARAMS', message: `${name} 必须是字符串数组` }
+      }
+    }
+    return undefined
+  }
+  return undefined
+}
+
+/** 仅保留「COMMANDS 里没有 dangerous 标记，但仍然走工具策略」的历史别名。
+ *  真正的单源是 src/service-worker/handlers/index.ts 的 DANGEROUS_TOOLS，
+ *  这里只负责在 getToolPolicy 里给内部历史/下载删除入口打风险标，避免漏掉。
+ */
 const RISKY_NAMES = new Set([
-  'tabs_remove',
-  'tabs_remove_by_url',
-  'bookmarks_remove_node',
-  'history_remove',
   'history_delete_url',
   'history_delete_range',
   'history_delete_all',
-  'cookies_remove',
-  'extensions_remove',
-  'downloads_cancel',
-  'downloads_erase',
   'downloads_remove_file',
-  'browsing_data_remove',
-  'notifications_clear',
-  'storage_area_remove',
-  'storage_area_set',
-  'storage_area_remove',
-  'storage_area_clear',
-  'content_settings_set',
-  'content_settings_clear',
 ])
 const SENSITIVE_NAMES = new Set([
   'cookies_observe',
@@ -196,16 +265,19 @@ export function validateToolArgs(tool: string, args: unknown): ValidationError |
   }
 
   const slots = command.slots
+  // 从 confirm 卡派生出来的字段不由 slots 直接声明；
+  // 仅当 derivedFieldsFor(tool) 显式允许时才接受它们，并对元素类型做严格校验。
+  // 历史硬编码 `tabIds/keepIds/.../query` 一律 skip 的逻辑已删除——避免攻击者
+  // 在 args 里塞任意 query 串绕过校验。
+  const derivedAllowed = derivedFieldsFor(tool)
   for (const [name, value] of Object.entries(args)) {
-    if (
-      name === 'force' ||
-      name === 'confirmationToken' ||
-      name === '__preConfirmed' ||
-      name === 'selectedNames' ||
-      name === 'selectedIds' ||
-      name === 'query' // precompute 后 slots 里残留的 query 字段（aiHidden slash 命令）
-    )
+    if (name === 'force' || name === 'confirmationToken' || name === '__preConfirmed') continue
+    // 派生字段：仅当 derivedFieldsFor(tool) 接受且元素类型合法才放行。
+    if (derivedAllowed.has(name)) {
+      const err = validateArrayElements(name, value, 'array', tool)
+      if (err) return err
       continue
+    }
     const slot = slots[name]
     if (!slot) return { code: 'INVALID_PARAMS', message: `不支持参数: ${name}` }
     if (value === undefined || value === null)
@@ -213,7 +285,8 @@ export function validateToolArgs(tool: string, args: unknown): ValidationError |
     const expected = slot.type
     // 数组类型（number[] / string[]）单独处理
     if (expected.includes('[]') || expected === 'array') {
-      if (!Array.isArray(value)) return { code: 'INVALID_PARAMS', message: `${name} 必须是数组` }
+      const err = validateArrayElements(name, value, expected, tool)
+      if (err) return err
       continue
     }
     if (expected.includes('number') && (typeof value !== 'number' || !Number.isFinite(value))) {

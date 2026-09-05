@@ -634,10 +634,14 @@
 
 ---
 
-## 十九. 半成品 plan 兜底测试
+## 十九. 历史归档：detectHalfPlan 兜底（已于 C2 删除）
 
-> 针对 AI 偶发只返回 observe/query 而不追加 mutation 的兜底（src/shared/ai/intent-rules.ts detectHalfPlan）。
-> 每条用例都是「AI 返回不完整 plan」模拟；测试方式为 mock aiEngine 返回 observe-only plan。
+> ⚠️ 本节为 APF 重构前的「半成品 plan 兜底」行为归档，对应的客户端增强逻辑
+> （`src/shared/ai/intent-rules.ts` 中 `detectHalfPlan` / verb → intent 表 / `seededResults`
+> 客户端注入）已在 APF C0–C2 落地时全部删除，见 `docs/apf-roadmap.md §[C0]` 与 §[C2]`。
+> 当前 APF 行为：AI 必须自行返回完整 plan（含 observe + mutation + deps），SW 端不做
+> 任何客户端合成；测试应直接验证 AI 返回 plan 的完整性，而非模拟「半成品 → 客户端补齐」。
+> 保留下列用例仅作为历史行为参考，新测试请参见 `docs/manual-smoke-apf.md` 的 7+1 case。
 
 ### 用例 19.1：基础关闭（核心场景）
 - **输入**：`把 baidu.com 的所有标签都关了`
@@ -712,15 +716,15 @@
 - **输入**：（输入 200+ 字的复杂任务描述）
 - **预期**：AI 解析 → 合法 plan → SW DAG 执行不超时
 
-### 用例 19.2：连续多次操作
+### 用例 20.2：连续多次操作
 - **输入**：连续发 5 条简单指令
 - **预期**：依次执行，无卡顿、无消息丢失
 
-### 用例 19.3：刷新侧边栏后保持
+### 用例 20.3：刷新侧边栏后保持
 - **输入**：先发送消息 → 刷新侧边栏 → 再发消息
 - **预期**：历史消息持久化；新消息正常显示
 
-### 用例 19.4：toolPolicy 缺失
+### 用例 20.4：toolPolicy 缺失
 - **输入**：构造一个 swIntent 在 policy 中不存在的工具（mock）
 - **预期**：dispatchTool 返回 `TOOL_POLICY_MISSING`
 

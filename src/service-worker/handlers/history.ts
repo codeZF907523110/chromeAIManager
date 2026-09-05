@@ -120,8 +120,9 @@ export async function deleteUrl(payload: Record<string, unknown>): Promise<Execu
   if (typeof payload.url !== 'string' || !payload.url.trim()) {
     return { success: false, code: 'INVALID_PARAMS', message: 'url 必须是非空字符串' }
   }
-  await chrome.history.deleteUrl({ url: payload.url.trim() } as unknown as string)
-  return { success: true, deletedUrl: payload.url.trim() }
+  const url = payload.url.trim()
+  await chrome.history.deleteUrl(url)
+  return { success: true, deletedUrl: url }
 }
 
 /** 删除指定时间范围内的历史记录。 */
@@ -171,7 +172,7 @@ export async function remove(payload: Record<string, unknown>): Promise<Executio
     const failures: string[] = []
     for (const url of selectedUrls) {
       try {
-        await chrome.history.deleteUrl({ url } as unknown as string)
+        await chrome.history.deleteUrl(url)
       } catch {
         failures.push(url)
       }
@@ -183,26 +184,42 @@ export async function remove(payload: Record<string, unknown>): Promise<Executio
       failed: failures.length,
     }
   }
-  if (range === 'all') {
+  // 注意：query 与 timeRange 同时存在时，query 永远是更窄的过滤器；
+  // timeRange='all' 不能再吞掉 query 全部删除（之前会把 query 当作扩展语义忽略）。
+  const query = typeof payload.query === 'string' ? payload.query.trim() : ''
+  if (range === 'all' && !query) {
     await chrome.history.deleteAll()
     return { success: true, deletedAll: true }
   }
-  const timeRange = getTimeRange(range)
+  const timeRange = range === 'all' ? { startTime: 0, endTime: Date.now() } : getTimeRange(range)
   if (!timeRange)
     return { success: false, code: 'INVALID_PARAMS', message: '必须指定有效的 timeRange' }
   const { startTime, endTime } = timeRange
 
-  if (payload.query) {
+  if (query) {
+    // B34: 单次 history.search 最多 10000 条；超量截断为 truncated:true 让前端告诉用户「还有更多」。
+    const SOFT_LIMIT = 10000
     const items = await chrome.history.search({
-      text: payload.query as string,
-      maxResults: 10000,
+      text: query,
+      maxResults: SOFT_LIMIT,
       startTime,
       endTime,
     })
+    const truncated = items.length >= SOFT_LIMIT
     for (const item of items) {
-      if (item.url) await chrome.history.deleteUrl({ url: item.url } as unknown as string)
+      if (item.url) await chrome.history.deleteUrl(item.url)
     }
-    return { success: true, deleted: items.length }
+    return {
+      success: true,
+      deleted: items.length,
+      query,
+      truncated,
+      ...(truncated
+        ? {
+            suggestion: '结果已达上限，可能仍有匹配项未删除；请缩小时间范围或细化关键词后再次执行',
+          }
+        : {}),
+    }
   }
 
   // deleteRange 返回 void，需要先计数
@@ -211,7 +228,7 @@ export async function remove(payload: Record<string, unknown>): Promise<Executio
     .filter((item) => item.url && !item.url.startsWith('chrome://'))
     .map((item) => item.url)
   for (const url of urlsToDelete) {
-    await chrome.history.deleteUrl({ url } as unknown as string)
+    await chrome.history.deleteUrl(url)
   }
   return { success: true, deleted: urlsToDelete.length }
 }

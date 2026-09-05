@@ -8,9 +8,11 @@
 
 import type { ExecutionResult } from '../../types/execution'
 import { getToolPolicy, validateToolArgs } from '../../shared/tool-contracts'
-import { issueConfirmation } from '../confirmation'
+import { issueConfirmation, consumeConfirmation } from '../confirmation'
 import { recordAudit, summarizeArgsKeys } from '../audit'
 import { getUnsupportedReason } from '../../shared/unsupported'
+import { COMMANDS } from '../../shared/commands'
+import { stripControlFields } from '../../shared/confirm'
 
 import * as tabs from './tabs'
 import * as bookmarks from './bookmarks'
@@ -37,7 +39,7 @@ export type Handler = (args: Record<string, unknown>) => Promise<ExecutionResult
 export const REGISTRY: Record<string, Handler> = {
   // ─── SLASH 命令别名（直接路由到 SW handler）───
   find_tab: tabs.update,
-  close_duplicate_tabs: tabs.remove,
+  close_duplicate_tabs: tabs.removeDuplicates,
   close_tabs_by_url: tabs.removeByUrl,
   sort_tabs: tabs.move,
   pin_tab: tabs.update,
@@ -183,30 +185,16 @@ export const REGISTRY: Record<string, Handler> = {
   content_settings_clear: contentSettings.clear,
 }
 
-/** 危险工具集合：调用前需要 force=true 或前端二次确认
+/** 危险工具集合：直接从 COMMANDS 的 dangerous 标记构建。
  *
- * 注意：DANGEROUS_TOOLS 由 getToolPolicy() 的 requiresUserConfirmation 派生；
- * 由于 aiHidden 命令不出现在 policy（getToolPolicy 会跳过 aiHidden），
- * slash 专属的危险命令（如 ungroup_all / close_duplicate_tabs / close_tabs_by_url
- * / remove_bookmark / uninstall_extension）需要直接列出，避免漏掉。
+ * 同时收录 intent 和 swIntent：前者覆盖 slash/AI 别名，后者覆盖
+ * service-worker canonical 工具，避免两条入口的危险策略发生漂移。
  */
-export const DANGEROUS_TOOLS = new Set<string>([
-  ...Object.keys(REGISTRY).filter((name) => getToolPolicy(name)?.requiresUserConfirmation),
-  // slash 专属（aiHidden=true，不在 policy 里）：二次确认走 confirmationToken 闭环
-  'tabs_ungroup_all',
-  'tabs_remove_by_url',
-  'tabs_remove',
-  'bookmarks_remove_node',
-  'history_remove',
-  'cookies_remove',
-  'extensions_remove',
-  'notifications_clear',
-  'browsing_data_remove',
-  'storage_area_remove',
-  'storage_area_clear',
-  'content_settings_set',
-  'content_settings_clear',
-])
+export const DANGEROUS_TOOLS = new Set<string>(
+  COMMANDS.filter((command) => command.dangerous).flatMap((command) =>
+    [command.intent, command.swIntent].filter((name): name is string => Boolean(name))
+  )
+)
 
 /**
  * 为二次确认卡构建 children 列表。
@@ -236,37 +224,27 @@ export async function buildConfirmChildren(
       }
     }
     if (tool === 'tabs_remove') {
-      const explicitIds = Array.isArray(args.tabIds)
-        ? (args.tabIds as unknown[]).filter((id): id is number => typeof id === 'number')
-        : []
-      let candidateIds: number[]
-      if (explicitIds.length > 0) {
-        candidateIds = explicitIds
-      } else if (typeof args.domain === 'string' && args.domain.trim()) {
-        const query: chrome.tabs.QueryOptions =
-          args.currentWindow === false ? {} : { currentWindow: true }
-        const all = await chrome.tabs.query(query)
-        const d = args.domain.toLowerCase().replace(/^www\./, '')
-        candidateIds = all
-          .filter((t) => !t.pinned && t.id !== undefined)
-          .filter((t) => {
-            try {
-              const host = new URL(t.url || '').hostname.toLowerCase().replace(/^www\./, '')
-              return host === d || host.endsWith(`.${d}`)
-            } catch {
-              return false
-            }
-          })
-          .map((t) => t.id!)
-      } else {
-        return undefined
-      }
-      const tabs = await Promise.all(
-        candidateIds.map((id) => chrome.tabs.get(id).catch(() => null))
-      )
-      return tabs
-        .filter((t): t is chrome.tabs.Tab => !!t && t.id !== undefined)
-        .map((t) => ({ id: t.id!, title: t.title, url: t.url }))
+      const removeChildren = await collectTabsRemoveChildren(args)
+      if (removeChildren && removeChildren.length > 0) return removeChildren
+      const fallback = candidatesToChildren(args.candidates, args)
+      if (fallback) return fallback
+      return removeChildren
+    }
+    if (tool === 'tabs_remove_by_url') {
+      const q = ((args.query as string) || '').toLowerCase().trim()
+      if (!q) return undefined
+      const allTabs = await chrome.tabs.query({})
+      const matched = allTabs
+        .filter((t) => t.id !== undefined && !!t.url)
+        .filter((t) => {
+          const lowerUrl = (t.url || '').toLowerCase()
+          const title = (t.title || '').toLowerCase()
+          return lowerUrl.includes(q) || title.includes(q)
+        })
+      const children = matched.map((t) => ({ id: t.id!, title: t.title, url: t.url }))
+      if (children.length > 0) return children
+      const fallback = candidatesToChildren(args.candidates, args)
+      return fallback ?? children
     }
     if (tool === 'history_remove' && args.query) {
       const items = await chrome.history.search({
@@ -277,8 +255,209 @@ export async function buildConfirmChildren(
         .filter((it) => !!it.url)
         .map((it) => ({ id: it.url as string, title: it.title, url: it.url }))
     }
+    // ── 单操作类危险工具：children 就是 args 里的目标，避免确认卡空卡 ──
+    if (tool === 'notifications_clear') {
+      const id = typeof args.notificationId === 'string' ? args.notificationId : ''
+      if (!id) return undefined
+      return [{ id, title: `通知 ${id}`, url: '' }]
+    }
+    if (tool === 'cookies_set') {
+      const url = typeof args.url === 'string' ? args.url : ''
+      const name = typeof args.name === 'string' ? args.name : ''
+      if (!url || !name) return undefined
+      // 确认卡 children 仍走"name 作为 id"形式（与 cookies_remove 一致，便于 UI 共用）
+      return [{ id: name, title: name, url }]
+    }
+    if (tool === 'content_settings_set' || tool === 'content_settings_clear') {
+      const pattern = typeof args.primaryPattern === 'string' ? args.primaryPattern : ''
+      const resourceId = typeof args.resourceId === 'string' ? args.resourceId : ''
+      if (!pattern) return undefined
+      return [{ id: pattern, title: `${pattern} / ${resourceId}`, url: '' }]
+    }
+    if (tool === 'extensions_remove') {
+      // uninstall_extension 等别名也走这里。
+      // 优先用 candidates（来自 precompute 的扩展 ID 数组）；没有时用 args.query 走管理 API 反查。
+      const fromCandidates = candidatesToChildren(args.candidates, args)
+      if (fromCandidates && fromCandidates.length > 0) return fromCandidates
+      const query = typeof args.query === 'string' ? args.query.trim() : ''
+      if (!query) return undefined
+      try {
+        const all = await chrome.management.getAll()
+        const matched = all.filter(
+          (e) =>
+            !e.isApp &&
+            (e.name.toLowerCase().includes(query.toLowerCase()) ||
+              e.id.toLowerCase().includes(query.toLowerCase()))
+        )
+        return matched.map((e) => ({ id: e.id, title: e.name, url: e.id }))
+      } catch {
+        return undefined
+      }
+    }
+    if (tool === 'downloads_cancel' || tool === 'downloads_erase') {
+      const id = typeof args.downloadId === 'number' ? args.downloadId : undefined
+      if (id === undefined) return undefined
+      try {
+        const items = await chrome.downloads.search({ id: [id] })
+        const found = items.find((it) => it.id === id)
+        return [
+          {
+            id,
+            title: found?.filename ?? `download ${id}`,
+            url: found?.url ?? '',
+          },
+        ]
+      } catch {
+        return [{ id, title: `download ${id}`, url: '' }]
+      }
+    }
+    if (tool === 'cookies_remove' || tool === 'clear_cookies') {
+      // 域内 cookie 列表：与 generateConfirmPreview 走同一来源 chrome.cookies.getAll。
+      // 无 domain 时返回 undefined（前端 confirm 卡走"按域名批量"占位）。
+      const domain = typeof args.domain === 'string' && args.domain.trim() ? args.domain.trim() : ''
+      if (!domain) return undefined
+      try {
+        const list = await chrome.cookies.getAll({
+          domain: domain.replace(/^https?:\/\//, ''),
+        })
+        return list.map((c) => ({ id: c.name, title: c.name, url: `path: ${c.path}` }))
+      } catch {
+        return undefined
+      }
+    }
+    if (tool === 'browsing_data_remove') {
+      // 不可枚举：browsingData.remove 接受 dataToRemove 对象作为黑盒操作；
+      // children 直接展示 dataToRemove 的字段，让用户看清将清理哪些类型。
+      const dataToRemove = (args.dataToRemove ?? {}) as Record<string, unknown>
+      const keys = Object.keys(dataToRemove).filter((k) => dataToRemove[k] === true)
+      if (keys.length === 0) return undefined
+      return keys.map((k) => ({ id: k, title: k, url: '' }))
+    }
+    if (tool === 'storage_area_remove' || tool === 'storage_area_clear') {
+      // storage_area_clear 是"清空整个 area"，无法枚举；只能展示 area 名作为唯一子项。
+      // storage_area_remove 可以从 candidates（前端 precompute 出的 key 列表）兜底。
+      const area = typeof args.area === 'string' ? args.area : 'local'
+      if (tool === 'storage_area_clear') {
+        return [{ id: area, title: `整个 ${area} storage`, url: '' }]
+      }
+      const fromCandidates = candidatesToChildren(args.candidates, args)
+      if (fromCandidates && fromCandidates.length > 0) return fromCandidates
+      const key = typeof args.key === 'string' ? args.key : ''
+      if (!key) return [{ id: area, title: `${area} storage`, url: '' }]
+      return [{ id: key, title: `${area}/${key}`, url: '' }]
+    }
+    // P1-5 兜底：close_duplicate_tabs / ungroup_all / remove_bookmark 等
+    // 走 candidates 或 args 里的预计算列表重建。
+    const fallback = candidatesToChildren(args.candidates, args)
+    if (fallback && fallback.length > 0) return fallback
   } catch {
     return undefined
+  }
+  return undefined
+}
+
+/**
+ * tabs_remove 专用 children 计算：从 args 推导出 tabIds 并回查 tab 标题/URL。
+ */
+async function collectTabsRemoveChildren(
+  args: Record<string, unknown>
+): Promise<Array<{ id: string | number; title?: string; url?: string }> | undefined> {
+  const explicitIds = Array.isArray(args.tabIds)
+    ? (args.tabIds as unknown[]).filter((id): id is number => typeof id === 'number')
+    : []
+  let candidateIds: number[]
+  if (explicitIds.length > 0) {
+    candidateIds = explicitIds
+  } else if (typeof args.domain === 'string' && args.domain.trim()) {
+    const query: chrome.tabs.QueryOptions =
+      args.currentWindow === false ? {} : { currentWindow: true }
+    const all = await chrome.tabs.query(query)
+    const d = args.domain.toLowerCase().replace(/^www\./, '')
+    candidateIds = all
+      .filter((t) => !t.pinned && t.id !== undefined)
+      .filter((t) => {
+        try {
+          const host = new URL(t.url || '').hostname.toLowerCase().replace(/^www\./, '')
+          return host === d || host.endsWith(`.${d}`)
+        } catch {
+          return false
+        }
+      })
+      .map((t) => t.id!)
+  } else {
+    return undefined
+  }
+  const tabs = await Promise.all(candidateIds.map((id) => chrome.tabs.get(id).catch(() => null)))
+  return tabs
+    .filter((t): t is chrome.tabs.Tab => !!t && t.id !== undefined)
+    .map((t) => ({ id: t.id!, title: t.title, url: t.url }))
+}
+
+/**
+ * P1-4/P1-5：把 usePlanRunner.precompute 注入的 candidates 转回 children 列表。
+ *
+ * candidates 形态兼容：
+ *   - flat number[] → tabIds
+ *   - flat string[] → 书签/历史 URL
+ *   - { tabIds: number[] }
+ *   - { tabGroups: Array<{groupId, tabIds}> }
+ *   - { duplicateGroups: Array<{url, tabIds}> }
+ *   - { nodeIds: string[] }
+ * 兜底：从 args 里的 domain/query/url/title/nodeId/key 回查构造单条 children。
+ */
+function candidatesToChildren(
+  candidates: unknown,
+  args: Record<string, unknown>
+): Array<{ id: string | number; title?: string; url?: string }> | undefined {
+  if (!candidates) return undefined
+  if (Array.isArray(candidates) && candidates.every((c) => typeof c === 'number')) {
+    return (candidates as number[]).map((id) => ({ id, title: '', url: '' }))
+  }
+  if (Array.isArray(candidates) && candidates.every((c) => typeof c === 'string')) {
+    return (candidates as string[]).map((id) => ({ id, title: '', url: id }))
+  }
+  if (typeof candidates === 'object') {
+    const obj = candidates as {
+      tabIds?: unknown
+      groupIds?: unknown
+      nodeIds?: unknown
+      tabGroups?: Array<{ groupId: number; tabIds: number[] }>
+      duplicateGroups?: Array<{ url: string; tabIds: number[] }>
+    }
+    if (Array.isArray(obj.tabIds) && obj.tabIds.every((id) => typeof id === 'number')) {
+      return (obj.tabIds as number[]).map((id) => ({ id, title: '', url: '' }))
+    }
+    if (Array.isArray(obj.tabGroups) && obj.tabGroups.length > 0) {
+      return obj.tabGroups.map((g) => ({
+        id: g.groupId,
+        title: `分组 ${g.groupId}`,
+        url: `${g.tabIds.length} 个标签`,
+      }))
+    }
+    if (Array.isArray(obj.duplicateGroups) && obj.duplicateGroups.length > 0) {
+      return obj.duplicateGroups.map((g, i) => ({
+        id: i,
+        title: g.url,
+        url: `${g.tabIds.length} 个标签`,
+      }))
+    }
+  }
+  const { domain, query, url, title, nodeId, key } = args
+  const titleStr = typeof title === 'string' ? title : ''
+  if (typeof nodeId === 'string' && nodeId) {
+    return [{ id: nodeId, title: titleStr, url: '' }]
+  }
+  if (typeof key === 'string' && key) {
+    return [{ id: key, title: titleStr, url: '' }]
+  }
+  if (typeof domain === 'string' && domain) {
+    return [{ id: domain, title: `域名: ${domain}`, url: '' }]
+  }
+  if (typeof query === 'string' && query) {
+    return [{ id: query, title: `关键词: ${query}`, url: '' }]
+  }
+  if (typeof url === 'string' && url) {
+    return [{ id: url, title: titleStr || url, url }]
   }
   return undefined
 }
@@ -373,7 +552,9 @@ function isProtectedHost(url: URL): boolean {
 function sanitizeDetailArgs(args: Record<string, unknown>): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(args)) {
-    if (key === 'force' || key === 'confirmationToken') continue
+    // 控制流程字段：确认卡 UI 不需要展示 force / confirmationToken / __preConfirmed
+    if (key === 'force' || key === 'confirmationToken' || key === '__preConfirmed') continue
+    // 敏感值字段
     if (key === 'password' || key === 'value' || key === 'cookieValue') continue
     sanitized[key] = value
   }
@@ -436,24 +617,31 @@ export async function dispatchTool(
   console.log(`[AI管家] checkToolPermissions OK tool=${tool}`)
   const hostError = await checkToolHost(policy, args, tool)
   if (hostError) {
-    console.warn(`[AI管家] reject: checkToolHost tool=${tool} code=${hostError.code} msg=${hostError.message}`)
+    console.warn(
+      `[AI管家] reject: checkToolHost tool=${tool} code=${hostError.code} msg=${hostError.message}`
+    )
     return hostError
   }
   console.log(`[AI管家] checkToolHost OK tool=${tool}`)
 
-  // 前端确认卡用户已确认(__preConfirmed)或已有 force:true，跳过危险检查
-  const isPreConfirmed = args.__preConfirmed === true
+  // C14-P0-1：__preConfirmed 不再作为独立的"信任旁路"。
+  // 唯一放行危险工具的路径是：force:true + 有效 confirmationToken（已被 consumeConfirmation 校验过）。
+  // 旧 __preConfirmed=true 由 slash runner 注入，已在 C14 中切到 token 路径；
+  // 保留该字段的解析仅用于日志，避免外部调用方误用（始终视为"无 force 也无 token"）。
   const hasForce = args.force === true
   const isDangerous = DANGEROUS_TOOLS.has(tool)
-  console.log(
-    `[AI管家] dangerCheck tool=${tool} isPreConfirmed=${isPreConfirmed} hasForce=${hasForce} isDangerous=${isDangerous}`
-  )
-  if (isDangerous && !isPreConfirmed && !hasForce) {
+  console.log(`[AI管家] dangerCheck tool=${tool} hasForce=${hasForce} isDangerous=${isDangerous}`)
+  if (isDangerous && !hasForce) {
     console.log(`[AI管家] NEEDS_CONFIRM tool=${tool}, building children...`)
     const children = await buildConfirmChildren(tool, args)
     console.log(
       `[AI管家] buildConfirmChildren tool=${tool} childrenCount=${children?.length ?? 0}`,
-      children ? `firstIds=${children.slice(0, 5).map((c) => c.id).join(',')}` : ''
+      children
+        ? `firstIds=${children
+            .slice(0, 5)
+            .map((c) => c.id)
+            .join(',')}`
+        : ''
     )
     const confirmationToken = issueConfirmation(tool, args)
     return {
@@ -471,7 +659,25 @@ export async function dispatchTool(
     }
   }
 
-  const { force: _force, __preConfirmed: _preConfirmed, ...cleanArgs } = args
+  // 危险工具 + force:true 必须携带有效 confirmationToken；
+  // 缺/失效 → CONFIRM_INVALID，避免被"裸 force:true"绕过二次确认。
+  if (isDangerous && hasForce) {
+    const token = args.confirmationToken
+    const ok = consumeConfirmation(tool, args, token)
+    if (!ok) {
+      console.warn(
+        `[AI管家] reject: CONFIRM_INVALID tool=${tool} tokenProvided=${typeof token === 'string'}`
+      )
+      return {
+        success: false,
+        code: 'CONFIRM_INVALID',
+        message: '缺少或失效的确认 token，禁止执行危险操作',
+      }
+    }
+    console.log(`[AI管家] consumeConfirmation OK tool=${tool}`)
+  }
+
+  const cleanArgs = stripControlFields(args)
   const startedAt = Date.now()
   console.log(`[AI管家] handler invoke tool=${tool} cleanArgs=${JSON.stringify(cleanArgs)}`)
   try {
@@ -502,10 +708,7 @@ export async function dispatchTool(
       ...(finalPolicy?.sensitiveOutput ? { sensitiveOutput: true } : {}),
     }
   } catch (error: unknown) {
-    console.error(
-      `[AI管家] handler threw tool=${tool} duration=${Date.now() - startedAt}ms`,
-      error
-    )
+    console.error(`[AI管家] handler threw tool=${tool} duration=${Date.now() - startedAt}ms`, error)
     void recordAudit({
       timestamp: Date.now(),
       tool,

@@ -26,7 +26,7 @@
       <div class="bubble-content">
         <template v-if="msg.type === 'system' && isLongContent">
           <div class="thinking-content" :class="{ expanded: isExpanded }" @click="toggleExpand">
-            <div ref="contentEl" class="thinking-text" v-html="renderedHtml"></div>
+            <div ref="contentEl" class="thinking-text"></div>
           </div>
           <div class="expand-indicator" @click="toggleExpand">
             <ChevronDown v-if="!isExpanded" :size="12" />
@@ -34,7 +34,7 @@
             <span>{{ isExpanded ? '收起' : '展开' }}</span>
           </div>
         </template>
-        <div v-else ref="contentEl" v-html="renderedHtml"></div>
+        <div v-else ref="contentEl"></div>
         <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
         <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
         <div v-if="msg.recordingFile" class="recording-file-card">
@@ -118,21 +118,60 @@ const contentEl = ref<HTMLElement>()
 const renderedHtml = ref('')
 
 /**
+ * B31: 把安全 HTML 写入容器，绕过 v-html 二次插值。
+ * marked → DOMPurify 已经把 <>& 转义好，但 v-html 内部还会让 Vue 再做一次
+ * HTML 字串解析（性能损耗小、风险低，但配合 mountEmbeddedComponents 时
+ * 占位 [data-custom-block] 节点被 Vue 替换为 <!----> 注释节点，破坏后续 querySelector）。
+ * 这里改成「建 detached <template>，innerHTML 注入安全 HTML，importNode 迁入真实容器」，
+ * Vue 仍能看到渲染结果，但不会替换已存在的占位节点。
+ */
+function applyMarkdownHtml(el: HTMLElement, safeHtml: string): void {
+  const tpl = document.createElement('template')
+  tpl.innerHTML = safeHtml
+  while (el.firstChild) el.removeChild(el.firstChild)
+  el.appendChild(document.importNode(tpl.content, true))
+}
+
+/**
  * 跟踪每个占位 DOM 上挂载的 Vue app 实例
  * 卸载时统一调用 app.unmount() 释放资源
+ *
+ * B08 修复：WeakMap 在 v-html 替换 contentEl 后，原占位 DOM 节点会被回收，
+ * 导致 mountedApps 不可枚举，泄漏 Vue app 实例。改用 Map<id, {ph, app}>；
+ * 每次 watch 触发 mountEmbeddedComponents 之前先把所有旧 app unmount 并清空 Map，
+ * 避免"同一个 ph 被新 app 顶替但旧 app 还活着"。
  */
-const mountedApps = new WeakMap<HTMLElement, VueApp>()
+const mountedApps = new Map<string, { ph: HTMLElement; app: VueApp }>()
 
 watch(
   () => props.msg,
   async () => {
+    // B08: 每次 markdown 变化前先释放旧 app（v-html 会替换 contentEl，
+    // 旧的占位节点已 GC，但 WeakMap 持有的 app 引用还在泄漏）。
+    unmountAllApps()
     renderedHtml.value = renderMarkdown(props.msg.text.markdown)
     isExpanded.value = false
+    await nextTick()
+    // B31: 不用 v-html，避免 Vue 二次解析替换占位节点；改用 DOM API 注入安全 HTML。
+    if (contentEl.value) applyMarkdownHtml(contentEl.value, renderedHtml.value)
     await nextTick()
     mountEmbeddedComponents()
   },
   { immediate: true }
 )
+
+// 在 watch 引用之前 hoist unmountAllApps 的函数声明会被自动提升；这里显式声明
+// 是为了避免「Cannot access unmountAllApps before initialization」错误。
+function unmountAllApps(): void {
+  for (const [, entry] of mountedApps) {
+    try {
+      entry.app.unmount()
+    } catch (e) {
+      console.warn('[MessageBubble] 卸载嵌入组件失败:', e)
+    }
+  }
+  mountedApps.clear()
+}
 
 /**
  * 扫描占位 DOM 并挂载对应的 Vue 组件
@@ -147,8 +186,10 @@ function mountEmbeddedComponents() {
   const byId = new Map(components.map((c) => [c.id, c]))
 
   for (const ph of Array.from(placeholders)) {
-    if (mountedApps.has(ph)) continue
     const id = ph.getAttribute('data-id') ?? ''
+    if (!id) continue
+    // 已挂载：跳过（数据未变化时 watch 触发也会走到这里）
+    if (mountedApps.has(id)) continue
     const tag = ph.getAttribute('data-tag') ?? ''
     const target = byId.get(id)
 
@@ -169,9 +210,18 @@ function mountEmbeddedComponents() {
       console.warn('[MessageBubble] 嵌入组件渲染失败:', err)
     }
     app.mount(ph)
-    mountedApps.set(ph, app)
+    mountedApps.set(id, { ph, app })
   }
 }
+
+/**
+ * B08: 统一释放所有挂载的 Vue app。
+ * 必须在 v-html 重置 contentEl 之前调用，否则原占位节点被 GC 后
+ * app 实例无法从 WeakMap 里枚举出来。
+ *
+ * 注：此函数被 watch 回调在初始化前引用；JS 函数声明会被 hoist，
+ * 因此在 watch 之后再次声明是安全的（重复声明会被后者覆盖——这里删掉第二次声明）。
+ */
 
 /**
  * 渲染"组件缺失"占位符：用浅灰文字 + ⚠ 提示用户，AI 引用了未注册的 tag 也走这里。
@@ -197,19 +247,7 @@ function escapeHtml(text: string): string {
  * 组件销毁前释放所有动态挂载的 Vue app
  */
 onBeforeUnmount(() => {
-  if (!contentEl.value) return
-  const placeholders = contentEl.value.querySelectorAll<HTMLElement>('[data-custom-block]')
-  for (const ph of Array.from(placeholders)) {
-    const app = mountedApps.get(ph)
-    if (app) {
-      try {
-        app.unmount()
-      } catch (e) {
-        console.warn('[MessageBubble] 卸载嵌入组件失败:', e)
-      }
-      mountedApps.delete(ph)
-    }
-  }
+  unmountAllApps()
 })
 </script>
 
