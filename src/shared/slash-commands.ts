@@ -65,8 +65,14 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     slash: 'pin',
     intent: 'pin_tab',
-    description: '固定/取消固定当前标签（重复调用切换）',
+    description: '固定当前标签页',
     aliases: ['固定', 'p'],
+  },
+  {
+    slash: 'unpin',
+    intent: 'unpin_tab',
+    description: '取消固定当前标签页',
+    aliases: ['取消固定', 'up'],
   },
   {
     slash: 'duplicate',
@@ -345,6 +351,10 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       // /find /history 参数可选：不传走默认（find=全部 / history=今天），传值按关键词过滤
       if (args.trim()) (slots as Record<string, string>).query = args
       break
+    case 'close_tabs_by_url':
+      // /close-url 必须带关键词；透传到 query，供预览/SW 端做 title+url 模糊匹配
+      if (args.trim()) (slots as Record<string, string>).query = args
+      break
     case 'reopen_closed_tab':
     case 'remove_bookmark':
     case 'enable_extension':
@@ -369,11 +379,19 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       if (!args.trim()) return
       ;(slots as Record<string, string>).key = args
       break
-    case 'delete_history':
-      // /clear-history 必带时间范围
-      if (!args.trim()) return
-      ;(slots as Record<string, string>).timeRange = args
+    case 'delete_history': {
+      // /clear-history <时间范围> [关键词]：首 token 是 timeRange，剩余是可选 query
+      // 校验 timeRange 合法性——非法值不填 slot，避免 SW 端 range 匹配失败导致 startTime=0 误删全部历史
+      const parts = args.trim().split(/\s+/)
+      const timeRange = parts[0]
+      const validRanges = ['today', 'yesterday', 'week', 'month', 'all']
+      if (!validRanges.includes(timeRange)) return
+      ;(slots as Record<string, string>).timeRange = timeRange
+      if (parts.length > 1) {
+        ;(slots as Record<string, string>).query = parts.slice(1).join(' ')
+      }
       break
+    }
     case 'sort_tabs':
       ;(slots as Record<string, string>).order = args
       break

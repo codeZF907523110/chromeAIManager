@@ -1049,7 +1049,31 @@ async function observeCookies(payload: Record<string, unknown>): Promise<Executi
   return { success: true, cookies, found: cookies.length, domain }
 }
 
+/**
+ * 清除 Cookie
+ * 支持两种模式：
+ * 1. selectedCookies（前端勾选子集）：逐个按 {name, domain, path, secure} 构造 url 删除
+ * 2. domain 全删（兜底）：清空该域名下所有 Cookie
+ * @param payload - { domain?, selectedCookies? } selectedCookies 为前端勾选的 Cookie 最小字段集
+ * @returns { success, removed, domain } removed=已删除数量
+ */
 async function removeCookies(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // 前端勾选子集模式：Cookie 无稳定 id，前端传 {name, domain, path, secure} 最小字段集
+  const selectedCookies = payload.selectedCookies as
+    Array<{ name: string; domain: string; path: string; secure: boolean }> | undefined
+  if (selectedCookies?.length) {
+    for (const c of selectedCookies) {
+      const url = `${c.secure ? 'https' : 'http'}://${c.domain}${c.path.startsWith('/') ? '' : '/'}${c.path}`
+      await chrome.cookies.remove({ url, name: c.name })
+    }
+    return {
+      success: true,
+      removed: selectedCookies.length,
+      domain: selectedCookies[0]?.domain,
+    }
+  }
+
+  // 兜底：按域名全删（无 selectedCookies 时）
   let domain = (payload.domain as string | undefined)?.trim()
   if (!domain) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
