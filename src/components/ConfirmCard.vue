@@ -25,7 +25,7 @@
       <button class="btn-cancel" :disabled="loading" @click="handleCancel">取消</button>
       <button
         class="btn-confirm"
-        :disabled="loading || selectableCount > 0 && selectedCount === 0"
+        :disabled="loading || (selectableCount > 0 && selectedCount === 0)"
         @click="handleConfirm"
       >
         {{ loading ? '执行中...' : '确认执行' }}
@@ -59,7 +59,9 @@ const loading = ref(false)
 
 // 本地维护 items 选中状态，避免直接 mutate props
 const localItems = ref<Item[]>(props.items.map((it) => ({ ...it })))
-const selectableCount = computed(() => localItems.value.filter((it) => it.tabId !== undefined).length)
+const selectableCount = computed(
+  () => localItems.value.filter((it) => it.tabId !== undefined).length
+)
 const selectedCount = computed(
   () => localItems.value.filter((it) => it.tabId !== undefined && it.selected !== false).length
 )
@@ -162,6 +164,7 @@ function handleCancel() {
   white-space: nowrap;
   flex: 1;
   margin-right: 12px;
+  min-width: 100px;
 }
 
 .confirm-card-item .secondary {

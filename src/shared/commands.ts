@@ -656,7 +656,16 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'pin_tab',
-    description: '固定/取消固定当前标签',
+    description: '固定当前标签页',
+    dangerous: false,
+    aiHidden: true,
+    requiresPrecompute: true,
+    slots: {},
+    swIntent: 'tabs_update',
+  },
+  {
+    intent: 'unpin_tab',
+    description: '取消固定当前标签页',
     dangerous: false,
     aiHidden: true,
     requiresPrecompute: true,

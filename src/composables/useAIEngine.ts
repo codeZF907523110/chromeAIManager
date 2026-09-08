@@ -693,7 +693,7 @@ export function useAIEngine() {
                 } else {
                   addMessage('system', '抱歉，这个操作没有成功喵~')
                 }
-              } catch (e: unknown) {
+              } catch {
                 addMessage('system', '抱歉，执行过程中遇到了一点问题喵~')
               }
               cleanup()
@@ -898,17 +898,48 @@ export function useAIEngine() {
     if (cmd.dangerous) {
       // 危险命令预览需要最新 tab 状态，强制刷新缓存（避免 30s 缓存导致预览与实际状态不一致）
       contextCache.value = await getContext()
-      const preview = generateConfirmPreview(resolvedIntent, slotsAny, contextCache.value)
+      // remove_bookmark 预览需要匹配书签列表（Context 不存书签详情），预取后传给 generateConfirmPreview
+      let matchedBookmarks: chrome.bookmarks.BookmarkTreeNode[] | undefined
+      if (resolvedIntent === 'remove_bookmark' && slotsAny.query) {
+        matchedBookmarks = (await chrome.runtime.sendMessage({
+          type: MSG_GET_BOOKMARKS,
+          options: { query: slotsAny.query as string },
+        })) as chrome.bookmarks.BookmarkTreeNode[]
+      }
+      // clear_cookies 预览需要域名下的 Cookie 列表（Cookie 无稳定 id，用数组下标做 UI id）。
+      // 复用 cookies_observe 通道预取，结果存闭包供 onConfirm 反查下标 → Cookie 对象。
+      let matchedCookies: chrome.cookies.Cookie[] | undefined
+      if (resolvedIntent === 'clear_cookies') {
+        const obs = (await chrome.runtime.sendMessage({
+          type: MSG_EXECUTE,
+          command: {
+            intent: 'cookies_observe',
+            payload: { domain: slotsAny.domain },
+          },
+        })) as ExecutionResult | undefined
+        matchedCookies = obs?.success ? (obs.cookies as chrome.cookies.Cookie[]) : undefined
+      }
+      const preview = generateConfirmPreview(
+        resolvedIntent,
+        slotsAny,
+        contextCache.value,
+        matchedBookmarks,
+        matchedCookies
+      )
       // 没有匹配到任何标签时，preview 为 null。
       // 用 ai-chat 通道返回，让结果进入消息气泡流；AI 看起来像"正常回复"，
       // 不会出现"AI 没反应"的错觉。
       if (!preview) {
         // 危险命令没有匹配项时，给出针对性提示。
         // ungroup_all: 当前没有分组
+        // delete_history: 时间范围非法（buildSlots 校验未通过）
         // close_*: 关键词没匹配到
         let msg: string
         if (resolvedIntent === 'ungroup_all') {
           msg = '当前没有任何标签分组呢'
+        } else if (resolvedIntent === 'delete_history') {
+          msg =
+            '时间范围不对哦，可用 today / yesterday / week / month / all，试试 /clear-history week'
         } else {
           const keyword = (slotsAny.query as string) || '当前条件'
           msg = `没找到匹配 "${keyword}" 的标签呢，要不换个关键词试试？`
@@ -923,7 +954,7 @@ export function useAIEngine() {
         onConfirm: async (selectedTabIds: number[]) => {
           try {
             // ungroup_all 的 checkbox 项里 tabId 字段实际是 groupId（confirm.ts 里用 tabId 字段复用）
-            // 走 selectedGroupIds 字段传给 SW；其他命令走 tabIds
+            // 走 selectedGroupIds 字段传给 SW
             if (resolvedIntent === 'ungroup_all') {
               if (selectedTabIds.length > 0) {
                 await dispatchToSW(resolvedIntent, {
@@ -934,7 +965,42 @@ export function useAIEngine() {
               } else {
                 await dispatchToSW(resolvedIntent, { ...slotsAny, force: true })
               }
+            } else if (resolvedIntent === 'remove_bookmark') {
+              // 书签删除走 selectedIds（书签 id 是 string，SW removeBookmark 已做 number→string 兼容）
+              if (selectedTabIds.length > 0) {
+                await dispatchToSW(resolvedIntent, {
+                  ...slotsAny,
+                  force: true,
+                  selectedIds: selectedTabIds,
+                })
+              } else {
+                await dispatchToSW(resolvedIntent, { ...slotsAny, force: true })
+              }
+            } else if (resolvedIntent === 'clear_cookies') {
+              // Cookie 无稳定 id，selectedTabIds 是预览列表的数组下标。
+              // 用闭包 matchedCookies 把下标映射回 Cookie 对象，提取删除所需的最小字段集
+              // {name, domain, path, secure} 传给 SW 的 selectedCookies。
+              if (selectedTabIds.length > 0 && matchedCookies?.length) {
+                const selectedCookies = selectedTabIds
+                  .map((i) => matchedCookies?.[i])
+                  .filter((c): c is chrome.cookies.Cookie => !!c)
+                  .map((c) => ({
+                    name: c.name,
+                    domain: c.domain,
+                    path: c.path,
+                    secure: c.secure,
+                  }))
+                await dispatchToSW(resolvedIntent, {
+                  ...slotsAny,
+                  force: true,
+                  selectedCookies,
+                })
+              } else {
+                // 空选择兜底：按域名全删（与旧行为一致）
+                await dispatchToSW(resolvedIntent, { ...slotsAny, force: true })
+              }
             } else if (selectedTabIds.length > 0) {
+              // 其他命令（close_* 等）走 tabIds
               await dispatchToSW(resolvedIntent, {
                 ...slotsAny,
                 force: true,
@@ -985,14 +1051,14 @@ export function useAIEngine() {
       addMessage('user', trimmedText)
       try {
         await handleSlashCommand(trimmedText)
-      } catch (error) {
+      } catch {
         addMessage('system', '抱歉，处理命令时遇到了问题喵~')
       }
     } else {
       addMessage('user', trimmedText)
       try {
         await handleNaturalLanguage(trimmedText)
-      } catch (error) {
+      } catch {
         addMessage('system', '抱歉，处理您的请求时遇到了问题喵~')
       }
     }
@@ -1100,6 +1166,12 @@ export function useAIEngine() {
 
     switch (intent) {
       case 'close_duplicate_tabs': {
+        // 用户在确认卡勾选过 tabIds 时直接复用，尊重用户选择（不被重算覆盖）；
+        // 否则按 url 过滤自动计算重复 tab。与 close_tabs_by_url 的 precompute 同构。
+        const explicitTabIds = Array.isArray(slots.tabIds) ? (slots.tabIds as number[]) : []
+        if (explicitTabIds.length > 0) {
+          return { tabIds: explicitTabIds.filter((id) => typeof id === 'number') }
+        }
         const seen = new Map<string, number>()
         const dupIds: number[] = []
         for (const t of tabs) {
@@ -1159,21 +1231,22 @@ export function useAIEngine() {
         return { tabIds: sorted.map((t) => t.id), index: 0 }
       }
 
-      case 'pin_tab': {
-        if (!activeTab) return {}
-        // 实时拉取当前 active tab，避免缓存中 pinned 状态过期导致 toggle 错位
-        // (例如刚 pin 完又 /pin，会用旧 pinned=true 算出 pinned=false，反而取消固定)
-        let isPinned = activeTab.pinned
-        try {
-          const liveTab = await chrome.tabs.get(activeTab.id!)
-          isPinned = !!liveTab.pinned
-        } catch {
-          // tab 已不存在就用缓存值
-        }
-        return { tabId: activeTab.id, pinned: !isPinned }
+      case 'pin_tab':
+      case 'unpin_tab': {
+        // pin/unpin 固定为 true/false（不 toggle），幂等且语义明确。
+        // 实时查当前 active tab，不依赖 context 缓存（避免 pinned 字段缺失或过期）。
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+        if (!active?.id) return {}
+        return { tabId: active.id, pinned: intent === 'pin_tab' }
       }
 
       case 'remove_bookmark': {
+        // 用户在确认卡勾选过书签时直接复用 selectedIds，尊重用户选择（不被重算覆盖）；
+        // 否则按 query 取首个匹配回退。与 close_tabs_by_url 的 precompute 同构。
+        const explicitIds = Array.isArray(slots.selectedIds) ? (slots.selectedIds as unknown[]) : []
+        if (explicitIds.length > 0) {
+          return { selectedIds: explicitIds }
+        }
         if (!slots.query) return {}
         try {
           const results = (await chrome.runtime.sendMessage({
@@ -1819,8 +1892,11 @@ export function useAIEngine() {
 
     // 先按用户 intent 处理所有 tabs_update 语义，不能仅凭返回的 tab 字段猜成“创建”。
     if (intent === 'pin_tab') {
-      const pinned = (r.tab as { pinned?: boolean } | undefined)?.pinned
-      addMessage('ai-chat', { markdown: wrapCatReply(pinned ? '已固定标签' : '已取消固定') })
+      addMessage('ai-chat', { markdown: wrapCatReply('已固定标签') })
+      return
+    }
+    if (intent === 'unpin_tab') {
+      addMessage('ai-chat', { markdown: wrapCatReply('已取消固定') })
       return
     }
     if (intent === 'duplicate_tab') {
@@ -1863,6 +1939,37 @@ export function useAIEngine() {
             : label
               ? `已删除书签：${label}`
               : `已删除 ${removed} 个书签`
+        ),
+      })
+      return
+    }
+    if (intent === 'delete_history') {
+      // /clear-history：基于 slots.timeRange 生成文案，不依赖不可靠的 r.deleted
+      // （deleteAll/deleteRange 返回 void，无法精确计数；仅 query/selectedUrls 场景有 deleted）
+      const timeRange = (slots?.timeRange as string) || 'all'
+      const rangeLabel: Record<string, string> = {
+        today: '今天',
+        yesterday: '昨天',
+        week: '最近一周',
+        month: '最近一个月',
+        all: '全部',
+      }
+      const label = rangeLabel[timeRange] || timeRange
+      const deleted = typeof r.deleted === 'number' ? r.deleted : null
+      addMessage('ai-chat', {
+        markdown: wrapCatReply(
+          deleted != null ? `已删除${label}的 ${deleted} 条浏览历史` : `已删除${label}的浏览历史`
+        ),
+      })
+      return
+    }
+    if (intent === 'clear_cookies') {
+      // SW removeCookies 返回 { success, removed, domain }；removed 是真实删除条数
+      const domain = r.domain as string | undefined
+      const removed = typeof r.removed === 'number' ? r.removed : 0
+      addMessage('ai-chat', {
+        markdown: wrapCatReply(
+          domain ? `已清除 ${domain} 的 ${removed} 个 Cookie` : `已清除 ${removed} 个 Cookie`
         ),
       })
       return

@@ -142,10 +142,14 @@ onUnmounted(() => document.removeEventListener('click', handleDocClick))
 
 function handleInput() {
   const val = inputValue.value
-  if (val.startsWith('/')) {
-    const spaceIdx = val.indexOf(' ')
-    const query = spaceIdx > 0 ? val.slice(1, spaceIdx) : val.slice(1)
-    slashQuery.value = query
+  // 取最后一个空格后的 token 作为"当前正在输入的命令片段"。
+  // 规则：该 token 以 / 开头且自身无空格 → 显示 picker；否则关闭。
+  // 这样 /close-url（命令名阶段）弹窗，输入空格开始输参数时关闭，
+  // 但空格后再输入 / 又会重新弹窗（在参数位置补全下一个命令名）。
+  const lastSpaceIdx = val.lastIndexOf(' ')
+  const token = lastSpaceIdx >= 0 ? val.slice(lastSpaceIdx + 1) : val
+  if (token.startsWith('/') && !token.includes(' ')) {
+    slashQuery.value = token.slice(1)
     showSlashPicker.value = true
     selectedSlashIndex.value = 0
   } else {
@@ -196,12 +200,21 @@ function handleKeydown(e: KeyboardEvent) {
       })
     }
   }
-  // 注意：移除了单独的 Enter 发送处理，必须手动点发送按钮才能发送
-  // 仅在 slash 选择器打开时 Enter 才生效，用于选中候选命令
+  // Enter 发送，Shift+Enter 换行（textarea 默认行为，不拦截）
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleSend()
+  }
 }
 
 function selectSlashCommand(cmd: SlashCommand) {
-  inputValue.value = '/' + cmd.slash + (cmd.hasArg ? ' ' : '')
+  // 只替换最后一个 token（正在输入的命令片段），保留其前的内容（前一个命令及其参数）。
+  // 例：输入 "/close-url /pi" 选中 /pin → "/close-url /pin "，而非覆盖整行。
+  const val = inputValue.value
+  const lastSpaceIdx = val.lastIndexOf(' ')
+  const prefix = lastSpaceIdx >= 0 ? val.slice(0, lastSpaceIdx + 1) : ''
+  const replacement = '/' + cmd.slash + (cmd.hasArg ? ' ' : '')
+  inputValue.value = prefix + replacement
   showSlashPicker.value = false
   // 光标定位到命令末尾（参数位置）
   nextTick(() => {

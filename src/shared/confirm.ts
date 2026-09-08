@@ -21,27 +21,38 @@ export interface ConfirmPreview {
 
 /**
  * 生成确认预览
- * @returns preview 对象或 null（无需确认）
+ * @param intent - 命令意图
+ * @param slots - 命令参数
+ * @param context - 当前浏览器上下文（含 tabs 等）
+ * @param matchedBookmarks - 预取的匹配书签列表（仅 remove_bookmark 用，因 Context 不存书签详情）
+ * @param matchedCookies - 预取的 Cookie 列表（仅 clear_cookies 用，Cookie 无稳定 id，用数组下标做 UI id）
+ * @returns preview 对象或 null（无需确认 / 无匹配项）
  */
 export function generateConfirmPreview(
   intent: string,
   slots: Record<string, unknown>,
-  context: Context | null
+  context: Context | null,
+  matchedBookmarks?: chrome.bookmarks.BookmarkTreeNode[],
+  matchedCookies?: chrome.cookies.Cookie[]
 ): ConfirmPreview | null {
   if (!context?.tabs) return null
 
   switch (intent) {
     case 'close_duplicate_tabs': {
       const duplicateGroups = findDuplicateGroups(context.tabs, slots.url as string | undefined)
-      const totalToRemove = duplicateGroups.reduce((sum, g) => sum + g.tabs.length - 1, 0)
-      if (totalToRemove === 0) return null
+      // 每组保留首个，其余重复标签展开为独立行，支持逐个勾选要关闭的标签。
+      // 与 close_tabs_by_url 预览同构（每行带 tabId → ConfirmCard 渲染 checkbox）。
+      const dupTabs = duplicateGroups.flatMap((g) => g.tabs.slice(1))
+      if (dupTabs.length === 0) return null
 
       return {
-        title: `将关闭 ${totalToRemove} 个重复标签页`,
-        description: `检测到 ${duplicateGroups.length} 组重复 URL`,
-        items: duplicateGroups.map((g) => ({
-          primary: g.url,
-          secondary: `${g.tabs.length} 个标签页 → 保留 1 个`,
+        title: `将关闭 ${dupTabs.length} 个重复标签页`,
+        description: `检测到 ${duplicateGroups.length} 组重复 URL（可勾选要关闭的标签）`,
+        items: dupTabs.map((t) => ({
+          primary: t.title || t.url,
+          secondary: t.url,
+          tabId: t.id,
+          selected: true,
         })),
       }
     }
@@ -125,18 +136,27 @@ export function generateConfirmPreview(
     case 'remove_bookmark': {
       const query = slots.query as string | undefined
       if (!query) return null
-      // Context 里没存书签详情，只有 bookmarkFolders 路径数组。
-      // 这里在 SW 端没有 bookmarks_observe_tree 之类的回查接口可用，
-      // 所以预览只能展示提示文本 + 用户提供的关键词，真正的勾选删除能力在 SW 端做。
+      // 书签详情不在 Context 里（只有 bookmarkFolders 路径），由调用方预取后经
+      // matchedBookmarks 传入。每行带 tabId（书签 id 转 number）→ ConfirmCard 渲染 checkbox。
+      const items = (matchedBookmarks ?? []).map((b) => ({
+        primary: b.title || b.url || '(无标题)',
+        secondary: b.url || '',
+        // 书签 id 是数字字符串（如 "1043"），转 number 给 ConfirmCard 的 checkbox 机制
+        tabId: Number(b.id),
+        selected: true,
+      }))
+      if (items.length === 0) return null
       return {
-        title: `将删除匹配 "${query}" 的书签`,
-        description: '此操作不可撤销',
-        items: [],
+        title: `将删除 ${items.length} 个匹配书签`,
+        description: `关键词: ${query}（可勾选要删除的书签）`,
+        items,
       }
     }
 
     case 'delete_history': {
-      const timeRange = (slots.timeRange as string) || 'today'
+      const timeRange = slots.timeRange as string | undefined
+      // timeRange 缺失表示 buildSlots 校验未通过（非法范围），不生成预览
+      if (!timeRange) return null
       const label: Record<string, string> = {
         today: '今天',
         yesterday: '昨天',
@@ -154,12 +174,36 @@ export function generateConfirmPreview(
     }
 
     case 'clear_cookies': {
-      const domain = slots.domain
+      // 无 domain 时取当前活动标签页域名（与 SW 端 removeCookies 的兜底逻辑一致），
+      // 而非返回 null —— 否则会被当作"无匹配"拦截，导致 /clear-cookies 无参时无法执行。
+      let domain = slots.domain as string | undefined
+      if (!domain) {
+        const activeUrl = context?.activeTab?.url
+        if (activeUrl) {
+          try {
+            domain = new URL(activeUrl).hostname
+          } catch {
+            // 当前页非合法 URL，无法预览
+            return null
+          }
+        }
+      }
       if (!domain) return null
+      // Cookie 无稳定 id 字段（仅 name/domain/path/secure 等），用数组下标作 ConfirmCard
+      // 的 checkbox id；onConfirm 把下标映射回闭包捕获的 matchedCookies 列表再传给 SW。
+      const items = (matchedCookies ?? []).map((c, i) => ({
+        primary: c.name,
+        secondary: `${c.domain}${c.path}`,
+        tabId: i, // 数组下标作 UI id（仅本轮预览内有效）
+        selected: true,
+      }))
       return {
-        title: `将清除域名 "${domain}" 下的所有 Cookie`,
-        description: '此操作不可撤销，可能导致需要重新登录',
-        items: [],
+        title:
+          items.length > 0
+            ? `将清除域名 "${domain}" 下的 ${items.length} 个 Cookie`
+            : `域名 "${domain}" 下没有 Cookie`,
+        description: '此操作不可撤销，可能导致需要重新登录（可勾选要清除的 Cookie）',
+        items,
       }
     }
 

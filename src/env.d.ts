@@ -16,6 +16,7 @@ declare global {
     groupId: number
     index: number
     muted: boolean
+    pinned?: boolean
   }
 
   interface BookmarkNode {
@@ -300,6 +301,23 @@ declare global {
       interface BookmarkChangeInfo {
         title?: string
         url?: string
+      }
+    }
+
+    namespace cookies {
+      // chrome.cookies.Cookie 的最小字段集（clear_cookies 勾选删除需要 name/domain/path/secure）
+      interface Cookie {
+        name: string
+        value: string
+        domain: string
+        path: string
+        sameSite: string
+        secure: boolean
+        httpOnly: boolean
+        hostOnly?: boolean
+        session?: boolean
+        expirationDate?: number
+        storeId?: string
       }
     }
 

@@ -9,7 +9,15 @@ export default [
   js.configs.recommended,
   prettierRecommended,
   {
-    ignores: ['dist/', 'node_modules/', '**/*.d.ts', '**/*.js', 'vite.config.ts'],
+    ignores: [
+      'dist/',
+      'node_modules/',
+      '**/*.d.ts',
+      '**/*.js',
+      'vite.config.ts',
+      '.agents/',
+      '.claude/',
+    ],
   },
   {
     files: ['**/*.vue', '**/*.ts'],

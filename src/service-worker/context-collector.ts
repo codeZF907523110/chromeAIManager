@@ -119,6 +119,7 @@ function formatTab(t: TabInfo): TabInfo {
     groupId: t.groupId ?? -1,
     index: t.index,
     muted: false,
+    pinned: t.pinned,
   }
 }
 
