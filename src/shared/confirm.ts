@@ -28,13 +28,13 @@ export interface ConfirmPreview {
  * @param matchedCookies - 预取的 Cookie 列表（仅 clear_cookies 用，Cookie 无稳定 id，用数组下标做 UI id）
  * @returns preview 对象或 null（无需确认 / 无匹配项）
  */
-export function generateConfirmPreview(
+export async function generateConfirmPreview(
   intent: string,
   slots: Record<string, unknown>,
   context: Context | null,
   matchedBookmarks?: chrome.bookmarks.BookmarkTreeNode[],
   matchedCookies?: chrome.cookies.Cookie[]
-): ConfirmPreview | null {
+): Promise<ConfirmPreview | null> {
   if (!context?.tabs) return null
 
   switch (intent) {
@@ -104,15 +104,25 @@ export function generateConfirmPreview(
         // 没有分组：返回 null 走"无分组"提示
         return null
       }
-      // 收集每个分组的信息（id、标题、tab 数）
+      // 取真实分组标题（chrome.tabGroups.query），避免用首个 tab 标题当分组名导致用户识别不出分组。
+      // confirm.ts 在 side panel（用户激活上下文）运行，可直接调 tabGroups API。
+      let groupMetaMap = new Map<number, { title: string; color: string }>()
+      try {
+        const metas = await chrome.tabGroups.query({})
+        groupMetaMap = new Map(
+          metas.map((m) => [m.id as number, { title: m.title || '', color: m.color || 'grey' }])
+        )
+      } catch {
+        // tabGroups 不可用时退回用 tab 标题（保持向后兼容）
+      }
+      // 收集每个分组的信息（id、真实标题、tab 数）
       const groupInfos: Array<{ id: number; title: string; tabCount: number }> = []
       for (const id of groupIds) {
         const inGroup = groupedTabs.filter((t) => t.groupId === id)
-        // 取该分组第一个 tab 的 title 作为分组默认名（chrome.tabGroups.update 才能改 title）
-        const sample = inGroup[0]
+        const meta = groupMetaMap.get(id as number)
         groupInfos.push({
-          id,
-          title: sample?.title || `分组 ${id}`,
+          id: id as number,
+          title: meta?.title || inGroup[0]?.title || `分组 ${id}`,
           tabCount: inGroup.length,
         })
       }
@@ -123,8 +133,6 @@ export function generateConfirmPreview(
         title: `将取消 ${groupIds.size} 个标签分组`,
         description: '所有标签本身保留，仅解除分组关系（可勾选要取消的分组）',
         items: groupInfos.map((g) => ({
-          // 注意：这里 primary 显示 tab 的 title（chrome.tabGroups.update 才改 title）
-          // 后续客户端执行时再用 chrome.tabGroups.update 改不了已 ungroup 的分组，所以直接展示
           primary: g.title,
           secondary: `${g.tabCount} 个标签`,
           tabId: g.id, // ← 复用 tabId 字段携带 groupId（确认卡 checkbox 机制）

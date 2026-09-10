@@ -5,6 +5,7 @@
 
 import { captureAccessibilityTree, findElementByRef, validateRef } from './dom-perception'
 import type { ContentScriptMessage, ContentScriptResponse } from './messages'
+import { handleScreenshot } from './screenshot'
 
 let enabled = false
 
@@ -36,6 +37,21 @@ function init(): void {
 
 function setupMessageListener(): void {
   chrome.runtime.onMessage.addListener((message: ContentScriptMessage, _sender, sendResponse) => {
+    // 截图不依赖 DOM 感知扫描，且是异步长操作（整页滚动/选区框选耗时数秒），
+    // 必须在 enabled 检查之前分流 + return true 保持 sendResponse 通道开启。
+    if (message.type === 'SCREENSHOT') {
+      handleScreenshot(message.mode || 'visible')
+        .then((result) => sendResponse(result))
+        .catch(() =>
+          sendResponse({
+            success: false,
+            error: 'SCREENSHOT_FAILED',
+            timestamp: Date.now(),
+          } as ContentScriptResponse)
+        )
+      return true // 异步响应，保持 sendResponse 通道开启
+    }
+
     if (!enabled) {
       sendResponse({
         success: false,
@@ -150,15 +166,6 @@ function setupMessageListener(): void {
       case 'RELOAD': {
         window.location.reload()
         sendResponse({ success: true, timestamp: message.timestamp } as ContentScriptResponse)
-        return false
-      }
-
-      case 'SCREENSHOT': {
-        sendResponse({
-          success: true,
-          data: 'screenshot_not_implemented_yet',
-          timestamp: message.timestamp,
-        } as ContentScriptResponse)
         return false
       }
 

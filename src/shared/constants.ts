@@ -17,6 +17,9 @@ export const MSG_RECORDING_START = 'RECORDING_START'
 export const MSG_RECORDING_STOP = 'RECORDING_STOP'
 export const MSG_RECORDING_RESULT = 'RECORDING_RESULT'
 
+// Screenshot (Content Script → Service Worker)：content script 请求 SW 截可视区域
+export const MSG_CAPTURE_VISIBLE = 'CAPTURE_VISIBLE'
+
 // ──── 错误码类型 ────
 
 export type ErrorCode =
@@ -90,7 +93,7 @@ export type LegacyErrorCode = (typeof LEGACY_ERRORS)[keyof typeof LEGACY_ERRORS]
 export const MAX_ELEMENT_TEXT_LENGTH = 200
 export const MAX_AGENT_STEPS = 100
 export const STEP_TIMEOUT_MS = 10000
-export const TOTAL_TASK_TIMEOUT_MS = 120000
+export const TOTAL_TASK_TIMEOUT_MS = 1000000
 export const MAX_CONSECUTIVE_FAILURES = 3
 /** 聊天记录默认容量上限（IndexedDB 写入时自动 trim） */
 export const DEFAULT_MAX_MESSAGES = 100

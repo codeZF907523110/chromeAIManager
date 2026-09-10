@@ -11,7 +11,7 @@ export const COMMANDS: Command[] = [
   {
     intent: 'tabs_observe',
     description:
-      '查询标签页列表。可用 query、domain 过滤，默认返回当前窗口所有标签。返回结果包含 id(数字)、title、url、active、pinned、muted、discarded 等字段',
+      '查询标签页列表（实时）。可用 query（标题/URL 子串）、domain（域名）过滤；不传 currentWindow 时返回所有窗口的标签。返回 id(数字)、title、url、active、pinned、windowId 等字段。查找/切换标签页前必用此工具获取实时列表（标签实时变化，系统提示词概览可能滞后）',
     dangerous: false,
     slots: {
       query: { type: 'string', optional: true, description: '搜索关键词' },
@@ -122,15 +122,34 @@ export const COMMANDS: Command[] = [
     },
     swIntent: 'tabs_ungroup_all',
   },
+  {
+    intent: 'tabs_ungroup',
+    description:
+      '取消标签分组（解散分组，标签本身保留）。传 groupIds 取消指定分组；不传则取消所有分组。groupIds 从 tabs_observe_groups 的返回结果获取',
+    dangerous: true, // 改变标签结构，需确认
+    slots: {
+      groupIds: {
+        type: 'number[]',
+        optional: true,
+        description: '要取消的分组 id 列表（从 tabs_observe_groups 获取）；不传=取消所有分组',
+      },
+    },
+    swIntent: 'tabs_ungroup',
+  },
 
   // ==================== BOOKMARKS (7) ====================
   {
     intent: 'bookmarks_observe_tree',
     description:
-      '观察完整书签树结构，返回节点数组，每个节点包含 id(字符串)、title、type(folder|bookmark)、parentId(字符串)、index、path(完整路径)、url、childCount 等字段',
+      '观察书签树结构，返回节点数组，每个节点包含 id(字符串)、title、type(folder|bookmark)、parentId(字符串)、index、path(标题路径如 书签栏/开发工具/xxx)、url、childCount 等字段。传 parentId 只取该文件夹的直接子项（整理某文件夹时用）',
     dangerous: false,
     slots: {
-      query: { type: 'string', optional: true, description: '可选过滤关键词' },
+      parentId: {
+        type: 'string',
+        optional: true,
+        description: '只取该文件夹的直接子项（chrome.bookmarks.getChildren）',
+      },
+      query: { type: 'string', optional: true, description: '按标题/URL 子串过滤' },
       nodeType: {
         type: 'string',
         optional: true,
@@ -139,12 +158,12 @@ export const COMMANDS: Command[] = [
       maxDepth: {
         type: 'number',
         optional: true,
-        description: '返回的最大层级深度',
+        description: '返回的最大层级深度（默认 6）',
       },
       maxResults: {
         type: 'number',
         optional: true,
-        description: '最多返回多少个节点',
+        description: '最多返回多少个节点（默认 500）',
       },
     },
     swIntent: 'bookmarks_observe_tree',
@@ -344,15 +363,20 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'screenshot',
-    description: '截取页面可见区域截图',
+    description: '截取页面截图。mode: visible(可视区域) | full(整页) | area(选区)，默认 visible',
     dangerous: false,
     slots: {
+      mode: {
+        type: 'string',
+        optional: true,
+        description: 'visible | full | area，默认 visible',
+      },
       tabId: { type: 'number', optional: true, description: '目标标签 ID' },
     },
     swIntent: 'screenshot',
   },
 
-  // ==================== PAGE (2) ====================
+  // ==================== PAGE (1) ====================
   {
     intent: 'zoom',
     description: '缩放当前页面。direction: in|out|reset',
@@ -363,9 +387,53 @@ export const COMMANDS: Command[] = [
     },
     swIntent: 'zoom',
   },
+
+  // ==================== DOWNLOADS (3) ====================
+  {
+    intent: 'downloads_download',
+    description: '触发下载指定 URL 的文件',
+    dangerous: false,
+    slots: {
+      url: { type: 'string', description: '要下载的文件 URL' },
+      filename: {
+        type: 'string',
+        optional: true,
+        description: '保存的文件名（不含路径）',
+      },
+      conflictAction: {
+        type: 'string',
+        optional: true,
+        description: '同名冲突处理：uniquify(默认,自动改名) | overwrite(覆盖) | prompt(询问)',
+      },
+    },
+    swIntent: 'downloads_download',
+  },
+  {
+    intent: 'downloads_search',
+    description: '查询下载记录。可按文件名关键词或下载状态过滤',
+    dangerous: false,
+    slots: {
+      query: {
+        type: 'string',
+        optional: true,
+        description: '文件名/URL 子串过滤',
+      },
+      state: {
+        type: 'string',
+        optional: true,
+        description: 'in_progress(进行中) | interrupted(中断) | complete(已完成)',
+      },
+      maxResults: {
+        type: 'number',
+        optional: true,
+        description: '最大返回数量，默认 20',
+      },
+    },
+    swIntent: 'downloads_search',
+  },
   {
     intent: 'downloads_open',
-    description: '打开下载管理页面',
+    description: '打开 Chrome 下载管理页面（chrome://downloads/）',
     dangerous: false,
     slots: {},
     swIntent: 'downloads_open',
@@ -443,19 +511,61 @@ export const COMMANDS: Command[] = [
     swIntent: 'font_family_update',
   },
 
-  // ==================== COOKIES (2) ====================
+  // ==================== COOKIES (3) ====================
   {
     intent: 'cookies_observe',
-    description: '查询指定域名的 Cookie（无参则取当前页面域名）',
+    description:
+      '查询 Cookie。按 domain（域名）或 url（URL，取该 URL 关联的所有 cookie）过滤；两者都不传则取当前页面域名',
     dangerous: false,
     slots: {
       domain: {
         type: 'string',
         optional: true,
-        description: '域名；缺省时取当前活动标签的域名',
+        description: '按域名过滤',
+      },
+      url: {
+        type: 'string',
+        optional: true,
+        description: '按 URL 过滤（取该 URL 关联的所有 cookie）',
       },
     },
     swIntent: 'cookies_observe',
+  },
+  {
+    intent: 'cookies_set',
+    description: '写入或修改一个 Cookie。需提供 domain、name、value；path 默认 /',
+    dangerous: false,
+    slots: {
+      domain: { type: 'string', description: 'Cookie 域名' },
+      name: { type: 'string', description: 'Cookie 名称' },
+      value: { type: 'string', description: 'Cookie 值' },
+      path: {
+        type: 'string',
+        optional: true,
+        description: '路径，默认 /',
+      },
+      secure: {
+        type: 'boolean',
+        optional: true,
+        description: '是否仅 HTTPS 传输',
+      },
+      httpOnly: {
+        type: 'boolean',
+        optional: true,
+        description: '是否仅 HTTP 不可 JS 访问',
+      },
+      sameSite: {
+        type: 'string',
+        optional: true,
+        description: 'lax | strict | no_restriction（默认 no_restriction）',
+      },
+      expirationDate: {
+        type: 'number',
+        optional: true,
+        description: '过期时间（自 epoch 起的秒数，不传=会话 cookie）',
+      },
+    },
+    swIntent: 'cookies_set',
   },
   {
     intent: 'cookies_remove',
@@ -505,6 +615,13 @@ export const COMMANDS: Command[] = [
     },
     swIntent: 'extensions_remove',
   },
+  {
+    intent: 'extensions_permissions_observe',
+    description: '查看本扩展自身拥有的权限（manifest 声明 + optional 权限）',
+    dangerous: false,
+    slots: {},
+    swIntent: 'extensions_permissions_observe',
+  },
 
   // ==================== PERMISSIONS (2) ====================
   {
@@ -534,33 +651,49 @@ export const COMMANDS: Command[] = [
   // ==================== STORAGE (3) ====================
   {
     intent: 'storage_get',
-    description: '读取扩展存储键值（无 key 列出全部）',
+    description:
+      '读取扩展存储键值（无 key 列出全部）。area 指定存储区域：local(默认，本机持久)/sync(跨设备同步)/session(SW 生命周期内存级，重启失效)',
     dangerous: false,
     slots: {
       key: {
         type: 'string',
         optional: true,
-        description: '存储键名；缺省时返回整个 storage.local',
+        description: '存储键名；缺省时返回整个区域的全部键值',
+      },
+      area: {
+        type: 'string',
+        optional: true,
+        description: '存储区域：local(默认) | sync | session',
       },
     },
     swIntent: 'storage_get',
   },
   {
     intent: 'storage_set',
-    description: '写入扩展存储键值对',
+    description: '写入扩展存储键值对。area 同 storage_get，默认 local',
     dangerous: false,
     slots: {
       key: { type: 'string', description: '存储键名' },
       value: { type: 'any', description: '存储值' },
+      area: {
+        type: 'string',
+        optional: true,
+        description: '存储区域：local(默认) | sync | session',
+      },
     },
     swIntent: 'storage_set',
   },
   {
     intent: 'storage_remove',
-    description: '删除扩展存储中的指定键',
+    description: '删除扩展存储中的指定键。area 同 storage_get，默认 local',
     dangerous: false,
     slots: {
       key: { type: 'string', description: '存储键名' },
+      area: {
+        type: 'string',
+        optional: true,
+        description: '存储区域：local(默认) | sync | session',
+      },
     },
     swIntent: 'storage_remove',
   },
@@ -1037,11 +1170,15 @@ export const COMMANDS: Command[] = [
   },
   {
     intent: 'browser_take_screenshot',
-    description: '截取当前页面截图',
+    description:
+      '截取当前页面截图。mode: visible(可视区域) | full(整页) | area(选区)，默认 visible',
     dangerous: false,
     slots: {
-      path: { type: 'string', optional: true, description: '保存路径' },
-      fullPage: { type: 'boolean', optional: true, description: '是否全页截图' },
+      mode: {
+        type: 'string',
+        optional: true,
+        description: 'visible | full | area，默认 visible',
+      },
     },
     swIntent: 'browser_take_screenshot',
   },

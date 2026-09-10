@@ -10,6 +10,7 @@ import {
   MSG_RECORDING_START,
   MSG_RECORDING_STOP,
   MSG_RECORDING_RESULT,
+  MSG_CAPTURE_VISIBLE,
 } from '../shared/constants'
 import { collectContext } from './context-collector'
 import { executeCommand } from './executor'
@@ -56,7 +57,35 @@ async function handleMessage(message: {
     return { received: true }
   }
 
+  // ──── 截图：content script 请求 SW 截当前可视区域 ────
+  // captureVisibleTab 只能在 SW 调，content script 滚动/拼接/框选时通过此通道请求单屏截图
+  if (type === MSG_CAPTURE_VISIBLE) {
+    return await handleCaptureVisible()
+  }
+
   return { error: `Unknown message type: ${type}` }
+}
+
+/**
+ * 截当前活动标签的可视区域，返回 data URL。
+ * 供 content script 整页拼接/选区裁剪时调用（captureVisibleTab 仅 SW 可用）。
+ * @returns { success, dataUrl } 或 { success:false, error }
+ */
+async function handleCaptureVisible(): Promise<{
+  success: boolean
+  dataUrl?: string
+  error?: string
+}> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab?.windowId) {
+      return { success: false, error: 'NO_ACTIVE_TAB' }
+    }
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' })
+    return { success: true, dataUrl }
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : 'CAPTURE_FAILED' }
+  }
 }
 
 // ──── Offscreen Document 管理 ────

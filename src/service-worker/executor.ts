@@ -6,6 +6,65 @@ import { execPlan } from './task-planner'
 
 import type { ExecutionResult } from '../types/execution'
 
+/**
+ * 局部 Chrome API 类型补丁。
+ * 项目依赖的 @types/chrome@0.2.7 较老，缺少 chrome.cookies.set / chrome.downloads /
+ * chrome.permissions.getAll / chrome.storage.StorageArea 命名空间导出。
+ * 这里按实际用到的最小集补声明，避免升级 @types/chrome 引入连锁破坏。
+ * 运行时 chrome.* 对象由 Chrome 提供，声明仅用于类型检查。
+ */
+type ChromeSameSiteStatus = 'no_restriction' | 'lax' | 'strict'
+interface ChromeCookieSetDetails {
+  url: string
+  name: string
+  value: string
+  domain?: string
+  path?: string
+  secure?: boolean
+  httpOnly?: boolean
+  sameSite?: ChromeSameSiteStatus
+  expirationDate?: number
+}
+interface ChromeCookie {
+  name: string
+  value: string
+  domain: string
+}
+interface ChromeCookiesSetApi {
+  set(details: ChromeCookieSetDetails): Promise<ChromeCookie | null>
+}
+interface ChromeDownloadItem {
+  id: number
+  filename?: string
+  url?: string
+  state?: string
+  totalBytes?: number
+  startTime?: string
+}
+type ChromeDownloadState = 'in_progress' | 'interrupted' | 'complete'
+interface ChromeDownloadQuery {
+  query?: string[]
+  state?: ChromeDownloadState
+}
+type ChromeFilenameConflictAction = 'uniquify' | 'overwrite' | 'prompt'
+interface ChromeDownloadOptions {
+  url: string
+  filename?: string
+  conflictAction?: ChromeFilenameConflictAction
+}
+interface ChromeDownloadsApi {
+  download(options: ChromeDownloadOptions): Promise<number>
+  search(query: ChromeDownloadQuery): Promise<ChromeDownloadItem[]>
+}
+interface ChromePermissionsApi {
+  getAll(): Promise<{ origins?: string[]; permissions?: string[] }>
+}
+interface ChromeStorageAreaApi {
+  get(keys?: string | string[] | Record<string, unknown> | null): Promise<Record<string, unknown>>
+  set(items: Record<string, unknown>): Promise<void>
+  remove(keys: string | string[]): Promise<void>
+}
+
 const DANGEROUS_INTENTS = new Set([
   'tabs_remove',
   'tabs_remove_by_url',
@@ -60,6 +119,9 @@ export async function executeCommand(
       // SW 只负责计算 tabIds + windowId 映射，返回给 side panel 让它直接调 API
       return await prepareGroupByDomain(payload)
     case 'tabs_ungroup_all':
+    case 'tabs_ungroup':
+      // tabs_ungroup（AI 取消指定分组）与 tabs_ungroup_all（斜杠命令取消所有/勾选）
+      // 共用 ungroupAllTabs：前者读 groupIds 过滤，后者读 selectedGroupIds 过滤，逻辑统一。
       return await ungroupAllTabs(payload)
     // ──── BOOKMARKS ────
     case 'bookmarks_observe_tree':
@@ -96,8 +158,13 @@ export async function executeCommand(
     // ──── PAGE ────
     case 'zoom':
       return await setZoom(payload)
+    // ──── DOWNLOADS ────
+    case 'downloads_download':
+      return await downloadFile(payload)
+    case 'downloads_search':
+      return await searchDownloads(payload)
     case 'downloads_open':
-      return { success: true, navigated: 'chrome://downloads' }
+      return await openDownloadsPage()
     // ──── THEME ────
     case 'theme_observe':
       return await observeTheme()
@@ -115,6 +182,8 @@ export async function executeCommand(
     // ──── COOKIES ────
     case 'cookies_observe':
       return await observeCookies(payload)
+    case 'cookies_set':
+      return await setCookie(payload)
     case 'cookies_remove':
       return await removeCookies(payload)
     // ──── TOP_SITES ────
@@ -127,6 +196,8 @@ export async function executeCommand(
       return await updateExtension(payload)
     case 'extensions_remove':
       return await removeExtension(payload)
+    case 'extensions_permissions_observe':
+      return await observeExtensionPermissions()
     // ──── PERMISSIONS ────
     case 'permissions_observe':
       return await observePermissions(payload)
@@ -292,16 +363,21 @@ async function buildConfirmChildren(
 // ──── TABS 实现 ────
 
 async function observeTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // chrome.tabs.query 的 QueryInfo 只支持 currentWindow/pinned/muted 等字段，
+  // 不支持 maxResults（应用层截断）和 discarded（Tab 属性，非 query 条件）。
+  // 把这两类放到结果上处理，避免传给 Chrome API 触发 "Unexpected property" 报错。
   const query: chrome.tabs.QueryOptions = {} as chrome.tabs.QueryOptions
   if (payload.currentWindow) query.currentWindow = true
   if (payload.pinned !== undefined) query.pinned = payload.pinned as boolean
   if (payload.muted !== undefined) query.muted = payload.muted as boolean
-  if (payload.discarded !== undefined) query.discarded = payload.discarded as boolean
-  if (payload.maxResults) query.maxResults = payload.maxResults as number
 
   const tabs = await chrome.tabs.query(query)
   let filtered = tabs
 
+  // discarded / domain / query 都是应用层过滤（chrome.tabs.query 不支持这些条件）
+  if (payload.discarded !== undefined) {
+    filtered = filtered.filter((t) => t.discarded === (payload.discarded as boolean))
+  }
   if (payload.domain) {
     const d = (payload.domain as string).toLowerCase()
     filtered = filtered.filter((t) => {
@@ -317,6 +393,10 @@ async function observeTabs(payload: Record<string, unknown>): Promise<ExecutionR
     filtered = filtered.filter(
       (t) => (t.title || '').toLowerCase().includes(q) || (t.url || '').toLowerCase().includes(q)
     )
+  }
+  // maxResults：先过滤再截断，避免截断后丢掉匹配项
+  if (payload.maxResults) {
+    filtered = filtered.slice(0, payload.maxResults as number)
   }
 
   return { success: true, tabs: filtered, observed: filtered.length }
@@ -445,22 +525,45 @@ async function removeTabsByUrl(payload: Record<string, unknown>): Promise<Execut
   return { success: true, removed: tabIds.length }
 }
 
+/**
+ * 观察标签分组
+ * 用 chrome.tabGroups.query 取真实分组元数据（title/color/windowId/collapsed），
+ * 再用 chrome.tabs.query 聚合每个分组包含的 tab（id/title/url），让 AI 能直接
+ * 识别目标分组（按标题或内容）并拿到 tabIds 用于取消分组。
+ * 旧实现用第一个 tab 的 title 当分组标题、color 硬编码 grey、tabs 只存标题字符串，
+ * 导致 AI 无法识别目标分组（如"wzyp"分组标题被误报成首个 tab 标题）。
+ * @returns { success, groups: Array<{ id, title, color, windowId, collapsed, tabIds, tabs }>, observed }
+ */
 async function observeGroups(): Promise<ExecutionResult> {
   const tabs = await chrome.tabs.query({})
-  const groupMap = new Map<number, { color: string; title?: string; tabs: string[] }>()
+  // tabId → tab，补全每个分组内 tab 的详情
+  const tabById = new Map<number, chrome.tabs.Tab>(tabs.map((t) => [t.id as number, t]))
+  // 按 groupId 聚合 tabIds
+  const groupTabsMap = new Map<number, number[]>()
   for (const tab of tabs) {
-    if (tab.groupId !== -1) {
-      if (!groupMap.has(tab.groupId)) {
-        groupMap.set(tab.groupId, {
-          color: 'grey',
-          title: tab.title,
-          tabs: [],
-        })
-      }
-      groupMap.get(tab.groupId)!.tabs.push(tab.title || '')
-    }
+    if (tab.id === undefined || tab.groupId === undefined || tab.groupId === -1) continue
+    if (!groupTabsMap.has(tab.groupId)) groupTabsMap.set(tab.groupId, [])
+    groupTabsMap.get(tab.groupId)!.push(tab.id)
   }
-  return { success: true, groups: Array.from(groupMap.entries()).map(([id, g]) => ({ id, ...g })) }
+  // 取真实分组元数据（title/color/windowId/collapsed）
+  const groupsMeta = await chrome.tabGroups.query({})
+  const groups = groupsMeta.map((g) => {
+    const tabIds = groupTabsMap.get(g.id) || []
+    return {
+      id: g.id,
+      title: g.title || '',
+      color: g.color || 'grey',
+      windowId: g.windowId,
+      collapsed: g.collapsed,
+      tabIds,
+      // tabs 详情：含 id+title+url，AI 可直接判断分组内容、直接拿 tabIds 取消分组
+      tabs: tabIds.map((id) => {
+        const t = tabById.get(id)
+        return { id, title: t?.title || '', url: t?.url || '' }
+      }),
+    }
+  })
+  return { success: true, groups, observed: groups.length }
 }
 
 /**
@@ -504,18 +607,32 @@ async function ungroupAllTabs(payload: Record<string, unknown>): Promise<Executi
     groups.push({ groupId, tabIds })
   }
 
-  // 如果用户已经勾选了子集（前端 confirm 卡勾选后回传），只把这些分组给客户端
-  const selectedGroupIds = Array.isArray(payload.selectedGroupIds)
-    ? (payload.selectedGroupIds as unknown[])
-        .map((g) => Number(g))
-        .filter((g) => Number.isFinite(g))
-    : null
+  // 分组过滤：支持两种来源——AI 直传的 groupIds（取消指定分组）或 confirm 卡回传的
+  // selectedGroupIds（斜杠命令勾选子集）。两者都按 groupId 过滤，不传则取消全部分组。
+  const filterIds = Array.isArray(payload.groupIds)
+    ? (payload.groupIds as unknown[]).map((g) => Number(g)).filter((g) => Number.isFinite(g))
+    : Array.isArray(payload.selectedGroupIds)
+      ? (payload.selectedGroupIds as unknown[])
+          .map((g) => Number(g))
+          .filter((g) => Number.isFinite(g))
+      : null
+
+  // 过滤后无分组（如 AI 传了不存在的 groupIds）时给出明确提示
+  const filtered = filterIds ? groups.filter((g) => filterIds.includes(g.groupId)) : groups
+  if (filterIds && filtered.length === 0) {
+    return {
+      success: false,
+      code: 'GROUP_NOT_FOUND',
+      message: `未找到 id 为 ${filterIds.join(', ')} 的分组`,
+      suggestion: '请先调用 tabs_observe_groups 获取真实分组 id',
+    }
+  }
 
   return {
     success: true,
     clientExec: 'tabs_ungroup_all',
-    groups: selectedGroupIds ? groups.filter((g) => selectedGroupIds.includes(g.groupId)) : groups,
-    count: selectedGroupIds ? selectedGroupIds.length : groups.length,
+    groups: filtered,
+    count: filtered.length,
   }
 }
 
@@ -586,51 +703,103 @@ function safeHostname(url: string): string {
   }
 }
 
+/**
+ * 观察书签树
+ * 支持三种取数模式：
+ * 1. parentId：只取指定文件夹的直接子项（用 chrome.bookmarks.getChildren，局部视图，AI 整理某文件夹时用）
+ * 2. 完整树：从根遍历，支持 nodeType/query/maxDepth/maxResults 过滤
+ * path 字段为从根到当前节点的标题路径（如 "书签栏/开发工具/xxx"），便于 AI 判断归属。
+ * @param payload - { parentId?, query?, nodeType?, maxDepth?, maxResults? }
+ * @returns { success, nodes, observed, scope? }
+ */
 async function observeBookmarks(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const tree = await chrome.bookmarks.getTree()
-  const results: Array<chrome.bookmarks.BookmarkTreeNode & { path?: string; childCount?: number }> =
-    []
-  const maxDepth = (payload.maxDepth as number) || 3
-  const maxResults = (payload.maxResults as number) || 100
-  const nodeType = payload.nodeType as string | undefined
-  const query = payload.query as string | undefined
+  // 局部模式：取指定文件夹的直接子项
+  const parentId = (payload.parentId as string | undefined)?.trim()
+  if (parentId) {
+    const children = await chrome.bookmarks.getChildren(parentId)
+    const nodes = children.map((c) => toBookmarkNode(c))
+    return { success: true, nodes, observed: nodes.length, scope: 'children:' + parentId }
+  }
 
-  function walk(nodes: chrome.bookmarks.BookmarkTreeNode[], depth: number) {
+  // 完整树模式
+  const tree = await chrome.bookmarks.getTree()
+  const results: Array<Record<string, unknown>> = []
+  // 默认上限放宽：maxDepth 3→6、maxResults 100→500，确保 AI 拿到完整书签树，
+  // 避免深层节点被截断导致"找不到 nodeId"。
+  const maxDepth = (payload.maxDepth as number) || 6
+  const maxResults = (payload.maxResults as number) || 500
+  const nodeType = payload.nodeType as string | undefined
+  const query = (payload.query as string | undefined)?.toLowerCase()
+
+  /**
+   * 递归遍历书签树
+   * @param nodes - 当前层节点
+   * @param depth - 当前深度
+   * @param titlePath - 从根到父级的标题路径（用于构建可读 path）
+   */
+  function walk(nodes: chrome.bookmarks.BookmarkTreeNode[], depth: number, titlePath: string[]) {
     if (results.length >= maxResults) return
     if (depth > maxDepth) return
     for (const node of nodes) {
       if (results.length >= maxResults) break
-      const isFolder = !!node.children
+      // 文件夹判定统一用"无 url"：getTree 填充 children 时与 !!node.children 等价，
+      // 但 parentId 模式（getChildren）返回的文件夹节点不含 children 字段，
+      // !!node.children 会误判成书签。书签必有 url、文件夹必无 url，这是 API 权威判定依据。
+      const isFolder = !node.url
       const isBookmark = !!node.url
-      if (nodeType === 'folder' && !isFolder) continue
-      if (nodeType === 'bookmark' && !isBookmark) continue
-      if (query) {
-        const match = (node.title || '').includes(query) || (node.url || '').includes(query)
-        if (!match) {
-          if (node.children) walk(node.children, depth + 1)
-          continue
-        }
+      // nodeType/query 过滤只决定"是否 push"，不决定"是否递归子树"。
+      // 否则 nodeType=bookmark 时文件夹被 continue 跳过，其子书签永远访问不到（返回 0 的 bug）。
+      const typeMatch = !nodeType || (nodeType === 'folder' ? isFolder : isBookmark)
+      const queryMatch =
+        !query ||
+        (node.title || '').toLowerCase().includes(query) ||
+        (node.url || '').toLowerCase().includes(query)
+      if (typeMatch && queryMatch) {
+        results.push(toBookmarkNode(node, titlePath))
       }
-      // 构建节点路径
-      const nodePath = node.parentId ? `.../${node.parentId}/${node.id}` : `/${node.id}`
-      results.push({
-        id: node.id,
-        title: node.title,
-        type: isFolder ? 'folder' : 'url',
-        url: node.url,
-        parentId: node.parentId,
-        index: node.index,
-        path: nodePath,
-        childCount: node.children?.length || 0,
-        dateAdded: node.dateAdded,
-        dateGroupCreated: node.dateGroupCreated,
-      })
-      if (node.children) walk(node.children, depth + 1)
+      // 无论是否命中过滤，只要有子树就继续递归（修复遍历 bug 的关键）
+      const curTitlePath = [...titlePath, node.title || '(根)']
+      if (node.children) walk(node.children, depth + 1, curTitlePath)
     }
   }
 
-  walk(tree, 0)
+  walk(tree, 0, [])
   return { success: true, nodes: results, observed: results.length }
+}
+
+/**
+ * 把 chrome.bookmarks 节点转为前端可用的书签节点对象
+ * @param node - chrome 书签节点
+ * @param parentTitlePath - 从根到父级的标题路径（可选，用于构建可读 path）
+ * @returns 包含 id/title/type/url/parentId/index/path/childCount 等字段的对象
+ */
+function toBookmarkNode(
+  node: chrome.bookmarks.BookmarkTreeNode,
+  parentTitlePath?: string[]
+): Record<string, unknown> {
+  // 文件夹判定统一用"无 url"：chrome.bookmarks.getChildren/get/move/create 返回的文件夹节点
+  // 可能不含 children 字段，!!node.children 在 parentId 模式下会把文件夹误判成书签。
+  // 书签必有 url、文件夹必无 url，这是 Chrome bookmarks API 的权威判定依据。
+  const isFolder = !node.url
+  const titlePath = parentTitlePath
+    ? [...parentTitlePath, node.title || '(根)']
+    : [node.title || '(根)']
+  return {
+    id: node.id,
+    title: node.title || '',
+    type: isFolder ? 'folder' : 'bookmark',
+    url: node.url || '',
+    parentId: node.parentId || '',
+    index: node.index,
+    // 可读标题路径：书签栏/开发工具/xxx（AI 可直接看出归属）
+    path: titlePath.join('/'),
+    // childCount：有 children 时取其长度（完整树模式 getTree 会填充）；
+    // parentId 模式（getChildren）不填充 children，文件夹 childCount 显示 0，
+    // 但 type 已正确判定为 folder，AI 不会误解（prompt 已说明此情况）。
+    childCount: node.children?.length || 0,
+    dateAdded: node.dateAdded,
+    dateGroupCreated: node.dateGroupCreated,
+  }
 }
 
 async function moveBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -644,15 +813,20 @@ async function moveBookmark(payload: Record<string, unknown>): Promise<Execution
     }
   }
 
-  const moveProps: chrome.bookmarks.MoveProperties = { index: 0 }
+  // 仅设置调用方显式传入的字段；不传 index 时不强制位置 0，
+  // 由 Chrome API 决定默认位置（追加到目标父级末尾），符合"移动到某文件夹"的直觉。
+  const moveProps: chrome.bookmarks.MoveProperties = {}
   if (payload.parentId !== undefined) {
     moveProps.parentId = String(payload.parentId)
   }
-  moveProps.index = (payload.index as number) ?? 0
+  if (payload.index !== undefined) {
+    moveProps.index = payload.index as number
+  }
 
   try {
     const node = await chrome.bookmarks.move(nodeId, moveProps)
-    return { success: true, node, moved: true, newIndex: node.index }
+    // 返回 movedNode（带 nodeType/title）让前端能准确反馈"移动文件夹/书签 *xxx*"
+    return { success: true, movedNode: node, newIndex: node.index }
   } catch (err: unknown) {
     const e = err as { message?: string }
     return {
@@ -672,7 +846,8 @@ async function createBookmark(payload: Record<string, unknown>): Promise<Executi
   if (payload.url !== undefined) opts.url = payload.url as string
   if (payload.index !== undefined) opts.index = payload.index as number
   const node = await chrome.bookmarks.create(opts)
-  return { success: true, bookmark: node }
+  // 返回 createdNode 让前端区分"创建文件夹"vs"创建书签"
+  return { success: true, createdNode: node }
 }
 
 async function updateBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -680,7 +855,8 @@ async function updateBookmark(payload: Record<string, unknown>): Promise<Executi
   if (payload.title !== undefined) changes.title = payload.title as string
   if (payload.url !== undefined) changes.url = payload.url as string
   const node = await chrome.bookmarks.update(payload.nodeId as string, changes)
-  return { success: true, bookmark: node }
+  // 返回 updatedNode 让前端反馈"更新文件夹/书签 *xxx*"，而非误判成"添加书签"
+  return { success: true, updatedNode: node }
 }
 
 async function openBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -693,7 +869,8 @@ async function openBookmark(payload: Record<string, unknown>): Promise<Execution
   if (node[0]?.url) {
     await chrome.tabs.update(tab.id, { url: node[0].url })
   }
-  return { success: true, navigated: node[0]?.url }
+  // 返回 openedNode 让前端反馈"打开书签 *xxx*"
+  return { success: true, openedNode: node[0], navigated: node[0]?.url }
 }
 
 async function removeBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -740,9 +917,11 @@ async function removeBookmark(payload: Record<string, unknown>): Promise<Executi
   try {
     const nodes = await chrome.bookmarks.get(nodeId)
     removedNode = nodes[0]
-    if (removedNode && !removedNode.url && Array.isArray(removedNode.children)) {
-      // 文件夹：1（folder 本身）+ 子项数
-      totalRemoved = 1 + removedNode.children.length
+    // 文件夹判定：无 url 即文件夹（chrome.bookmarks.get 返回的节点可能不含 children 字段，
+    // 不能靠 Array.isArray(children) 判定）。有 children 时统计子项数。
+    if (removedNode && !removedNode.url) {
+      const childCount = Array.isArray(removedNode.children) ? removedNode.children.length : 0
+      totalRemoved = 1 + childCount
     }
   } catch {
     // 拿不到节点信息不影响删除，继续
@@ -927,8 +1106,25 @@ async function navigateTo(payload: Record<string, unknown>): Promise<ExecutionRe
   return { success: true, navigated: url }
 }
 
+/**
+ * 截图命令：按 mode 分流到三种模式。
+ * - visible（默认）：SW 直接 captureVisibleTab 截可视区域。
+ * - full / area：转发到 content script（content script 负责滚动拼接/框选裁剪），
+ *   captureVisibleTab 仅 SW 可用，content script 通过 MSG_CAPTURE_VISIBLE 请求 SW 截单屏。
+ * @param payload - { mode?, tabId? }
+ * @returns ExecutionResult.screenshot 为 data URL
+ */
 async function takeScreenshot(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // 兼容旧 fullPage:true（已废弃，统一为 mode）
+  const mode = payload.mode ? (payload.mode as string) : payload.fullPage ? 'full' : 'visible'
   const tabId = payload.tabId as number | undefined
+
+  // full / area 需要滚动/框选，转发到 content script
+  if (mode === 'full' || mode === 'area') {
+    return await forwardScreenshotToContent(tabId, mode)
+  }
+
+  // visible：SW 直接截可视区域
   let targetTab: chrome.tabs.Tab | undefined
   if (tabId) {
     try {
@@ -944,9 +1140,108 @@ async function takeScreenshot(payload: Record<string, unknown>): Promise<Executi
     return { success: false, code: 'ELE_NOT_FOUND', message: '未找到活动标签' }
   try {
     const dataUrl = await chrome.tabs.captureVisibleTab(targetTab.windowId, { format: 'png' })
-    return { success: true, screenshot: dataUrl }
+    return { success: true, screenshot: dataUrl, mode: 'visible' }
   } catch {
     return { success: false, code: 'ACT_BLOCKED', message: '截图被拒绝' }
+  }
+}
+
+/**
+ * 把截图请求转发到 content script（整页/选区模式）。
+ * takeScreenshot 内部自己调 chrome.tabs.sendMessage，因为 executeBrowserTool 对
+ * browser_take_screenshot 做了特例 return，不走通用 sendMessage 路径。
+ * 若 content script 未注入（扩展重载后已打开的标签页不会自动注入），
+ * 用 chrome.scripting.executeScript 动态注入 content.js 后重试一次。
+ * @param tabId - 目标标签 ID（缺省取活动标签）
+ * @param mode - 'full' | 'area'
+ * @returns ExecutionResult.screenshot 为 data URL
+ */
+async function forwardScreenshotToContent(
+  tabId: number | undefined,
+  mode: 'full' | 'area'
+): Promise<ExecutionResult> {
+  let targetTabId = tabId
+  if (!targetTabId) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    targetTabId = tab?.id
+  }
+  if (!targetTabId) {
+    return { success: false, code: 'ELE_NOT_FOUND', message: '未找到活动标签' }
+  }
+
+  let response: unknown
+  try {
+    response = await chrome.tabs.sendMessage(targetTabId, {
+      type: 'SCREENSHOT',
+      mode,
+      timestamp: Date.now(),
+    })
+  } catch {
+    // content script 未注入（扩展重载后已打开页面不会自动注入）→ 动态注入后重试一次
+    const injected = await injectContentScript(targetTabId)
+    if (!injected) {
+      return {
+        success: false,
+        code: 'CONTENT_SCRIPT_ERROR',
+        message: '无法在此页面截图，请刷新页面后重试',
+        suggestion: 'RELOAD_PAGE',
+      }
+    }
+    try {
+      response = await chrome.tabs.sendMessage(targetTabId, {
+        type: 'SCREENSHOT',
+        mode,
+        timestamp: Date.now(),
+      })
+    } catch {
+      return {
+        success: false,
+        code: 'CONTENT_SCRIPT_ERROR',
+        message: 'Content Script 未响应，请刷新页面后重试',
+        suggestion: 'RELOAD_PAGE',
+      }
+    }
+  }
+
+  // content script 回传的 data 是 data URL 字符串；message 是截断提示（整页超长时）
+  const r = (response || {}) as {
+    success?: boolean
+    data?: unknown
+    error?: string
+    message?: string
+    suggestion?: string
+  }
+  if (r.success && typeof r.data === 'string') {
+    return { success: true, screenshot: r.data, message: r.message, mode }
+  }
+  if (r.success) {
+    return { success: false, code: 'SCREENSHOT_EMPTY', message: '截图结果为空' }
+  }
+  return {
+    success: false,
+    code: r.error || 'UNKNOWN_ERROR',
+    message: r.message || r.error,
+    suggestion: r.suggestion,
+  }
+}
+
+/**
+ * 动态注入 content script 到指定标签页。
+ * 用于扩展重载后已打开页面未自动注入 content script 的场景（sendMessage 失败时兜底）。
+ * chrome:// 等浏览器内部页面无法注入，会返回 false。
+ * @param tabId - 目标标签 ID
+ * @returns 是否注入成功
+ */
+async function injectContentScript(tabId: number): Promise<boolean> {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content.js'],
+    })
+    return true
+  } catch {
+    // chrome:// 等受限页面无法注入，返回 false
+    return false
   }
 }
 
@@ -1028,6 +1323,13 @@ async function updateFontFamily(payload: Record<string, unknown>): Promise<Execu
 // ──── COOKIES 实现 ────
 
 async function observeCookies(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // 优先 url 过滤（chrome.cookies.getAll 按 URL 取该 URL 关联的所有 cookie），
+  // 其次 domain 过滤，两者都不传则取当前活动标签的域名
+  const url = (payload.url as string | undefined)?.trim()
+  if (url) {
+    const cookies = await chrome.cookies.getAll({ url })
+    return { success: true, cookies, found: cookies.length, url }
+  }
   let domain = (payload.domain as string | undefined)?.trim()
   if (!domain) {
     // /cookies 无参 → 取当前活动 tab 的 url → 域名
@@ -1047,6 +1349,61 @@ async function observeCookies(payload: Record<string, unknown>): Promise<Executi
   }
   const cookies = await chrome.cookies.getAll({ domain })
   return { success: true, cookies, found: cookies.length, domain }
+}
+
+/**
+ * 写入或修改一个 Cookie。
+ * chrome.cookies.set 需要 url（由 domain + secure 推导），其余字段透传。
+ * @param payload - { domain, name, value, path?, secure?, httpOnly?, sameSite?, expirationDate? }
+ * @returns { success, cookie: { name, domain, value } }；失败返回 success:false + 错误信息
+ */
+async function setCookie(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const domain = (payload.domain as string | undefined)?.trim()
+  const name = payload.name as string | undefined
+  const value = payload.value as string | undefined
+  if (!domain || !name || value === undefined) {
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: '需要 domain、name、value 三个参数',
+    }
+  }
+  const secure = payload.secure as boolean | undefined
+  // domain 可能带前导 .（如 .example.com），构造 url 时去掉
+  const host = domain.replace(/^\./, '')
+  const url = `${secure ? 'https' : 'http'}://${host}${payload.path ? '' : '/'}`
+  const setDetails: ChromeCookieSetDetails = {
+    url,
+    name,
+    value,
+    domain,
+    path: (payload.path as string) || '/',
+  }
+  if (secure !== undefined) setDetails.secure = secure
+  if (payload.httpOnly !== undefined) setDetails.httpOnly = payload.httpOnly as boolean
+  if (payload.sameSite) setDetails.sameSite = payload.sameSite as ChromeSameSiteStatus
+  if (payload.expirationDate !== undefined)
+    setDetails.expirationDate = payload.expirationDate as number
+  try {
+    const cookie = await (chrome.cookies as unknown as ChromeCookiesSetApi).set(setDetails)
+    if (!cookie) {
+      return {
+        success: false,
+        code: 'COOKIE_SET_FAILED',
+        message: 'Cookie 写入失败（可能域名无权限）',
+      }
+    }
+    return {
+      success: true,
+      cookie: { name: cookie.name, domain: cookie.domain, value: cookie.value },
+    }
+  } catch (e) {
+    return {
+      success: false,
+      code: 'COOKIE_SET_FAILED',
+      message: e instanceof Error ? e.message : String(e),
+    }
+  }
 }
 
 /**
@@ -1125,6 +1482,22 @@ async function updateExtension(payload: Record<string, unknown>): Promise<Execut
 async function removeExtension(payload: Record<string, unknown>): Promise<ExecutionResult> {
   await chrome.management.uninstall(payload.id as string)
   return { success: true }
+}
+
+/**
+ * 查看本扩展自身拥有的权限（manifest 声明 + optional 权限）。
+ * chrome.permissions.getAll 返回 { origins, permissions }。
+ * @returns { success, permissions: { origins, permissions }, found }
+ */
+async function observeExtensionPermissions(): Promise<ExecutionResult> {
+  const all = await (chrome.permissions as unknown as ChromePermissionsApi).getAll()
+  const origins = all.origins || []
+  const perms = all.permissions || []
+  return {
+    success: true,
+    permissions: { origins, permissions: perms },
+    found: origins.length + perms.length,
+  }
 }
 
 // ──── PERMISSIONS 实现 ────
@@ -1278,28 +1651,121 @@ async function updatePermissions(payload: Record<string, unknown>): Promise<Exec
 
 // ──── STORAGE 实现 ────
 
-async function getStorage(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  // /storage-get 无 key → 返回扩展 storage.local 全量；带 key → 单值
-  if (!payload.key) {
-    const all = await chrome.storage.local.get(null)
-    return { success: true, value: all }
+/**
+ * 按 area 参数选择 storage 区域对象。
+ * - local：本机持久（默认，向后兼容）
+ * - sync：跨设备同步（受配额限制，超限抛错由调用方兜底）
+ * - session：MV3 新增，SW 生命周期内存级，SW 重启后失效
+ * @param area - 存储区域名，缺省/非法值回落到 local
+ */
+function getStorageArea(area: unknown): ChromeStorageAreaApi {
+  // 老 @types/chrome 的 chrome.storage 只有 local/session，缺 sync；运行时三者皆有，整体断言取用。
+  const storage = chrome.storage as unknown as {
+    sync: ChromeStorageAreaApi
+    session: ChromeStorageAreaApi
+    local: ChromeStorageAreaApi
   }
-  const result = await chrome.storage.local.get(payload.key as string)
+  if (area === 'sync') return storage.sync
+  if (area === 'session') return storage.session
+  return storage.local
+}
+
+async function getStorage(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const area = getStorageArea(payload.area)
+  const areaName = (payload.area as string) || 'local'
+  // 无 key → 返回该区域全量；带 key → 单值
+  if (!payload.key) {
+    const all = await area.get(null)
+    return { success: true, value: all, area: areaName }
+  }
+  const result = await area.get(payload.key as string)
   return {
     success: true,
     key: payload.key,
     value: (result as Record<string, unknown>)[payload.key as string],
+    area: areaName,
   }
 }
 
 async function setStorage(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  await chrome.storage.local.set({ [payload.key as string]: payload.value })
-  return { success: true, key: payload.key, value: payload.value }
+  const area = getStorageArea(payload.area)
+  const areaName = (payload.area as string) || 'local'
+  await area.set({ [payload.key as string]: payload.value })
+  return { success: true, key: payload.key, value: payload.value, area: areaName }
 }
 
 async function removeStorage(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  await chrome.storage.local.remove(payload.key as string)
-  return { success: true, key: payload.key }
+  const area = getStorageArea(payload.area)
+  const areaName = (payload.area as string) || 'local'
+  await area.remove(payload.key as string)
+  return { success: true, key: payload.key, area: areaName }
+}
+
+// ──── DOWNLOADS 实现 ────
+
+/**
+ * 触发下载指定 URL 的文件。
+ * @param payload - { url, filename?, conflictAction? }
+ * @returns { success, downloadId, filename }；失败返回 success:false
+ */
+async function downloadFile(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const url = (payload.url as string | undefined)?.trim()
+  if (!url) {
+    return { success: false, code: 'INVALID_PARAMS', message: '需要 url 参数' }
+  }
+  const options: ChromeDownloadOptions = { url }
+  if (payload.filename) options.filename = payload.filename as string
+  if (payload.conflictAction)
+    options.conflictAction = payload.conflictAction as ChromeFilenameConflictAction
+  try {
+    const downloadId = await (chrome.downloads as unknown as ChromeDownloadsApi).download(options)
+    return {
+      success: true,
+      downloadId,
+      filename: (payload.filename as string) || url.split('/').pop() || url,
+    }
+  } catch (e) {
+    return {
+      success: false,
+      code: 'DOWNLOAD_FAILED',
+      message: e instanceof Error ? e.message : String(e),
+    }
+  }
+}
+
+/**
+ * 查询下载记录。可按文件名关键词或下载状态过滤。
+ * @param payload - { query?, state?, maxResults? }
+ * @returns { success, downloads, found }；downloads 含 id/filename/url/state/totalBytes/startTime
+ */
+async function searchDownloads(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const query: ChromeDownloadQuery = {}
+  const queryStr = (payload.query as string | undefined)?.trim()
+  if (queryStr) query.query = [queryStr]
+  if (payload.state) query.state = payload.state as ChromeDownloadState
+  const maxResults = (payload.maxResults as number) || 20
+  const items = await (chrome.downloads as unknown as ChromeDownloadsApi).search(query)
+  // 应用层截断，避免下载记录过多撑爆回灌上下文
+  const sliced = items.slice(0, maxResults)
+  // 精简字段，去掉大对象（如 mime/estimates），只保留 AI/用户关心的关键字段
+  const downloads = sliced.map((d) => ({
+    id: d.id,
+    filename: d.filename || '',
+    url: d.url || '',
+    state: d.state || 'unknown',
+    totalBytes: d.totalBytes ?? 0,
+    startTime: d.startTime,
+  }))
+  return { success: true, downloads, found: downloads.length }
+}
+
+/**
+ * 打开 Chrome 下载管理页面（chrome://downloads/）。
+ * @returns { success, opened: true }
+ */
+async function openDownloadsPage(): Promise<ExecutionResult> {
+  await chrome.tabs.create({ url: 'chrome://downloads/' })
+  return { success: true, opened: true }
 }
 
 // ──── SESSIONS 实现 ────
@@ -1355,7 +1821,9 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
   for (let i = 0; i < calls.length; i++) {
     try {
       const call = calls[i]
-      const r = await executeCommand(call.tool, call.args)
+      // batch 由 AI agent loop 或斜杠命令触发，子调用视为已授权，注入 force:true
+      // 跳过危险命令的二次确认，否则 batch 内的 bookmarks_remove_node 等会返回 NEEDS_CONFIRM 导致整批失败
+      const r = await executeCommand(call.tool, { ...call.args, force: true })
       results.push(r)
       if (r.success) {
         succeeded++
@@ -1420,7 +1888,7 @@ async function executeBrowserTool(
   toolName: string,
   args: Record<string, unknown>
 ): Promise<ExecutionResult> {
-  // 截图不走 content script（content script 未实现），直接调用 SW 能力
+  // 截图：按 mode 分流，visible 走 SW 直接截，full/area 由 takeScreenshot 内部转发到 content script
   if (toolName === 'browser_take_screenshot') {
     return await takeScreenshot(args)
   }

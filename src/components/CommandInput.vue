@@ -10,6 +10,8 @@
           rows="3"
           @keydown="handleKeydown"
           @input="handleInput"
+          @compositionstart="isComposing = true"
+          @compositionend="isComposing = false"
         ></textarea>
 
         <!-- 斜杠命令提示 -->
@@ -112,6 +114,10 @@ const currentModelName = computed(() => {
 
 const textareaRef = ref<HTMLTextAreaElement>()
 
+// 输入法组合输入状态：中文/日文等输入候选词期间为 true，此时 Enter 用于确认候选词而非提交。
+// compositionstart/end 由 @composition* 事件维护，isComposing 由 keydown 原生属性兜底双保险。
+const isComposing = ref(false)
+
 // 斜杠命令
 const showSlashPicker = ref(false)
 const selectedSlashIndex = ref(0)
@@ -158,6 +164,11 @@ function handleInput() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // 输入法组合输入中（中文候选词阶段）：所有按键交给输入法处理，不触发命令导航/提交。
+  // isComposing 由 composition 事件维护，e.isComposing 是 keydown 原生属性兜底，
+  // 两者取或确保不同浏览器/输入法下都能正确拦截（部分浏览器 keydown 时 isComposing 仍为 true）。
+  if (isComposing.value || e.isComposing) return
+
   // 选择器打开时，方向键只负责选择命令候选项
   if (showSlashPicker.value) {
     if (e.key === 'ArrowDown') {

@@ -141,10 +141,11 @@ declare global {
       update(menuItemId: number | string, updateProperties: any): Promise<void>
     }
     notifications: {
+      create(notificationId: string, options: any): Promise<string>
       create(options: any): Promise<string>
       clear(notificationId: string): Promise<boolean>
       getAll(): Promise<object>
-      onclick: { addListener(callback: (notificationId: string) => void): void }
+      onClicked: { addListener(callback: (notificationId: string) => void): void }
     }
     offscreen: {
       createDocument(options: any): Promise<void>
@@ -295,7 +296,7 @@ declare global {
         type?: string
       }
       interface MoveProperties {
-        index: number
+        index?: number
         parentId?: string
       }
       interface BookmarkChangeInfo {
