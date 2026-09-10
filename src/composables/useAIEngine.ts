@@ -29,9 +29,11 @@ import { generateConfirmPreview } from '../shared/confirm'
 import { messageStore } from '../shared/message-store'
 import { AIEngine } from '../shared/ai/engine'
 import { buildAgentSystemPrompt } from '../shared/prompts'
-import { repairJSON } from '../shared/json-repair'
+import { repairJSON, isTruncated } from '../shared/json-repair'
+import { sanitizeThought } from '../shared/thought-summary'
 import { wrapCatReply } from '../shared/personality'
 import { buildMarkdownBody } from '../shared/block-renderers'
+import { notifyTaskDone } from '../shared/notifications'
 import { useSettings } from './useSettings'
 import { createRecordingExecutor } from '../recording/executor'
 
@@ -72,6 +74,8 @@ export function useAIEngine() {
   const planTracker = ref<PlanTracker | null>(null)
   const lessons = ref<Lesson[]>([])
   const lastScreenshot = ref<string | null>(null)
+  /** 最近一次截图的模式：visible / full / area，emitAIChat 时透传给 showScreenshot 用于区分提示文案 */
+  const lastScreenshotMode = ref<string | null>(null)
   const commandInputValue = ref('')
   const isSettingsOpen = ref(false)
   const isInitialized = ref(false)
@@ -209,14 +213,15 @@ export function useAIEngine() {
     let consecutiveErrors = 0
     let jsonRetryCount = 0
 
-    addMessage('system', '思考中...')
+    addMessage('system', `思考中... (${stepCount + 1}/${MAX_AGENT_STEPS})`)
 
     try {
       while (stepCount < MAX_AGENT_STEPS) {
         if (activeLoopId.value !== loopId) return
 
         if (Date.now() - startTime > TOTAL_TASK_TIMEOUT_MS) {
-          addMessage('system', '任务执行超时（120 秒），已停止。')
+          const timeoutSec = Math.round(TOTAL_TASK_TIMEOUT_MS / 1000)
+          addMessage('system', `任务执行超时（${timeoutSec} 秒），已停止。`)
           cleanup()
           return
         }
@@ -228,7 +233,7 @@ export function useAIEngine() {
           // 匹配所有工具调用 action：browser_* / tabs_* / bookmarks_* 等前缀，以及 task_plan / navigate / screenshot / batch / scan / exec_plan / askUserResponse / done / exec_tool / execute
           const isToolCall =
             lastAssistantMsg &&
-            /"action"\s*:\s*"(browser_|tabs_|bookmarks_|history_|windows_|storage_|permissions_|extensions_|theme_|font_|download_|session_|top_sites_|task_plan|navigate|screenshot|batch|scan|exec_plan|askUserResponse|done|exec_tool|execute)"/.test(
+            /"action"\s*:\s*"(browser_|tabs_|bookmarks_|history_|windows_|storage_|cookies_|permissions_|extensions_|theme_|font_|downloads_|sessions_|top_sites_|task_plan|navigate|screenshot|batch|scan|exec_plan|askUserResponse|done|exec_tool|execute|zoom)"/.test(
               lastAssistantMsg.content
             )
           raw = await aiEngine.chatWithHistory(messages, {
@@ -291,26 +296,54 @@ export function useAIEngine() {
           }
         }
 
+        // 把 AI 的 thought 推给用户：放在解析后、下一步执行前，
+        // 不论后续是正常执行 / 重试 / 解析失败都能看到上一轮的思考。
+        const cleanThought = sanitizeThought(json?.thought || '')
+        if (cleanThought) {
+          addMessage('system', `💭 AI 思考：${cleanThought}`)
+        }
+
         if (!json?.action) {
           jsonRetryCount++
+          // 区分截断与格式问题：截断时用专门的精简重试提示，
+          // 否则 AI 以为只是格式问题会原样重发大输出 → 再次截断 → 永远失败。
+          const truncated = isTruncated(raw)
           if (jsonRetryCount >= 2) {
             addMessage('system', '抱歉，我没有理解您的请求，能再详细说说吗喵？')
-            console.error('[AI Commander] AI failed to understand:', raw)
+            console.error(
+              '[AI Commander] AI failed to understand (truncated:',
+              truncated,
+              '):',
+              raw
+            )
             cleanup()
             return
           }
-          console.warn('[AI Commander] JSON parse failed, retry', jsonRetryCount)
+          console.warn(
+            '[AI Commander] JSON parse failed, retry',
+            jsonRetryCount,
+            'truncated:',
+            truncated
+          )
           messages.push({ role: 'assistant', content: raw })
           messages.push({
             role: 'user',
-            content: '请重新输出，严格按照 JSON 格式，只输出 JSON 对象，不要有其他内容。',
+            content: truncated
+              ? '上一次输出过长被截断（超出 max_tokens），JSON 不完整。请精简输出：去掉 components 数组，用简短 markdown 概述结果即可（如"已列出 N 个标签，当前活跃：xxx"），不要在回复里复述完整数据，只输出一个合法 JSON 对象。'
+              : '请重新输出，严格按照 JSON 格式，只输出 JSON 对象，不要有其他内容。',
           })
           continue
         }
         jsonRetryCount = 0
 
         if (json.action === 'done') {
-          emitAIChat(resolveAIReply(json, '操作完成'), true)
+          const replyBody = resolveAIReply(json, '操作完成')
+          emitAIChat(replyBody, true)
+          // 任务完成通知：仅当执行过工具（多步任务）且用户开启通知开关时弹出。
+          // 纯对话/首轮 done（stepCount === 0，未执行任何工具）不通知，避免闲聊打扰。
+          if (stepCount > 0 && settingsComposable.taskNotification.value) {
+            notifyTaskDone(userText, replyBody.markdown)
+          }
           return
         }
 
@@ -557,17 +590,19 @@ export function useAIEngine() {
           actionStr.startsWith('history_') ||
           actionStr.startsWith('windows_') ||
           actionStr.startsWith('storage_') ||
+          actionStr.startsWith('cookies_') ||
           actionStr.startsWith('permissions_') ||
           actionStr.startsWith('extensions_') ||
           actionStr.startsWith('theme_') ||
           actionStr.startsWith('font_') ||
-          actionStr.startsWith('download_') ||
-          actionStr.startsWith('session_') ||
+          actionStr.startsWith('downloads_') ||
+          actionStr.startsWith('sessions_') ||
           actionStr.startsWith('top_sites_') ||
           actionStr === 'task_plan' ||
           actionStr === 'navigate' ||
           actionStr === 'screenshot' ||
-          actionStr === 'batch'
+          actionStr === 'batch' ||
+          actionStr === 'zoom'
         ) {
           // 扁平格式：action 直接是工具名
           toolName = actionStr
@@ -603,8 +638,12 @@ export function useAIEngine() {
 
         let result: ExecutionResult
         try {
+          // AI agent loop 的危险命令视为已确认（force:true）：agent loop 每步都有
+          // system 摘要可见、可随时点停止按钮中断，等价于"渐进式确认"。
+          // 否则每个危险命令都返回 NEEDS_CONFIRM 会终止循环，多步任务（如删多个空文件夹）无法连续执行。
+          const dangerous = !!getCommand(toolName)?.dangerous
           result = await Promise.race([
-            executeCommand(toolName, toolArgs),
+            executeCommand(toolName, dangerous ? { ...toolArgs, force: true } : toolArgs),
             new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error('ACT_TIMEOUT')), STEP_TIMEOUT_MS)
             ),
@@ -618,6 +657,16 @@ export function useAIEngine() {
           }
         }
 
+        // clientExec 命令（chrome.tabs.group/ungroup 在 MV3 SW 会静默挂起）：
+        // SW 只准备分组数据返回 clientExec 标志，真正的 API 调用需在 side panel 执行。
+        // 这里执行后用真实结果替换 SW 结果，让后续 formatStepSummary / AI 反馈 / 验证都基于真实执行结果。
+        if ((result as Record<string, unknown>).clientExec) {
+          result = await executeClientExec(result)
+        }
+
+        // 防御性兜底：agent loop 对 dangerous 命令已注入 force:true（见上方 executeCommand 调用），
+        // 正常不会走到这里。保留此分支以兼容未来非 force 的危险路径——若 SW 仍返回 NEEDS_CONFIRM，
+        // 则弹确认卡让用户逐项勾选（确认后执行单步，agent loop 不再恢复，故多步任务应避免走到此分支）。
         if (result.success === false && result.code === 'NEEDS_CONFIRM') {
           const detail = (result.detail || {}) as Record<string, unknown>
           const confirmItems =
@@ -761,10 +810,17 @@ export function useAIEngine() {
           })
         }
 
-        if ((result.triggered || result.result !== undefined) && !result.error && !result.code) {
-          // 根据工具类型进行针对性验证
-          if (toolName === 'tabs_move' || toolName === 'tabs_group_by_domain') {
-            // 标签页移动/分组后，验证新状态
+        // 操作成功的针对性验证。注意：条件不能用 result.triggered/result.result 门控书签分支——
+        // 书签写操作返回 movedNode/createdNode/updatedNode/removedNode，既不返回 triggered 也不返回 result，
+        // 旧条件 (result.triggered || result.result !== undefined) 会让书签验证永不触发，
+        // AI 在多步任务中拿不到最新 id 列表 → 幻觉 id。故书签分支独立判定（仅看 !error && !code）。
+        if (!result.error && !result.code) {
+          if (
+            toolName === 'tabs_move' ||
+            toolName === 'tabs_group_by_domain' ||
+            toolName === 'tabs_ungroup'
+          ) {
+            // 标签页移动/分组/取消分组后，验证新状态
             const verifyResult = await executeCommand('tabs_observe', { maxResults: 10 })
             const tabList = verifyResult.success
               ? (verifyResult as Record<string, unknown>).tabs
@@ -775,20 +831,35 @@ export function useAIEngine() {
                 content: `[验证] 标签页状态已更新，当前可见标签: ${tabList.length} 个`,
               })
             }
-          } else if (toolName === 'bookmarks_move_node' || toolName === 'bookmarks_create_node') {
-            // 书签操作后，验证新状态
-            const verifyResult = await executeCommand('bookmarks_observe_tree', { maxResults: 20 })
+          } else if (
+            toolName === 'bookmarks_move_node' ||
+            toolName === 'bookmarks_create_node' ||
+            toolName === 'bookmarks_remove_node' ||
+            toolName === 'bookmarks_update_node'
+          ) {
+            // 书签写操作后，回灌实际节点数据（关键字段）让 AI 基于最新 id 继续，
+            // 避免多步任务中 id 失效后 AI 幻觉出不存在的 id。
+            // 扩展到 remove/update：删除/更新后同样需要回灌最新树，否则后续步骤会用到失效 id。
+            const verifyResult = await executeCommand('bookmarks_observe_tree', { maxResults: 80 })
             const nodeList = verifyResult.success
-              ? (verifyResult as Record<string, unknown>).nodes
+              ? ((verifyResult as Record<string, unknown>).nodes as Array<Record<string, unknown>>)
               : undefined
             if (Array.isArray(nodeList)) {
+              // 仅回灌关键字段，避免完整树过大撑爆上下文
+              const compact = nodeList.map((n) => ({
+                id: n.id,
+                title: n.title,
+                type: n.type,
+                parentId: n.parentId,
+                childCount: n.childCount,
+              }))
               messages.push({
                 role: 'system',
-                content: `[验证] 书签操作完成，当前书签节点: ${nodeList.length} 个`,
+                content: `[验证] 书签操作完成，当前书签节点 ${nodeList.length} 个：${JSON.stringify(compact)}`,
               })
             }
           } else if (result.triggered || result.result !== undefined) {
-            // 其他操作，扫描页面状态
+            // 其他操作（DOM 脚本等），扫描页面状态
             const postScan = await scanCurrentPage()
             if (postScan?.elements?.length) {
               messages.push({
@@ -804,13 +875,14 @@ export function useAIEngine() {
           result.screenshot
         ) {
           lastScreenshot.value = result.screenshot as string
+          if (typeof result.mode === 'string') {
+            lastScreenshotMode.value = result.mode as string
+          }
         }
 
         const stepStatus = !result.error && !result.code ? '✓' : '❌'
-        addMessage(
-          'system',
-          `[${stepCount}] ${stepStatus} 💭 ${thought}\n    ${formatStepSummary(result, toolName)}`
-        )
+        // thought 已在解析后立即输出（见上方「💭 AI 思考」气泡），这里只展示步骤摘要，避免一泡过长。
+        addMessage('system', `[${stepCount}] ${stepStatus} ${formatStepSummary(result, toolName)}`)
 
         // 如果执行失败，用友好提示告知用户
         if (result.code || result.error) {
@@ -831,7 +903,7 @@ export function useAIEngine() {
           return
         }
 
-        addMessage('system', '思考中...')
+        addMessage('system', `思考中... (${stepCount + 1}/${MAX_AGENT_STEPS})`)
       }
 
       emitAIChat(
@@ -919,7 +991,7 @@ export function useAIEngine() {
         })) as ExecutionResult | undefined
         matchedCookies = obs?.success ? (obs.cookies as chrome.cookies.Cookie[]) : undefined
       }
-      const preview = generateConfirmPreview(
+      const preview = await generateConfirmPreview(
         resolvedIntent,
         slotsAny,
         contextCache.value,
@@ -1339,7 +1411,13 @@ export function useAIEngine() {
    *
    * 用于 agent loop 步骤日志（formatStepSummary）和 markdown-factory 未覆盖时的 fallback。
    */
-  function formatResultDescription(r: Record<string, unknown>): string {
+  /**
+   * 把执行结果格式化为简短描述文案（用于 agent loop 步骤摘要 & 渲染兜底）
+   * @param r - 执行结果对象
+   * @param intent - 命令 intent（可选）；用于区分被多类命令共用的字段（如 removed）
+   * @returns 简短描述字符串
+   */
+  function formatResultDescription(r: Record<string, unknown>, intent?: string): string {
     if (r.code === 'NEEDS_CONFIRM') return `⚠️ ${r.message}`
     if (r.code) return `[${r.code}] ${r.message || '操作失败'}`
     if (r.error) return `失败: ${typeof r.error === 'object' ? JSON.stringify(r.error) : r.error}`
@@ -1349,6 +1427,36 @@ export function useAIEngine() {
       const s = typeof r.result === 'string' ? r.result : JSON.stringify(r.result)
       return '脚本结果: ' + s.slice(0, 100)
     }
+    // Bookmarks 专属字段优先判定（removedNode 仅书签删除返回，
+    // 必须排在 tabs 的 removed 之前，否则书签删除会被误判成"关闭标签"）
+    // 文件夹/书签区分：chrome.bookmarks 节点无 nodeType 字段，且 get/move/create 返回的节点
+    // 可能不含 children 字段，故用"无 url = 文件夹"判定（书签必有 url，文件夹必无）。
+    if (r.nodes) return `观察到 ${r.observed || (r.nodes as unknown[]).length} 个书签节点`
+    if (r.movedNode) {
+      const n = r.movedNode as { title?: string; url?: string }
+      return `移动 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+    }
+    if (r.createdNode) {
+      const n = r.createdNode as { title?: string; url?: string }
+      return `创建 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+    }
+    if (r.existingNode) {
+      const n = r.existingNode as { title?: string; url?: string }
+      return `目标已存在，复用 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+    }
+    if (r.updatedNode) {
+      const n = r.updatedNode as { title?: string; url?: string }
+      return `更新 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+    }
+    if (r.openedNode) {
+      const n = r.openedNode as { title?: string; url?: string }
+      return `打开书签 *${n.title || n.url || ''}*`
+    }
+    if (r.removedNode) {
+      const n = r.removedNode as { title?: string; url?: string }
+      return `删除 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+    }
+    if (r.bookmark) return `添加书签 *${(r.bookmark as { title?: string }).title || ''}*`
     // Tabs
     if (r.tabs) return `列出 ${r.observed || (r.tabs as unknown[]).length} 个标签`
     if (r.tab && r.active !== undefined)
@@ -1358,29 +1466,23 @@ export function useAIEngine() {
     if (r.tab)
       return `创建标签 *${(r.tab as { title?: string }).title || (r.tab as { url?: string }).url || ''}*`
     if (r.moved !== undefined) return `移动 ${r.moved} 个标签`
-    if (r.removed !== undefined) return `关闭 ${r.removed} 个标签`
-    if (r.groupedTabs) return `创建分组 *${r.title || r.groupName}* (${r.groupedTabs} 个标签)`
+    // removed 字段被 tabs_remove（关闭标签）和 bookmarks_remove_node（删除书签/文件夹）共用，
+    // 按 intent 区分；无 intent 时默认按"关闭标签"处理（向后兼容）
+    if (r.removed !== undefined) {
+      if (intent === 'bookmarks_remove_node') return `删除 ${r.removed} 个书签/文件夹`
+      return `关闭 ${r.removed} 个标签`
+    }
+    if (r.groupedTabs !== undefined)
+      return `创建 ${r.groupedTabs} 个分组${r.failed ? `（${r.failed} 个失败）` : ''}`
     if (r.groupId && !r.groupedTabs) return `更新分组 *${r.title || r.groupId}*`
-    if (r.ungrouped !== undefined) return `取消 ${r.ungrouped} 个分组`
+    if (r.ungrouped !== undefined)
+      return `取消 ${r.ungrouped} 个分组（${r.tabsUngrouped || 0} 个标签解除分组）${r.failed ? `（${r.failed} 个失败）` : ''}`
+    if (r.groupsCleared !== undefined) return (r.message as string) || '当前没有任何标签分组'
     if (r.groups) return `列出 ${(r.groups as unknown[]).length} 个标签组`
     if (r.reloaded) return '刷新标签'
     if (r.pinned !== undefined) return r.pinned ? '固定标签' : '取消固定'
     if (r.discarded !== undefined) return `休眠 ${r.discarded} 个标签`
     if (r.duplicated !== undefined) return '复制标签'
-    // Bookmarks
-    if (r.nodes) return `观察到 ${r.observed || (r.nodes as unknown[]).length} 个书签节点`
-    if (r.movedNode)
-      return `移动 ${(r.movedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.movedNode as { title: string }).title}*`
-    if (r.createdNode)
-      return `创建 ${(r.createdNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.createdNode as { title: string }).title}*`
-    if (r.existingNode)
-      return `目标已存在，复用 ${(r.existingNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.existingNode as { title: string }).title}*`
-    if (r.updatedNode)
-      return `更新 ${(r.updatedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.updatedNode as { title: string }).title}*`
-    if (r.openedNode) return `打开书签 *${(r.openedNode as { title: string }).title}*`
-    if (r.removedNode)
-      return `删除 ${(r.removedNode as { nodeType: string; title: string }).nodeType === 'folder' ? '文件夹' : '书签'} *${(r.removedNode as { title: string }).title}*`
-    if (r.bookmark) return `添加书签 *${(r.bookmark as { title: string }).title}*`
     // Windows
     if (r.windows) return `列出 ${(r.windows as unknown[]).length} 个窗口`
     if (r.window) return '创建窗口'
@@ -1391,6 +1493,8 @@ export function useAIEngine() {
     // Navigation
     if (r.navigated) return `导航至 ${r.navigated}`
     if (r.dataUrl && !r.stopped && !r.pendingRecording) return '截图已捕获'
+    // 截图（screenshot intent 返回 screenshot 字段，非 dataUrl）
+    if (r.screenshot && typeof r.screenshot === 'string') return '截图已捕获'
     // Page
     if (r.zoomFactor !== undefined) return `缩放至 ${Math.round((r.zoomFactor as number) * 100)}%`
     if (r.opened) return '打开下载页面'
@@ -1400,20 +1504,45 @@ export function useAIEngine() {
     if (r.fontSize !== undefined) return `字号: ${r.fontSizeLabel || r.fontSize + 'px'}`
     if (r.font) return `字体: ${r.font}`
     // Cookies
-    if (r.cookies) return `查看 ${r.found || 0} 个 Cookie (${r.domain})`
+    if (r.cookies) {
+      // observeCookies 返回 domain 或 url（按 url 过滤时），兼容两者
+      const where = r.domain || r.url || ''
+      return `查看 ${r.found || 0} 个 Cookie (${where})`
+    }
+    if (r.cookie) return `写入 Cookie *${(r.cookie as { name?: string }).name || ''}*`
     if (r.domain && r.deleted !== undefined) return `清除 ${r.domain} 的 ${r.deleted} 个 Cookie`
+    // Downloads
+    if (r.downloads) return `查到 ${r.found || 0} 条下载记录`
+    if (r.downloadId !== undefined)
+      return `开始下载 *${(r as { filename?: string }).filename || ''}*`
+    if (r.opened) return '打开下载管理页'
     // Top Sites
     if (r.sites) return `展示 ${r.found || 0} 个常用网站`
     // Extensions
     if (r.extensions) return `列出 ${r.found || 0} 个扩展`
     if (r.id && r.enabled !== undefined) return r.enabled ? '启用扩展' : '禁用扩展'
     if (r.id && (r as { uninstalled?: string }).uninstalled) return `卸载扩展`
-    // Permissions
-    if (r.permissions) return `查看 ${r.domain} 的权限设置`
+    // Permissions：站点权限（contentSettings，permissions 是数组）vs 扩展自身权限（permissions 是 {origins,permissions} 对象）
+    if (r.permissions) {
+      if (Array.isArray(r.permissions)) return `查看 ${r.domain} 的权限设置`
+      // 扩展自身权限：permissions 是 { origins, permissions } 对象
+      const p = r.permissions as { origins?: unknown[]; permissions?: unknown[] }
+      const cnt = (p.origins?.length || 0) + (p.permissions?.length || 0)
+      return `本扩展拥有 ${cnt} 项权限`
+    }
     if (r.setting && r.value) return `设置 ${r.domain} 的 ${r.setting} 权限`
     // Storage
-    if (r.key && r.value !== undefined)
-      return `存储 *${r.key}* = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
+    if (r.key && r.value !== undefined) {
+      const area = r.area ? `(${r.area})` : ''
+      return `存储${area} *${r.key}* = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
+    }
+    // getStorage 无 key 时返回整个区域全量（value 是对象，无 key）
+    if (!r.key && r.value !== undefined && r.area) {
+      const count =
+        r.value && typeof r.value === 'object' ? Object.keys(r.value as object).length : 0
+      return `列出存储(${r.area}) ${count} 个键值`
+    }
+    if (r.key && r.area) return `删除存储(${r.area}) *${r.key}*`
     if (r.storageRemoved) return `删除存储 *${r.storageRemoved}*`
     // Recording
     if (r.recording === 'screen') return `开始录制屏幕`
@@ -1563,6 +1692,7 @@ export function useAIEngine() {
     conversationMessages.value = null
     lessons.value = []
     lastScreenshot.value = null
+    lastScreenshotMode.value = null
     pendingConfirm.value = null // 取消挂起的确认对话框
     // 立即中断当前 AI 请求（用户点停止按钮时调用）
     if (abortController) {
@@ -1681,6 +1811,11 @@ export function useAIEngine() {
     }
     if (typeof obj !== 'object') return obj
 
+    // 数组截断阈值：回灌给 AI 的数组最多 30 项，超出则截断 + 记录提示。
+    // 避免 history_search(100条)/bookmarks_observe_tree(500节点) 等大数组
+    // 完整回灌撑爆 AI 上下文，导致输出被截断、JSON 解析失败（"我没有理解您的请求"）。
+    const MAX_ARRAY = 30
+    const truncatedArrays: Array<{ field: string; total: number }> = []
     const seen = new WeakSet()
     try {
       const str = JSON.stringify(obj, (key, val) => {
@@ -1688,23 +1823,149 @@ export function useAIEngine() {
           if (seen.has(val)) return '[Circular]'
           seen.add(val)
         }
+        // 超长数组截断：保留前 MAX_ARRAY 项，记录字段名和原始长度供外层提示
+        if (Array.isArray(val) && val.length > MAX_ARRAY) {
+          truncatedArrays.push({ field: key || '(root)', total: val.length })
+          return val.slice(0, MAX_ARRAY)
+        }
         if (/data[_]?url|screenshot/i.test(key)) return undefined
         if (typeof val === 'string' && val.length > 500) {
           return val.slice(0, 200) + `...[截断, 原长 ${val.length} 字符]`
         }
         return val
       })
-      return JSON.parse(str)
+      const parsed = JSON.parse(str)
+      // 有截断时在结果顶层加提示，让 AI 知道数据不全、需缩小查询范围取完整数据
+      if (truncatedArrays.length > 0 && parsed && typeof parsed === 'object') {
+        ;(parsed as Record<string, unknown>)._resultTruncated = truncatedArrays.map(
+          (t) =>
+            `${t.field}: 共${t.total}项，已截断为前${MAX_ARRAY}项。如需完整数据请缩小查询范围（加 query/domain 过滤或减小 maxResults）`
+        )
+      }
+      return parsed
     } catch {
       return { _error: 'serialization failed', _keys: Object.keys(obj as object) }
     }
   }
 
   /**
+   * 执行 clientExec 命令（chrome.tabs.group/ungroup 在 MV3 SW 上下文会静默挂起，
+   * 需在 side panel 用户激活上下文执行）。
+   * SW 把分组数据准备好后返回 clientExec 标志 + groups，这里真正调用 Chrome API，
+   * 返回带 cleared/created/ungrouped 等字段的结果，让 formatResultDescription / AI 反馈能准确描述。
+   * 被 agentLoop（每步执行后替换 result）和 renderExecutionResult（斜杠命令路径）共用。
+   * @param result - SW 返回的带 clientExec 标志的结果
+   * @returns 执行后的真实结果（无 clientExec 时原样返回）
+   */
+  async function executeClientExec(result: ExecutionResult): Promise<ExecutionResult> {
+    const r = result as Record<string, unknown>
+    if (!r.clientExec || !Array.isArray(r.groups)) return result
+
+    // 取消分组：把每个分组内的 tabIds 调 chrome.tabs.ungroup 移出分组
+    if (r.clientExec === 'tabs_ungroup_all') {
+      const groups = r.groups as Array<{ groupId: number; tabIds: number[] }>
+      let cleared = 0
+      let tabsUngrouped = 0
+      const failed: Array<{ groupId: number; reason: string }> = []
+      for (const g of groups) {
+        try {
+          const validIds: number[] = []
+          for (const id of g.tabIds) {
+            try {
+              await chrome.tabs.get(id)
+              validIds.push(id)
+            } catch {
+              // tab 已不存在
+            }
+          }
+          if (validIds.length === 0) {
+            failed.push({ groupId: g.groupId, reason: '组内 tab 都不存在' })
+            continue
+          }
+          await chrome.tabs.ungroup(validIds)
+          cleared++
+          tabsUngrouped += validIds.length
+        } catch (e: unknown) {
+          const reason = e instanceof Error ? e.message : String(e)
+          console.warn('[clientExec] ungroup 失败:', g.groupId, 'err=', reason)
+          failed.push({ groupId: g.groupId, reason })
+        }
+      }
+      return {
+        success: cleared > 0,
+        ungrouped: cleared,
+        tabsUngrouped,
+        failed: failed.length,
+        message:
+          cleared > 0
+            ? `已取消 ${cleared} 个分组（${tabsUngrouped} 个标签解除分组）` +
+              (failed.length > 0 ? `（${failed.length} 个失败）` : '')
+            : failed.length > 0
+              ? `取消分组失败: ${failed.map((f) => f.reason).join('; ')}`
+              : '当前没有任何标签分组',
+      }
+    }
+
+    // 按域名分组：调 chrome.tabs.group 创建分组，再 chrome.tabGroups.update 设标题
+    if (r.clientExec === 'tabs_group_by_domain') {
+      const groups = r.groups as Array<{ title: string; tabIds: number[]; windowId: number }>
+      let created = 0
+      const failed: Array<{ title: string; reason: string }> = []
+      for (const g of groups) {
+        try {
+          const validIds: number[] = []
+          for (const id of g.tabIds) {
+            try {
+              await chrome.tabs.get(id)
+              validIds.push(id)
+            } catch {
+              // tab 已不存在
+            }
+          }
+          if (validIds.length < 2) {
+            failed.push({ title: g.title, reason: '有效 tab 数 < 2' })
+            continue
+          }
+          const resultGroupId = await chrome.tabs.group({
+            tabIds: validIds,
+            createProperties: { windowId: g.windowId },
+          })
+          try {
+            await chrome.tabGroups.update(resultGroupId, { title: g.title })
+          } catch (e) {
+            console.warn('[clientExec] 设置分组标题失败:', g.title, e)
+          }
+          created++
+        } catch (e: unknown) {
+          const reason = e instanceof Error ? e.message : String(e)
+          console.warn('[clientExec] 创建分组失败:', g.title, 'err=', reason)
+          failed.push({ title: g.title, reason })
+        }
+      }
+      return {
+        success: created > 0,
+        groupedTabs: created,
+        failed: failed.length,
+        message:
+          created > 0
+            ? `已创建 ${created} 个分组` +
+              (failed.length > 0
+                ? `（${failed.length} 个失败: ${failed.map((f) => `${f.title}(${f.reason})`).join(', ')}）`
+                : '')
+            : failed.length > 0
+              ? `分组失败: ${failed.map((f) => `${f.title}(${f.reason})`).join('; ')}`
+              : '没有需要分组的标签',
+      }
+    }
+
+    return result
+  }
+
+  /**
    * Agent loop 步骤日志摘要（紧凑格式）
    */
-  function formatStepSummary(result: ExecutionResult, _toolName: string): string {
-    return formatResultDescription(result as Record<string, unknown>)
+  function formatStepSummary(result: ExecutionResult, toolName: string): string {
+    return formatResultDescription(result as Record<string, unknown>, toolName)
   }
 
   function formatHelp(): string {
@@ -1758,127 +2019,25 @@ export function useAIEngine() {
 
     const r = result as Record<string, unknown>
 
-    // 客户端执行路径：chrome.tabs.group 在 MV3 SW 上下文会被静默挂起
+    // 客户端执行路径：chrome.tabs.group/ungroup 在 MV3 SW 上下文会被静默挂起
     // （SW 不是用户激活的上下文）。SW 把分组数据准备好后返回 clientExec 标志，
-    // 我们在 side panel（用户激活上下文）里直接调 API。
-    if (r.clientExec === 'tabs_group_by_domain' && Array.isArray(r.groups)) {
-      const groups = r.groups as Array<{ title: string; tabIds: number[]; windowId: number }>
-      let created = 0
-      const failed: Array<{ title: string; reason: string }> = []
-      console.log('[clientExec] 收到分组数据:', groups.length, '个组', groups)
-      for (const g of groups) {
-        console.log(
-          '[clientExec] 调用 chrome.tabs.group:',
-          'title=',
-          g.title,
-          'windowId=',
-          g.windowId,
-          'tabIds=',
-          g.tabIds
-        )
-        try {
-          // 先验证每个 tab 还存在（避免无效 id 导致 API 抛错）
-          const validIds: number[] = []
-          for (const id of g.tabIds) {
-            try {
-              await chrome.tabs.get(id)
-              validIds.push(id)
-            } catch {
-              // tab 已不存在
-            }
-          }
-          if (validIds.length < 2) {
-            failed.push({ title: g.title, reason: '有效 tab 数 < 2' })
-            continue
-          }
-          // chrome.tabs.group 的 options 参数不接受 title/color（这两个是 tabGroups.update 的属性）。
-          // 创建分组后必须再调 chrome.tabGroups.update 来设置标题。
-          const resultGroupId = await chrome.tabs.group({
-            tabIds: validIds,
-            createProperties: { windowId: g.windowId },
-          })
-          // 单独设置分组标题
-          try {
-            await chrome.tabGroups.update(resultGroupId, { title: g.title })
-          } catch (e) {
-            console.warn('[clientExec] 设置分组标题失败:', g.title, e)
-          }
-          console.log('[clientExec] 分组成功:', g.title, 'groupId=', resultGroupId)
-          created++
-        } catch (e: unknown) {
-          const reason = e instanceof Error ? e.message : String(e)
-          console.warn('[clientExec] 创建分组失败:', g.title, 'err=', reason)
-          failed.push({ title: g.title, reason })
-        }
-      }
-      if (created > 0) {
-        let msg = `已创建 ${created} 个分组`
-        if (failed.length > 0)
-          msg += `（${failed.length} 个失败: ${failed.map((f) => `${f.title}(${f.reason})`).join(', ')}）`
-        addMessage('ai-chat', wrapCatReply(msg))
-      } else {
-        addMessage(
-          'ai-chat',
-          wrapCatReply(
-            failed.length > 0
-              ? `分组失败: ${failed.map((f) => `${f.title}(${f.reason})`).join('; ')}`
-              : '没有需要分组的标签'
-          )
-        )
-      }
-      return
-    }
-
-    // 客户端执行路径：ungroup_all 同样在用户激活上下文（side panel）执行
-    if (r.clientExec === 'tabs_ungroup_all' && Array.isArray(r.groups)) {
-      const groups = r.groups as Array<{ groupId: number; tabIds: number[] }>
-      let cleared = 0
-      const failed: Array<{ groupId: number; reason: string }> = []
-      console.log('[clientExec] 收到 ungroup 数据:', groups.length, '个组')
-      for (const g of groups) {
-        try {
-          // 验证每个 tab 仍然存在
-          const validIds: number[] = []
-          for (const id of g.tabIds) {
-            try {
-              await chrome.tabs.get(id)
-              validIds.push(id)
-            } catch {
-              // tab 已不存在
-            }
-          }
-          if (validIds.length === 0) {
-            failed.push({ groupId: g.groupId, reason: '组内 tab 都不存在' })
-            continue
-          }
-          await chrome.tabs.ungroup(validIds)
-          cleared++
-        } catch (e: unknown) {
-          const reason = e instanceof Error ? e.message : String(e)
-          console.warn('[clientExec] ungroup 失败:', g.groupId, 'err=', reason)
-          failed.push({ groupId: g.groupId, reason })
-        }
-      }
-      if (cleared > 0) {
-        let msg = `已取消 ${cleared} 个分组`
-        if (failed.length > 0) msg += `（${failed.length} 个失败）`
-        addMessage('ai-chat', wrapCatReply(msg))
-      } else {
-        addMessage(
-          'ai-chat',
-          wrapCatReply(
-            failed.length > 0
-              ? `取消分组失败: ${failed.map((f) => f.reason).join('; ')}`
-              : '当前没有任何标签分组'
-          )
-        )
-      }
+    // 我们在 side panel（用户激活上下文）里直接调 API（逻辑抽到 executeClientExec，与 agentLoop 共用）。
+    if (r.clientExec) {
+      const execResult = await executeClientExec(result)
+      addMessage(
+        'ai-chat',
+        wrapCatReply((execResult as { message?: string }).message || '操作完成')
+      )
       return
     }
 
     // 截图：显示图片并自动复制到剪贴板
     if (r.screenshot && typeof r.screenshot === 'string') {
-      showScreenshot(r.screenshot, r.tabTitle as string | undefined)
+      // 整页截图超长截断等提示信息（content script 返回的 message）
+      if (r.message && typeof r.message === 'string') {
+        addMessage('system', r.message)
+      }
+      showScreenshot(r.screenshot, r.tabTitle as string | undefined, r.mode as string | undefined)
       return
     }
     // 录制停止请求已发出，文件由 recordingExecutor 直接渲染下载卡
@@ -1926,12 +2085,11 @@ export function useAIEngine() {
       return
     }
     if (intent === 'remove_bookmark') {
-      const node = r.removedNode as
-        { title?: string; url?: string; children?: unknown[] } | undefined
+      const node = r.removedNode as { title?: string; url?: string } | undefined
       const label = node?.title || node?.url
       const removed = typeof r.removed === 'number' ? r.removed : 1
-      // 文件夹删除时 SW 端会把"folder 本身 + 子项"合并到 removed
-      const isFolder = node && !node.url && Array.isArray(node?.children)
+      // 文件夹判定：无 url 即文件夹（chrome.bookmarks.get 返回的节点可能不含 children 字段）
+      const isFolder = node && !node.url
       addMessage('ai-chat', {
         markdown: wrapCatReply(
           label && isFolder && removed > 1
@@ -1995,7 +2153,7 @@ export function useAIEngine() {
     const body = buildMarkdownBody(intent, result)
     addMessage(
       'ai-chat',
-      body ?? { markdown: wrapCatReply(formatResultDescription(r) || '操作完成') }
+      body ?? { markdown: wrapCatReply(formatResultDescription(r, intent) || '操作完成') }
     )
   }
 
@@ -2021,11 +2179,28 @@ export function useAIEngine() {
   })
 
   /**
-   * 显示截图并复制到剪贴板（供 slash command 路径使用）
+   * 模式 → 中文标签，用于 AI 回复气泡里告诉用户「整页/选区/可视区域 截图」+ 复制结果
    */
-  function showScreenshot(dataUrl: string, tabTitle?: string) {
-    addMessage('ai-chat', wrapCatReply(`[截图: ${tabTitle || '页面'}]`), dataUrl)
-    copyScreenshotToClipboard(dataUrl)
+  const SCREENSHOT_MODE_LABEL: Record<string, string> = {
+    full: '整页',
+    area: '选区',
+    visible: '可视区域',
+  }
+
+  /**
+   * 显示截图气泡 + 异步复制到剪贴板。文案按 mode + 复制结果生成。
+   * @param dataUrl - 截图 data URL
+   * @param tabTitle - 当前标签标题（缺省 fallback 为「页面」）
+   * @param mode - 截图模式：'visible' | 'full' | 'area'，缺省时不带模式前缀
+   */
+  async function showScreenshot(dataUrl: string, tabTitle?: string, mode?: string) {
+    const ok = await copyScreenshotToClipboard(dataUrl)
+    const tail = ok ? '已自动复制到剪贴板~' : '可右键图片手动复制喵~'
+    const modeLabel = mode ? (SCREENSHOT_MODE_LABEL[mode] ?? '') : ''
+    const prefix = modeLabel
+      ? `[${modeLabel}截图: ${tabTitle || '页面'}]`
+      : `[截图: ${tabTitle || '页面'}]`
+    addMessage('ai-chat', wrapCatReply(`${prefix}，${tail}`), dataUrl)
   }
 
   /**
@@ -2055,7 +2230,7 @@ export function useAIEngine() {
 
   /**
    * 发送 AI 对话消息，自动附带待处理的截图。
-   * 保证文字和截图在同一个气泡中显示。
+   * 保证文字和截图在同一个气泡中显示；截图气泡按模式生成文案并尝试复制到剪贴板。
    *
    * text 支持两种形态：
    *   - string：纯 markdown（被 wrapCatReply 加语气）
@@ -2065,26 +2240,38 @@ export function useAIEngine() {
    */
   function emitAIChat(text: string | MessageBody, doCleanup: boolean) {
     const image = lastScreenshot.value
+    const mode = lastScreenshotMode.value
     if (image) {
-      copyScreenshotToClipboard(image)
+      // 复用 showScreenshot 路径：统一生成「[模式截图: 标题]，复制结果」气泡
+      // 调用前先把 ref 清掉，避免 showScreenshot 内部再次走 emitAIChat 形成闭环
       lastScreenshot.value = null
+      lastScreenshotMode.value = null
+      void showScreenshot(image, undefined, mode ?? undefined)
+      const body: MessageBody = typeof text === 'string' ? { markdown: wrapCatReply(text) } : text
+      addMessage('ai-chat', body)
+      if (doCleanup) cleanup()
+      return
     }
     const body: MessageBody = typeof text === 'string' ? { markdown: wrapCatReply(text) } : text
-    addMessage('ai-chat', body, image || undefined)
+    addMessage('ai-chat', body)
     if (doCleanup) cleanup()
   }
 
   /**
-   * 将 data URL 截图复制到剪贴板
+   * 将 data URL 截图复制到剪贴板。
+   * @param dataUrl - 图片 data URL
+   * @returns true 复制成功；false 失败（用户无感知前的最后兜底，仅 console.warn）
    */
-  async function copyScreenshotToClipboard(dataUrl: string) {
+  async function copyScreenshotToClipboard(dataUrl: string): Promise<boolean> {
     try {
       const response = await fetch(dataUrl)
       const blob = await response.blob()
       await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })])
       console.log('[AI管家] 截图已复制到剪贴板')
+      return true
     } catch (err) {
       console.warn('[AI管家] 复制截图失败:', err)
+      return false
     }
   }
 

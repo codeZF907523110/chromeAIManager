@@ -259,18 +259,21 @@ function tabsSearchMarkdownBody(r: ExecutionResult): MessageBody {
 
 /**
  * /list-groups 命令反馈：DataTable 表格
- *  - 数据来自 SW observeGroups 的 groups[]（id / color / title / tabs[]）
- *  - tabs[] 折叠显示数量
+ *  - 数据来自 SW observeGroups 的 groups[]（id / color / title / windowId / tabs[]）
+ *  - tabs[] 现含 id+title+url，展示标签数 + 首个标签 URL 摘要，便于识别分组内容
  */
 function tabGroupsMarkdownBody(r: ExecutionResult): MessageBody {
   const groups = ((r as Record<string, unknown>).groups ?? []) as Array<Record<string, unknown>>
   const rows = groups.map((g) => {
-    const tabs = Array.isArray(g.tabs) ? (g.tabs as unknown[]).length : 0
+    const tabs = Array.isArray(g.tabs) ? (g.tabs as Array<Record<string, unknown>>) : []
+    // 取首个标签的 url 摘要做识别线索（无标题分组也能看出归属域名）
+    const firstUrl = tabs[0]?.url as string | undefined
     return {
       id: g.id,
       color: g.color || 'grey',
       title: g.title || `分组 ${g.id}`,
-      tabs,
+      tabs: tabs.length,
+      sample: firstUrl || '',
     }
   })
   const columns: DataTableColumn[] = [
@@ -278,6 +281,7 @@ function tabGroupsMarkdownBody(r: ExecutionResult): MessageBody {
     { key: 'title', title: '标题', ellipsis: 32 },
     { key: 'tabs', title: '标签数', width: 70 },
     { key: 'color', title: '颜色', width: 70 },
+    { key: 'sample', title: '示例 URL', ellipsis: 28 },
   ]
   return dataTableBody({
     title: `当前窗口标签分组（${rows.length}）`,
@@ -290,11 +294,12 @@ function tabGroupsMarkdownBody(r: ExecutionResult): MessageBody {
 /**
  * /bookmarks 观察命令反馈：DataTable 表格
  *  - 数据来自 SW observeBookmarks 的 nodes[]（id / title / type / url / path / childCount）
- *  - 文件夹 / 书签用 type 列区分
+ *  - 文件夹 / 书签用 type 列区分；id 列让用户/AI 对齐可见节点 id（移动/删除时需要）
  */
 function bookmarksMarkdownBody(r: ExecutionResult): MessageBody {
   const nodes = ((r as Record<string, unknown>).nodes ?? []) as Array<Record<string, unknown>>
   const rows = nodes.map((n) => ({
+    id: n.id,
     type: n.type,
     title: n.title || '',
     url: n.url || '',
@@ -302,6 +307,7 @@ function bookmarksMarkdownBody(r: ExecutionResult): MessageBody {
     childCount: n.childCount || 0,
   }))
   const columns: DataTableColumn[] = [
+    { key: 'id', title: 'ID', width: 64 },
     {
       key: 'type',
       title: '类型',
@@ -379,6 +385,46 @@ export function tabsListMarkdownBody(r: ExecutionResult): MessageBody {
 }
 
 /**
+ * /downloads-search 命令反馈：DataTable 表格
+ *  - 数据来自 SW searchDownloads 的 downloads[]（id/filename/url/state/totalBytes/startTime）
+ *  - state 做中文映射，totalBytes 转 KB/MB 可读单位
+ */
+function downloadsMarkdownBody(r: ExecutionResult): MessageBody {
+  const downloads = ((r as Record<string, unknown>).downloads ?? []) as Array<
+    Record<string, unknown>
+  >
+  const columns: DataTableColumn[] = [
+    { key: 'filename', title: '文件名', ellipsis: 40 },
+    { key: 'state', title: '状态', width: 90, format: formatDownloadState },
+    { key: 'totalBytes', title: '大小', width: 80, format: formatDownloadBytes },
+    { key: 'url', title: '来源', ellipsis: 36 },
+  ]
+  return dataTableBody({
+    title: `下载记录（${downloads.length}）`,
+    columns,
+    rows: downloads,
+    empty: '没有匹配的下载记录',
+  })
+}
+
+/** 下载状态中文映射 */
+function formatDownloadState(row: Record<string, unknown>): string {
+  const s = String(row.state || '')
+  if (s === 'in_progress') return '进行中'
+  if (s === 'complete') return '已完成'
+  if (s === 'interrupted') return '已中断'
+  return s
+}
+
+/** 字节数转可读单位（KB/MB） */
+function formatDownloadBytes(row: Record<string, unknown>): string {
+  const bytes = Number(row.totalBytes) || 0
+  if (bytes <= 0) return '-'
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`
+}
+
+/**
  * 命令反馈工厂表
  * key = SW intent 名
  */
@@ -402,6 +448,7 @@ export const markdownFactories: Record<string, FactoryFn> = {
   bookmarks_observe_tree: bookmarksMarkdownBody,
   windows_observe: windowsMarkdownBody,
   storage_get: storageGetMarkdownBody,
+  downloads_search: downloadsMarkdownBody,
 }
 
 export function buildMarkdownBody(intent: string, result: ExecutionResult): MessageBody | null {

@@ -89,8 +89,16 @@ export class OpenAIAdapter implements AIAdapter {
           throw new Error(friendly)
         }
 
-        const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> }
-        return data.choices?.[0]?.message?.content || ''
+        const data = (await resp.json()) as {
+          choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
+        }
+        const choice = data.choices?.[0]
+        // 截断检测：finish_reason=length 表示输出超 max_tokens 被截断，
+        // 返回的 content 大概率是不完整 JSON。打日志便于排查，上层 repairJSON 会尝试截断恢复。
+        if (choice?.finish_reason === 'length') {
+          console.warn('[AI] 输出被 max_tokens 截断 (finish_reason=length)，上层将尝试精简重试')
+        }
+        return choice?.message?.content || ''
       } catch (e) {
         lastError = e instanceof Error ? e : new Error(String(e))
         // 超时或权限错误不重试

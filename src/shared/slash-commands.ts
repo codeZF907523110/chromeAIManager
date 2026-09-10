@@ -91,10 +91,10 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     slash: 'screenshot',
     intent: 'screenshot',
-    description: '截取当前活动标签的可见区域（关键词过滤可选）',
+    description: '截取页面截图：/screenshot [full|area|visible]，默认可视区域',
     aliases: ['shot', '截图'],
     hasArg: true,
-    placeholder: '标签关键词(可选)',
+    placeholder: 'full|area|visible(可选)',
   },
   {
     slash: 'new-window',
@@ -395,9 +395,25 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
     case 'sort_tabs':
       ;(slots as Record<string, string>).order = args
       break
-    case 'screenshot':
-      // screenshot 命令不需要 query 参数，传了也会忽略
+    case 'screenshot': {
+      // /screenshot [full|area|visible] 或中文 整页/选区/可视，无参数默认可视区域
+      const modeArg = args.trim().toLowerCase()
+      const modeMap: Record<string, string> = {
+        full: 'full',
+        整页: 'full',
+        全页: 'full',
+        area: 'area',
+        选区: 'area',
+        选择: 'area',
+        visible: 'visible',
+        可视: 'visible',
+        可见: 'visible',
+      }
+      if (modeArg && modeMap[modeArg]) {
+        ;(slots as Record<string, string>).mode = modeMap[modeArg]
+      }
       break
+    }
     case 'new_window':
       if (args) {
         const url = args.trim()

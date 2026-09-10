@@ -25,7 +25,11 @@
     </header>
 
     <!-- 消息列表 -->
-    <MessageList :messages="state.messageLog" @delete="deleteMessage" />
+    <MessageList
+      :messages="state.messageLog"
+      :active-loop-id="state.activeLoopId"
+      @delete="deleteMessage"
+    />
 
     <!-- 确认卡片 -->
     <ConfirmCard
@@ -73,6 +77,13 @@
             <span class="cell-desc">添加、编辑、删除 AI 模型</span>
           </div>
           <ChevronRight :size="16" class="cell-arrow" />
+        </div>
+        <div class="settings-cell">
+          <div class="cell-content">
+            <span class="cell-title">任务完成通知</span>
+            <span class="cell-desc">多步骤任务执行完成后弹窗提醒</span>
+          </div>
+          <el-switch :model-value="taskNotification" @update:model-value="setTaskNotification" />
         </div>
         <div class="settings-cell" @click="settingsPage = 'about'">
           <div class="cell-content">
@@ -225,6 +236,7 @@ const {
   state,
   handleSubmit: aiHandleSubmit,
   cleanup: aiCleanup,
+  addMessage: aiAddMessage,
   toggleSettings,
   initEngine,
   models,
@@ -238,7 +250,7 @@ const {
   deleteMessage,
 } = useAIEngine()
 
-const { themeMode, setThemeMode } = useSettings()
+const { themeMode, setThemeMode, taskNotification, setTaskNotification } = useSettings()
 
 const commandInput = commandInputValue
 const commandInputRef = ref<InstanceType<typeof import('./components/CommandInput.vue').default>>()
@@ -330,8 +342,11 @@ async function handleSubmit() {
   lastSubmittedText = '' // 清零，允许发送相同命令（非连续）
 }
 
-// 停止当前对话
+// 停止当前对话：先给用户一条 system 反馈，再中断 AI 请求并清理状态。
+// cleanup() 中断 abortController 后，进行中的 chatWithHistory 会抛 AbortError，
+// agentLoop 的 catch 分支会静默 return（不重复反馈），所以这里加一条即可。
 function handleStop() {
+  aiAddMessage('system', '已停止当前任务')
   aiCleanup()
 }
 

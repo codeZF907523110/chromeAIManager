@@ -71,6 +71,11 @@ import { blockRegistry } from './blocks/registry'
 const props = defineProps<{
   msg: MessageLog
   index: number
+  /**
+   * 是否禁用单条气泡的长内容折叠。
+   * TaskBlock 内嵌的 system 气泡需要传 true，避免与外层块折叠交互冲突。
+   */
+  disableFold?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -91,10 +96,14 @@ const aiEngine = useAIEngine()
 
 const isExpanded = ref(false)
 
-// 系统消息且内容长度超过阈值时，启用展开/收起
+// 系统消息且内容长度超过阈值时，启用展开/收起；disableFold 时强制隐藏
 const LONG_CONTENT_THRESHOLD = 150
 const isLongContent = computed(() => {
-  return props.msg.type === 'system' && props.msg.text.markdown.length > LONG_CONTENT_THRESHOLD
+  return (
+    !props.disableFold &&
+    props.msg.type === 'system' &&
+    props.msg.text.markdown.length > LONG_CONTENT_THRESHOLD
+  )
 })
 
 function toggleExpand() {
