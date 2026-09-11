@@ -3,19 +3,6 @@
  * 负责包装 AI 回复，注入可爱语气和后缀互动
  */
 
-const OPENERS = [
-  '喵呜~',
-  '好的呢喵~',
-  '收到啦喵！',
-  '嘿嘿，我来啦喵~',
-  '好嘞喵~',
-  '没问题喵！',
-  '嘻嘻，搞定啦喵~',
-  '啊好的喵！',
-  '来啦来啦喵~',
-  '嘿嘿好呀喵~',
-]
-
 const FOLLOW_UPS = [
   '还有什么可以帮你的吗喵？',
   '还有其他需要帮忙的吗喵？',
@@ -40,19 +27,10 @@ function pick<T>(arr: T[]): T {
 export function wrapCatReply(text: string): string {
   if (!text || text.startsWith('⚠')) return text
 
-  const opener = pick(OPENERS)
   const followUp = pick(FOLLOW_UPS)
   const emoji = pick(CLOSING_EMOJIS)
 
-  // 如果 text 本身已经以 opener 开头，不重复添加
-  const hasOpener = OPENERS.some((o) => text.startsWith(o))
-
-  if (hasOpener) {
-    // 已经有 opener，只加结尾
-    return text + ' ' + followUp + ' ' + emoji
-  }
-
-  return `${opener} ${text} ${followUp} ${emoji}`
+  return `${text} ${followUp} ${emoji}`
 }
 
 /**

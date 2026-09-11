@@ -14,14 +14,6 @@
 
 <template>
   <div class="message-item" :class="{ 'message-item-user': msg.type === 'user' }">
-    <button
-      v-if="msg.type === 'user'"
-      class="delete-btn"
-      title="删除此条消息"
-      @click="handleDelete"
-    >
-      <el-icon :size="14"><Delete /></el-icon>
-    </button>
     <div class="bubble" :class="`bubble-${msg.type}`">
       <div class="bubble-content">
         <template v-if="msg.type === 'system' && isLongContent">
@@ -55,13 +47,33 @@
         </div>
       </div>
     </div>
+    <div class="operation-btns">
+      <el-icon
+        v-if="msg.type === 'user'"
+        class="icon-btn"
+        :size="16"
+        title="复制此条消息"
+        @click="handleCopy"
+      >
+        <CopyDocument />
+      </el-icon>
+      <el-icon
+        v-if="msg.type === 'user'"
+        class="icon-btn"
+        :size="16"
+        title="删除此条消息"
+        @click="handleDelete"
+      >
+        <Delete />
+      </el-icon>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, watch, computed, onBeforeUnmount, nextTick, createApp, type App as VueApp } from 'vue'
-import { ElMessageBox, ElIcon } from 'element-plus'
-import { Delete } from '@element-plus/icons-vue'
+import { ElIcon, ElMessage, ElMessageBox } from 'element-plus'
+import { DeleteFilled, CopyDocument } from '@element-plus/icons-vue'
 import { ChevronDown, ChevronUp } from 'lucide-vue-next'
 import type { MessageLog } from '../types'
 import { renderMarkdown } from '../composables/useMarkdown'
@@ -120,6 +132,32 @@ async function handleDelete() {
     emit('delete', props.index)
   } catch {
     // 用户取消
+  }
+}
+
+/**
+ * 复制用户消息原文到剪贴板。复制失败时给出轻量提示，不弹错误框。
+ */
+async function handleCopy(): Promise<void> {
+  const text = props.msg.text.markdown
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // fallback：旧浏览器/非安全上下文
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    ElMessage.success('已复制')
+  } catch (e) {
+    ElMessage.warning('复制失败，请手动复制')
+    console.warn('[MessageBubble] 复制消息失败:', e)
   }
 }
 
@@ -230,7 +268,8 @@ onBeforeUnmount(() => {
 }
 
 .message-item-user {
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .bubble {
@@ -315,37 +354,55 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-/* 用户消息样式 */
+/* 用户消息样式 - 紫蓝色气泡，与 AI/system 区分 */
 .bubble-user {
-  background: var(--app-bg-card);
-  border: 1px solid var(--app-border);
-  color: var(--app-text-primary);
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  color: #ffffff;
   border-bottom-right-radius: 4px;
 }
 
-.delete-btn {
+.bubble-user :deep(strong) {
+  color: #ffffff;
+}
+
+.bubble-user :deep(em) {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.operation-btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.message-item:hover .operation-btns {
+  opacity: 1;
+}
+
+.icon-btn {
   flex-shrink: 0;
-  background: var(--app-bg-card);
-  border: 1px solid var(--app-border);
-  border-radius: 50%;
+  background: transparent;
   cursor: pointer;
-  padding: 4px;
+  padding: 6px;
   color: var(--app-text-secondary);
   transition:
     color 0.2s,
-    background 0.2s,
-    opacity 0.2s;
+    background 0.2s;
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
 }
 
-.delete-btn:hover {
-  color: var(--app-error);
-  background: rgba(255, 100, 100, 0.1);
+.icon-btn:hover {
+  color: var(--app-text-primary);
+  background: rgba(0, 0, 0, 0.08);
 }
 
 /* AI 聊天消息样式 */

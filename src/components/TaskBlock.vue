@@ -63,7 +63,7 @@ const lastPreview = computed(() => {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.02);
   border-left: 2px solid var(--app-text-secondary);
-  overflow: hidden;
+  /* overflow: hidden; 这儿不能加overflow: hidden，样式会有问题，必须去掉 */
 }
 
 .task-block__header {
