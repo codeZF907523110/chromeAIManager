@@ -12,7 +12,6 @@ const STORAGE_KEYS = {
   ACTIVE_MODEL_ID: 'active_model_id',
   THEME_MODE: 'theme_mode',
   ACCENT_COLOR: 'accent_color',
-  TASK_NOTIFICATION: 'task_notification',
 }
 
 // 单例状态
@@ -20,8 +19,6 @@ const modelsState = ref<AIModel[]>([])
 const activeModelIdState = ref<string>('')
 const themeModeState = ref<'light' | 'dark'>('dark')
 const accentColorState = ref('#3b82f6')
-// 任务完成通知开关：默认开启，用户可在设置里关闭
-const taskNotificationState = ref(true)
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2)
@@ -50,19 +47,11 @@ export function useSettings() {
     const result = (await chrome.storage.local.get([
       STORAGE_KEYS.THEME_MODE,
       STORAGE_KEYS.ACCENT_COLOR,
-      STORAGE_KEYS.TASK_NOTIFICATION,
-    ])) as Record<string, string | boolean | undefined>
+    ])) as Record<string, string | undefined>
     themeModeState.value = (result[STORAGE_KEYS.THEME_MODE] || 'dark') as 'light' | 'dark'
     accentColorState.value = (result[STORAGE_KEYS.ACCENT_COLOR] as string) || '#3b82f6'
-    // 通知开关默认 true（存储里无值时开启）
-    taskNotificationState.value = result[STORAGE_KEYS.TASK_NOTIFICATION] !== false
     // 立即应用
     applyThemeToDOM(themeModeState.value, accentColorState.value)
-  }
-
-  async function setTaskNotification(enabled: boolean): Promise<void> {
-    taskNotificationState.value = enabled
-    await chrome.storage.local.set({ [STORAGE_KEYS.TASK_NOTIFICATION]: enabled })
   }
 
   async function setThemeMode(mode: 'light' | 'dark'): Promise<void> {
@@ -193,8 +182,5 @@ export function useSettings() {
     setThemeMode,
     setAccentColor,
     applyThemeToDOM,
-    // 通知
-    taskNotification: readonly(taskNotificationState),
-    setTaskNotification,
   }
 }

@@ -33,7 +33,6 @@ import { repairJSON, isTruncated } from '../shared/json-repair'
 import { sanitizeThought } from '../shared/thought-summary'
 import { wrapCatReply } from '../shared/personality'
 import { buildMarkdownBody } from '../shared/block-renderers'
-import { notifyTaskDone } from '../shared/notifications'
 import { useSettings } from './useSettings'
 import { createRecordingExecutor } from '../recording/executor'
 
@@ -356,11 +355,6 @@ export function useAIEngine() {
         if (json.action === 'done') {
           const replyBody = resolveAIReply(json, '操作完成')
           emitAIChat(replyBody, true)
-          // 任务完成通知：仅当执行过工具（多步任务）且用户开启通知开关时弹出。
-          // 纯对话/首轮 done（stepCount === 0，未执行任何工具）不通知，避免闲聊打扰。
-          if (stepCount > 0 && settingsComposable.taskNotification.value) {
-            notifyTaskDone(userText, replyBody.markdown)
-          }
           return
         }
 
