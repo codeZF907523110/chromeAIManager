@@ -236,10 +236,21 @@ export function useAIEngine() {
             /"action"\s*:\s*"(browser_|tabs_|bookmarks_|history_|windows_|storage_|cookies_|permissions_|extensions_|theme_|font_|downloads_|sessions_|top_sites_|task_plan|navigate|screenshot|batch|scan|exec_plan|askUserResponse|done|exec_tool|execute|zoom)"/.test(
               lastAssistantMsg.content
             )
+          const chatStart = Date.now()
+          console.log('[AI-debug] useAIEngine.chatWithHistory start', {
+            step: stepCount + 1,
+            isToolCall,
+            messagesCount: messages.length,
+          })
           raw = await aiEngine.chatWithHistory(messages, {
             temperature: isToolCall ? 0.1 : 1.2,
             maxTokens: 4096,
             signal: abortController?.signal,
+          })
+          console.log('[AI-debug] useAIEngine.chatWithHistory returned', {
+            step: stepCount + 1,
+            elapsedMs: Date.now() - chatStart,
+            rawLen: raw?.length ?? 0,
           })
           // AI 响应已返回，再次检查是否被中途停止（网络请求发出后无法取消，但返回后可以中断处理）
           if (activeLoopId.value !== loopId) {
@@ -251,6 +262,12 @@ export function useAIEngine() {
           console.log('[AI Commander] Raw response:', raw?.slice(0, 500))
           console.log('[AI Commander] Raw response type:', typeof raw, 'length:', raw?.length)
         } catch (e: unknown) {
+          console.log('[AI-debug] useAIEngine.chatWithHistory THREW', {
+            step: stepCount + 1,
+            elapsedMs: Date.now() - chatStart,
+            errorType: e instanceof Error ? e.constructor.name : typeof e,
+            errorMessage: e instanceof Error ? e.message : String(e),
+          })
           // 停止时可能抛出 AbortError 或其他中断异常，静默忽略
           if (activeLoopId.value !== loopId) {
             console.log('[AI Commander] Agent loop stopped during AI call (exception path)')
