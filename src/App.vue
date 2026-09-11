@@ -78,13 +78,6 @@
           </div>
           <ChevronRight :size="16" class="cell-arrow" />
         </div>
-        <div class="settings-cell">
-          <div class="cell-content">
-            <span class="cell-title">任务完成通知</span>
-            <span class="cell-desc">多步骤任务执行完成后弹窗提醒</span>
-          </div>
-          <el-switch :model-value="taskNotification" @update:model-value="setTaskNotification" />
-        </div>
         <div class="settings-cell" @click="settingsPage = 'about'">
           <div class="cell-content">
             <span class="cell-title">关于</span>
@@ -250,7 +243,7 @@ const {
   deleteMessage,
 } = useAIEngine()
 
-const { themeMode, setThemeMode, taskNotification, setTaskNotification } = useSettings()
+const { themeMode, setThemeMode } = useSettings()
 
 const commandInput = commandInputValue
 const commandInputRef = ref<InstanceType<typeof import('./components/CommandInput.vue').default>>()
