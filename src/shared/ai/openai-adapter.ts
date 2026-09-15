@@ -72,10 +72,7 @@ export class OpenAIAdapter implements AIAdapter {
         }
         options.signal.addEventListener('abort', onAbort, { once: true })
       }
-      const timer = setTimeout(
-        () => controller.abort(new Error('请求超时')),
-        timeout
-      )
+      const timer = setTimeout(() => controller.abort(new Error('请求超时')), timeout)
 
       try {
         // 根据 mode 决定默认 temperature：任务执行严格（0.1），纯聊天宽松（1.2）

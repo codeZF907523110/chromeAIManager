@@ -13,7 +13,13 @@
 -->
 
 <template>
-  <div class="message-item" :class="{ 'message-item-user': msg.type === 'user' }">
+  <div
+    class="message-item"
+    :class="{
+      'message-item-user': msg.type === 'user',
+      'message-item-ai-chat': msg.type === 'ai-chat',
+    }"
+  >
     <div class="bubble" :class="`bubble-${msg.type}`">
       <div class="bubble-content">
         <template v-if="msg.type === 'system' && isLongContent">
@@ -49,7 +55,7 @@
     </div>
     <div class="operation-btns">
       <el-icon
-        v-if="msg.type === 'user'"
+        v-if="msg.type === 'user' || msg.type === 'ai-chat'"
         class="icon-btn"
         :size="16"
         title="复制此条消息"
@@ -73,12 +79,13 @@
 <script setup lang="ts">
 import { ref, watch, computed, onBeforeUnmount, nextTick, createApp, type App as VueApp } from 'vue'
 import { ElIcon, ElMessage, ElMessageBox } from 'element-plus'
-import { DeleteFilled, CopyDocument } from '@element-plus/icons-vue'
+import { CopyDocument } from '@element-plus/icons-vue'
 import { ChevronDown, ChevronUp } from 'lucide-vue-next'
 import type { MessageLog } from '../types'
 import { renderMarkdown } from '../composables/useMarkdown'
 import { useAIEngine } from '../composables/useAIEngine'
 import { blockRegistry } from './blocks/registry'
+import { enhanceCodeBlocks } from './blocks/CodeBlockEnhancer'
 
 const props = defineProps<{
   msg: MessageLog
@@ -218,6 +225,9 @@ function mountEmbeddedComponents() {
     app.mount(ph)
     mountedApps.set(ph, app)
   }
+
+  // 代码块复制按钮：纯 DOM 增强，放在嵌入组件挂载之后
+  enhanceCodeBlocks(contentEl.value)
 }
 
 /**
@@ -270,6 +280,12 @@ onBeforeUnmount(() => {
 .message-item-user {
   flex-direction: column;
   align-items: flex-end;
+}
+
+/* AI 主动回复（ai-chat）：操作按钮组左对齐，与 user 的右对齐对称 */
+.message-item-ai-chat {
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .bubble {
@@ -360,6 +376,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(139, 92, 246, 0.4);
   color: #ffffff;
   border-bottom-right-radius: 4px;
+  margin-top: 20px;
 }
 
 .bubble-user :deep(strong) {
@@ -482,26 +499,46 @@ onBeforeUnmount(() => {
   margin: 4px 0;
 }
 
+/* 代码块：hljs 主题提供 token 颜色；这里只控制容器壳 */
 .bubble :deep(pre) {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--hljs-bg);
   border: 1px solid var(--app-border);
-  border-radius: 6px;
-  padding: 12px;
+  border-radius: 8px;
+  padding: 12px 14px;
   margin: 8px 0;
   overflow-x: auto;
+  position: relative;
+  line-height: 1.5;
 }
 
+.bubble :deep(pre)::-webkit-scrollbar {
+  height: 8px;
+}
+
+.bubble :deep(pre)::-webkit-scrollbar-thumb {
+  background: rgba(127, 127, 127, 0.35);
+  border-radius: 4px;
+}
+
+.bubble :deep(pre)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 行内 code（不在 pre 内的反引号片段） */
 .bubble :deep(code) {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 13px;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 2px 6px;
+  background: rgba(127, 127, 127, 0.15);
+  padding: 1px 6px;
   border-radius: 4px;
+  color: var(--app-text-primary);
 }
 
 .bubble :deep(pre code) {
   background: none;
   padding: 0;
+  font-size: 13px;
+  color: inherit;
 }
 
 .bubble :deep(blockquote) {

@@ -8,7 +8,7 @@
  * 作为一个 block。非 task system 消息（ai / user / 块外独立 system）作为 bubble
  * 独立渲染。
  *
- * 默认展开；任务结束（activeLoopId: non-null → null）时把最近一个块自动收起。
+ * 默认收起；任务进行中新增 task block 时自动展开，任务结束（activeLoopId → null）后自动收起。
  */
 
 import { computed, reactive, watch, type ComputedRef } from 'vue'
@@ -54,7 +54,7 @@ export function useTaskBlocks(
   messagesRef: ComputedRef<readonly MessageLog[]>,
   activeLoopIdRef: ComputedRef<string | null | undefined>
 ): UseTaskBlocksReturn {
-  /** 块展开状态表：默认展开（true） */
+  /** 块展开状态表：默认收起（false） */
   const expandedMap = reactive<Record<string, boolean>>({})
 
   /**
@@ -92,7 +92,7 @@ export function useTaskBlocks(
         blockId,
         messages: blockMsgs,
         indices: blockIdx,
-        expanded: expandedMap[blockId] ?? true,
+        expanded: expandedMap[blockId] ?? false,
       })
       i = j
     }
@@ -100,10 +100,42 @@ export function useTaskBlocks(
   })
 
   /**
-   * 任务结束（activeLoopId: non-null → null）时，把刚刚结束的块自动收起。
+   * 消息列表增长时，如果有新 task block 出现且当前有活动任务 → 自动展开。
    *
-   * 用闭包变量 prevLoopId 记录上一次的值，watch 触发时对比是否发生了
-   * 「非空 → 空」转变（手动 stop / 正常完成 / 超时都属于此类）。
+   * 为什么不用 watch(activeLoopId) 处理「任务开始」？
+   *   useAIEngine 里是先 activeLoopId = loopId、再 addMessage('system', '思考中...')。
+   *   watch(activeLoopId) 触发时，'思考中...' 还没进 messages，新块不在 renderItems 里，
+   *   上一个版本的「watch activeLoopId 拿最后一个块展开」会落空。
+   *   所以这里改成盯消息增长：消息一进、新块一形成、并且当前 activeLoopId 非空 → 展开。
+   *
+   * 只在「这个 blockId 还没人设过状态」(undefined) 时才默认展开；
+   * 用户手动 toggle 过的（包括展开后自己收起的）保持原样，不被覆盖。
+   */
+  let prevMsgLen = messagesRef.value.length
+  watch(messagesRef, () => {
+    const currLen = messagesRef.value.length
+    if (currLen <= prevMsgLen) {
+      prevMsgLen = currLen
+      return
+    }
+    prevMsgLen = currLen
+    if (activeLoopIdRef.value == null) return
+
+    const blocks = renderItems.value.filter(
+      (r): r is Extract<RenderItem, { kind: 'block' }> => r.kind === 'block'
+    )
+    const last = blocks[blocks.length - 1]
+    if (!last) return
+    if (expandedMap[last.blockId] === undefined) {
+      expandedMap[last.blockId] = true
+    }
+  })
+
+  /**
+   * 任务结束（activeLoopId: 非空 → null）时收起最后一个块。
+   *
+   * 「任务开始」一侧交由上面的 messagesRef watcher 处理。
+   * 这里只看「非空 → null」这一个边界，避免误触。
    */
   let prevLoopId: string | null | undefined = activeLoopIdRef.value
   watch(activeLoopIdRef, (curr) => {
@@ -125,7 +157,7 @@ export function useTaskBlocks(
    * @param blockId TaskBlock 的唯一 ID
    */
   function toggleExpanded(blockId: string): void {
-    expandedMap[blockId] = !(expandedMap[blockId] ?? true)
+    expandedMap[blockId] = !(expandedMap[blockId] ?? false)
   }
 
   return { renderItems, expandedMap, toggleExpanded }

@@ -1,0 +1,170 @@
+/**
+ * 代码高亮 token 配色（基于 CSS 变量驱动主题切换）
+ *
+ * 设计：
+ *   - 不引 hljs 官方主题 CSS（避免主题切换时颜色僵硬）
+ *   - token 类名遵循 hljs 规范（.hljs-keyword / .hljs-string / ...）
+ *   - 基础色用 CSS 变量定义，暗色 / 亮色各一份
+ *   - 主题切换（:root[data-theme='light']）即时生效，无需重新渲染
+ */
+
+/* ──── 暗色主题 token（默认） ──── */
+
+:root {
+  --hljs-bg: #0d1117;
+  --hljs-color: #c9d1d9;
+  --hljs-comment: #8b949e;
+  --hljs-keyword: #ff7b72;
+  --hljs-string: #a5d6ff;
+  --hljs-number: #79c0ff;
+  --hljs-title: #d2a8ff;
+  --hljs-section: #d2a8ff;
+  --hljs-name: #d2a8ff;
+  --hljs-built_in: #ffa657;
+  --hljs-type: #ffa657;
+  --hljs-variable: #ffa657;
+  --hljs-template-variable: #ffa657;
+  --hljs-attr: #a5d6ff;
+  --hljs-tag: #7ee787;
+  --hljs-symbol: #79c0ff;
+  --hljs-bullet: #f2cc60;
+  --hljs-meta: #8b949e;
+  --hljs-deletion: #ffa198;
+  --hljs-addition: #7ee787;
+  --hljs-emphasis: italic;
+  --hljs-strong: bold;
+}
+
+.bubble .hljs {
+  color: var(--hljs-color);
+  background: var(--hljs-bg);
+}
+
+.bubble .hljs-comment,
+.bubble .hljs-quote {
+  color: var(--hljs-comment);
+  font-style: italic;
+}
+
+.bubble .hljs-keyword,
+.bubble .hljs-selector-tag,
+.bubble .hljs-literal,
+.bubble .hljs-section,
+.bubble .hljs-link {
+  color: var(--hljs-keyword);
+}
+
+.bubble .hljs-string,
+.bubble .hljs-attr,
+.bubble .hljs-symbol,
+.bubble .hljs-bullet,
+.bubble .hljs-addition {
+  color: var(--hljs-string);
+}
+
+.bubble .hljs-number,
+.bubble .hljs-meta .hljs-string,
+.bubble .hljs-regexp {
+  color: var(--hljs-number);
+}
+
+.bubble .hljs-title,
+.bubble .hljs-name,
+.bubble .hljs-type,
+.bubble .hljs-attribute,
+.bubble .hljs-built_in,
+.bubble .hljs-class .hljs-title {
+  color: var(--hljs-title);
+}
+
+.bubble .hljs-variable,
+.bubble .hljs-template-variable,
+.bubble .hljs-selector-id,
+.bubble .hljs-selector-class {
+  color: var(--hljs-variable);
+}
+
+.bubble .hljs-tag {
+  color: var(--hljs-tag);
+}
+
+.bubble .hljs-meta {
+  color: var(--hljs-meta);
+}
+
+.bubble .hljs-deletion {
+  color: var(--hljs-deletion);
+}
+
+.bubble .hljs-emphasis {
+  font-style: italic;
+}
+
+.bubble .hljs-strong {
+  font-weight: bold;
+}
+
+/* ──── 代码块复制按钮 ──── */
+
+/* 预留顶部 padding：让按钮在右上角有独立空间，不挡住第一行代码 */
+.bubble pre {
+  padding-top: 36px !important;
+}
+
+.bubble .code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: rgba(127, 127, 127, 0.18);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--app-text-secondary);
+  cursor: pointer;
+  opacity: 1;
+  transition:
+    background 0.18s,
+    color 0.18s,
+    border-color 0.18s;
+}
+
+.bubble .code-copy-btn:hover {
+  background: rgba(127, 127, 127, 0.32);
+  border-color: rgba(127, 127, 127, 0.4);
+  color: var(--app-text-primary);
+}
+
+.bubble .code-copy-btn.copied {
+  color: #22c55e;
+}
+
+/* ──── 亮色主题 token ──── */
+
+:root[data-theme='light'] {
+  --hljs-bg: #f6f8fa;
+  --hljs-color: #24292e;
+  --hljs-comment: #6a737d;
+  --hljs-keyword: #d73a49;
+  --hljs-string: #032f62;
+  --hljs-number: #005cc5;
+  --hljs-title: #6f42c1;
+  --hljs-section: #6f42c1;
+  --hljs-name: #6f42c1;
+  --hljs-built_in: #e36209;
+  --hljs-type: #e36209;
+  --hljs-variable: #e36209;
+  --hljs-template-variable: #e36209;
+  --hljs-attr: #005cc5;
+  --hljs-tag: #22863a;
+  --hljs-symbol: #e36209;
+  --hljs-bullet: #735c0f;
+  --hljs-meta: #6a737d;
+  --hljs-deletion: #b31d28;
+  --hljs-addition: #22863a;
+}
