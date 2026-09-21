@@ -367,7 +367,12 @@ async function observeTabs(payload: Record<string, unknown>): Promise<ExecutionR
   // 不支持 maxResults（应用层截断）和 discarded（Tab 属性，非 query 条件）。
   // 把这两类放到结果上处理，避免传给 Chrome API 触发 "Unexpected property" 报错。
   const query: chrome.tabs.QueryOptions = {} as chrome.tabs.QueryOptions
-  if (payload.currentWindow) query.currentWindow = true
+  if (payload.currentWindow) {
+    // MV3 SW 上下文下 `currentWindow: true` 经常返回 0 个标签（因为 SW 不属于
+    // 任何普通窗口，sidepanel 窗口也没有普通标签页）。fallback 到最近聚焦的
+    // 窗口，确保用户能看到浏览器主窗口的标签列表。
+    query.windowId = await getFallbackWindowId()
+  }
   if (payload.pinned !== undefined) query.pinned = payload.pinned as boolean
   if (payload.muted !== undefined) query.muted = payload.muted as boolean
 
@@ -415,7 +420,8 @@ async function createTab(payload: Record<string, unknown>): Promise<ExecutionRes
 async function updateTab(payload: Record<string, unknown>): Promise<ExecutionResult> {
   let tabId = payload.tabId as number | undefined
   if (!tabId) {
-    const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    const [active] = await chrome.tabs.query({ active: true, windowId })
     if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
     tabId = active.id
   }
@@ -440,7 +446,8 @@ async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResu
 
   if (!tabIds?.length) {
     // 没有指定 tabIds，移动当前活动标签
-    const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    const [active] = await chrome.tabs.query({ active: true, windowId })
     if (!active?.id)
       return {
         success: false,
@@ -486,7 +493,8 @@ async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResu
 async function removeTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tabIds = payload.tabIds as number[] | undefined
   if (!tabIds?.length) {
-    const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    const [active] = await chrome.tabs.query({ active: true, windowId })
     if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
     await chrome.tabs.remove(active.id)
     return { success: true, removed: 1 }
@@ -863,7 +871,8 @@ async function openBookmark(payload: Record<string, unknown>): Promise<Execution
   if (!payload.nodeId) {
     return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId' }
   }
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const windowId = await getFallbackWindowId()
+  const [tab] = await chrome.tabs.query({ active: true, windowId })
   if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
   const node = await chrome.bookmarks.get(payload.nodeId as string)
   if (node[0]?.url) {
@@ -954,7 +963,8 @@ async function addCurrentPageBookmark(payload: Record<string, unknown>): Promise
     targetTitle = title || url
   } else {
     // 未指定 url：使用当前活动标签
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab?.url || tab.url.startsWith('chrome://')) {
       return { success: false, code: 'PAGE_BLOCKED', message: '无法为特殊页面添加书签' }
     }
@@ -1096,7 +1106,8 @@ async function navigateTo(payload: Record<string, unknown>): Promise<ExecutionRe
   } catch {
     return { success: false, code: 'INVALID_PARAMS', message: 'URL 格式无效' }
   }
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const windowId = await getFallbackWindowId()
+  const [tab] = await chrome.tabs.query({ active: true, windowId })
   if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
   if (payload.newTab) {
     await chrome.tabs.create({ url })
@@ -1134,7 +1145,8 @@ async function takeScreenshot(payload: Record<string, unknown>): Promise<Executi
     }
   }
   if (!targetTab) {
-    ;[targetTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    ;[targetTab] = await chrome.tabs.query({ active: true, windowId })
   }
   if (!targetTab?.windowId)
     return { success: false, code: 'ELE_NOT_FOUND', message: '未找到活动标签' }
@@ -1162,7 +1174,8 @@ async function forwardScreenshotToContent(
 ): Promise<ExecutionResult> {
   let targetTabId = tabId
   if (!targetTabId) {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    const [tab] = await chrome.tabs.query({ active: true, windowId })
     targetTabId = tab?.id
   }
   if (!targetTabId) {
@@ -1248,7 +1261,8 @@ async function injectContentScript(tabId: number): Promise<boolean> {
 // ──── PAGE 实现 ────
 
 async function setZoom(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const windowId = await getFallbackWindowId()
+  const [tab] = await chrome.tabs.query({ active: true, windowId })
   if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
   const currentZoom = await chrome.tabs.getZoom(tab.id)
   const direction = payload.direction as string
@@ -1333,7 +1347,8 @@ async function observeCookies(payload: Record<string, unknown>): Promise<Executi
   let domain = (payload.domain as string | undefined)?.trim()
   if (!domain) {
     // /cookies 无参 → 取当前活动 tab 的 url → 域名
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab?.url) {
       return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
     }
@@ -1433,7 +1448,8 @@ async function removeCookies(payload: Record<string, unknown>): Promise<Executio
   // 兜底：按域名全删（无 selectedCookies 时）
   let domain = (payload.domain as string | undefined)?.trim()
   if (!domain) {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab?.url) {
       return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
     }
@@ -1572,7 +1588,8 @@ interface ContentSettingResult {
 async function observePermissions(payload: Record<string, unknown>): Promise<ExecutionResult> {
   let domain = (payload.domain as string | undefined)?.trim()
   if (!domain) {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const windowId = await getFallbackWindowId()
+    const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab?.url) {
       return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
     }
@@ -1945,10 +1962,40 @@ function mapContentScriptResponse(response: unknown): ExecutionResult {
 
 async function getCurrentTab(): Promise<{ tabId: number } | null> {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    // MV3 SW 上下文下 `chrome.tabs.query({ active: true, currentWindow: true })`
+    // 经常返回 undefined（SW 不属于任何普通窗口，sidepanel 窗口也没有标签）。
+    // 用 getFallbackWindowId() 选最近聚焦的普通窗口，再查活动 tab。
+    const windowId = await getFallbackWindowId()
+    const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab || tab.id === undefined) return null
     return { tabId: tab.id }
   } catch {
     return null
   }
+}
+
+/**
+ * 选一个合适的窗口 ID 用来查标签。
+ *
+ * 策略：
+ *   1) 优先用 chrome.windows.getLastFocused() 拿最近聚焦的窗口（这是普通浏览器窗口，
+ *      含标签页），跳过 type === 'panel'（sidepanel 窗口没有标签）。
+ *   2) 如果没有最近聚焦窗口，回退到任意一个非 panel 窗口。
+ *   3) 都拿不到则返回 chrome.windows.WINDOW_ID_NONE（-1），等价于"所有窗口"。
+ */
+async function getFallbackWindowId(): Promise<number> {
+  try {
+    const last = await chrome.windows.getLastFocused()
+    if (last && last.id !== undefined && last.type !== 'panel') return last.id
+  } catch {
+    /* ignore */
+  }
+  try {
+    const all = await chrome.windows.getAll({ windowTypes: ['normal', 'popup'] })
+    const fallback = all.find((w) => w.id !== undefined)
+    if (fallback?.id !== undefined) return fallback.id
+  } catch {
+    /* ignore */
+  }
+  return -1
 }

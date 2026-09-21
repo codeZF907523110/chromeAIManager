@@ -8,12 +8,18 @@
  * 作为一个 block。非 task system 消息（ai / user / 块外独立 system）作为 bubble
  * 独立渲染。
  *
- * 默认收起；任务进行中新增 task block 时自动展开，任务结束（activeLoopId → null）后自动收起。
+ * 展开/收起规则：
+ *   - 默认全部收起。
+ *   - 任务进行中（activeLoopId 非空）：最后一个块自动展开。
+ *   - 用户手动 toggle 过的块状态**持久化到 IndexedDB**，跨任务、跨重启保留。
+ *   - 任务结束（activeLoopId → null）：所有块按持久化状态收起/展开
+ *     （未手动 toggle 过的块统一收起）。
  */
 
-import { computed, reactive, watch, type ComputedRef } from 'vue'
+import { computed, reactive, type ComputedRef } from 'vue'
 import type { MessageLog } from '../types'
 import { isTaskSystemMessage } from '../utils/taskBlockPatterns'
+import { blockExpandedStore } from '../shared/block-expanded-store'
 
 /**
  * 渲染项：要么是单条 bubble，要么是一个 TaskBlock。
@@ -37,8 +43,6 @@ export type RenderItem =
 export interface UseTaskBlocksReturn {
   /** 渲染项列表（按 messageLog 顺序） */
   renderItems: ComputedRef<RenderItem[]>
-  /** 块展开状态表（blockId → expanded），运行时状态，不持久化 */
-  expandedMap: Record<string, boolean>
   /** 切换块的展开/收起 */
   toggleExpanded: (blockId: string) => void
 }
@@ -46,23 +50,42 @@ export interface UseTaskBlocksReturn {
 /**
  * 把 messageLog 切成 bubble / block 列表，并维护块的展开状态。
  *
+ * 展开状态在 useTaskBlocks 组件实例的整个生命周期内有效；同时持久化到 IndexedDB，
+ * 跨任务、跨重启都能记住用户的 toggle 选择。
+ *
  * @param messagesRef MessageLog 列表（只读）
  * @param activeLoopIdRef 当前活动任务 ID（null/undefined 表示无活动任务）
- * @returns 渲染项 + 展开状态 + 切换函数
+ * @returns 渲染项 + 切换函数
  */
 export function useTaskBlocks(
   messagesRef: ComputedRef<readonly MessageLog[]>,
   activeLoopIdRef: ComputedRef<string | null | undefined>
 ): UseTaskBlocksReturn {
-  /** 块展开状态表：默认收起（false） */
-  const expandedMap = reactive<Record<string, boolean>>({})
+  /**
+   * 用户手动 toggle 过的块状态：blockId → expanded。
+   * 初始化时从 IndexedDB 异步加载；加载完前视为空（默认收起）。
+   */
+  const manualExpanded = reactive<Record<string, boolean>>({})
+
+  // 启动时加载持久化的展开状态
+  void blockExpandedStore.loadAll().then((persisted) => {
+    for (const [id, val] of Object.entries(persisted)) {
+      manualExpanded[id] = val
+    }
+  })
 
   /**
    * 扫描 messageLog，把连续的 task system 段合并成 block，其余作为 bubble。
+   *
+   * 最后一个块的 expanded 取决于：
+   *   - 用户手动 toggle 过（manualExpanded 中有记录）→ 用持久化的值
+   *   - 否则：当前有活动任务（activeLoopId 非空）→ 展开
+   *   - 否则：收起
    */
   const renderItems = computed<RenderItem[]>(() => {
     const list = messagesRef.value
     const out: RenderItem[] = []
+    const blocks: Extract<RenderItem, { kind: 'block' }>[] = []
     let i = 0
     while (i < list.length) {
       const msg = list[i]
@@ -87,78 +110,42 @@ export function useTaskBlocks(
         j++
       }
       const blockId = `block-${start}-${blockMsgs.length}`
-      out.push({
+      // 非最后一个块：默认收起（除非用户手动 toggle 过）
+      const manual = manualExpanded[blockId]
+      const expanded = manual !== undefined ? manual : false
+      const block: Extract<RenderItem, { kind: 'block' }> = {
         kind: 'block',
         blockId,
         messages: blockMsgs,
         indices: blockIdx,
-        expanded: expandedMap[blockId] ?? false,
-      })
+        expanded,
+      }
+      blocks.push(block)
+      out.push(block)
       i = j
+    }
+    // 最后一个块的自动展开逻辑：若未手动 toggle 过，且当前有活动任务 → 展开
+    if (blocks.length > 0) {
+      const lastBlock = blocks[blocks.length - 1]
+      if (manualExpanded[lastBlock.blockId] === undefined && activeLoopIdRef.value) {
+        lastBlock.expanded = true
+      }
     }
     return out
   })
 
   /**
-   * 消息列表增长时，如果有新 task block 出现且当前有活动任务 → 自动展开。
-   *
-   * 为什么不用 watch(activeLoopId) 处理「任务开始」？
-   *   useAIEngine 里是先 activeLoopId = loopId、再 addMessage('system', '思考中...')。
-   *   watch(activeLoopId) 触发时，'思考中...' 还没进 messages，新块不在 renderItems 里，
-   *   上一个版本的「watch activeLoopId 拿最后一个块展开」会落空。
-   *   所以这里改成盯消息增长：消息一进、新块一形成、并且当前 activeLoopId 非空 → 展开。
-   *
-   * 只在「这个 blockId 还没人设过状态」(undefined) 时才默认展开；
-   * 用户手动 toggle 过的（包括展开后自己收起的）保持原样，不被覆盖。
-   */
-  let prevMsgLen = messagesRef.value.length
-  watch(messagesRef, () => {
-    const currLen = messagesRef.value.length
-    if (currLen <= prevMsgLen) {
-      prevMsgLen = currLen
-      return
-    }
-    prevMsgLen = currLen
-    if (activeLoopIdRef.value == null) return
-
-    const blocks = renderItems.value.filter(
-      (r): r is Extract<RenderItem, { kind: 'block' }> => r.kind === 'block'
-    )
-    const last = blocks[blocks.length - 1]
-    if (!last) return
-    if (expandedMap[last.blockId] === undefined) {
-      expandedMap[last.blockId] = true
-    }
-  })
-
-  /**
-   * 任务结束（activeLoopId: 非空 → null）时收起最后一个块。
-   *
-   * 「任务开始」一侧交由上面的 messagesRef watcher 处理。
-   * 这里只看「非空 → null」这一个边界，避免误触。
-   */
-  let prevLoopId: string | null | undefined = activeLoopIdRef.value
-  watch(activeLoopIdRef, (curr) => {
-    if (prevLoopId != null && curr == null) {
-      const blocks = renderItems.value.filter(
-        (r): r is Extract<RenderItem, { kind: 'block' }> => r.kind === 'block'
-      )
-      const last = blocks[blocks.length - 1]
-      if (last) {
-        expandedMap[last.blockId] = false
-      }
-    }
-    prevLoopId = curr
-  })
-
-  /**
-   * 切换块的展开/收起状态。
+   * 切换块的展开/收起状态。记录到 manualExpanded 并持久化到 IndexedDB。
    *
    * @param blockId TaskBlock 的唯一 ID
    */
   function toggleExpanded(blockId: string): void {
-    expandedMap[blockId] = !(expandedMap[blockId] ?? false)
+    const current = manualExpanded[blockId]
+    const baseline = current !== undefined ? current : false
+    const next = !baseline
+    manualExpanded[blockId] = next
+    blockExpandedStore.set(blockId, next)
   }
 
-  return { renderItems, expandedMap, toggleExpanded }
+  return { renderItems, toggleExpanded }
 }

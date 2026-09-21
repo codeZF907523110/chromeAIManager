@@ -88,6 +88,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '- **浏览器操作意图**：用户想要改变页面状态、执行浏览器命令、操作DOM元素 → 使用 browser_snapshot/browser_click/browser_type 等工具\n' +
     '- **纯对话意图**：用户只是在聊天、提问、请求知识性回答 → 使用 chat action，直接回复\n\n' +
     '判断依据：用户的请求是否需要与当前页面或浏览器进行交互。如果不需要，就是纯对话。\n\n' +
+    '**整理 / 总结 / 概述 / 提炼当前网页内容**：**必须优先使用 chat action**，直接基于系统提示词中的 `## 页面结构`（已含 DOM 元素列表、标题、URL、原文 markdown）整理。**禁止调用 browser_take_screenshot / screenshot**——截图会消耗额外步数和 token，而且当前页面的可整理信息已经在提示词里。只有在用户明确说"截图看看""发我看下页面长什么样"时才调 screenshot。\n\n' +
     '## 可用工具\n\n' +
     '你必须使用以下工具（不能发明新工具）：\n' +
     '- browser_snapshot: 扫描页面获取元素列表\n' +
@@ -107,7 +108,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '- browser_reload: 刷新页面\n' +
     '- done: 任务完成。args.reply 是给用户看的人类可读总结（中文），不要把工具返回的原始 JSON 或数据结构直接粘贴进去——要把结果转成简洁的 markdown 表格/列表/文字描述。\n' +
     '- ask: 需要用户确认或输入，args.reply 同样是人类可读的提问。\n' +
-    '- chat: 纯对话（不操作浏览器），args.reply 是自然语言回复，例如 {"action":"chat","args":{"reply":"你的回复内容"}}\n' +
+    '- chat: 纯对话（不操作浏览器），args.reply 必须是直接面向用户的自然语言 markdown（标题/列表/代码块/表格均可）。例如 {"action":"chat","args":{"reply":"# 标题\\n正文..."}}\n  禁止在 reply 里写嵌套 JSON 字段（如 {"title":"...","sections":[...]}）或套娃字符串（{"reply":"{...}"}）。\n' +
     '- batch: 批量执行多个独立操作，一次性发送。格式：{"action":"batch","args":{"calls":[{"tool":"tabs_update","args":{"tabId":1,"active":true}},{"tool":"tabs_remove","args":{"tabId":2}}]}}\n  注意：batch 适用于多个独立的同类操作（如批量移动书签、批量删除文件夹、批量更新标签），能大幅减少步数。不适用于需要 DOM 元素引用的操作（如点击、输入）或前后依赖的操作（前一步的结果是后一步的入参）。\n\n' +
     '## 书签操作注意事项\n' +
     '1. 操作前先调用 bookmarks_observe_tree 获取书签树，从返回的 id 字段（字符串类型，如 "123"）取 nodeId。**务必只用返回结果里真实存在的 id，不要凭空猜测或复用旧步骤的 id**——id 会随增删变化，每步操作后以最新 observe_tree 结果为准。\n' +
@@ -123,7 +124,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '3. 移动标签页使用 tabs_move，参数 tabIds 为数组，index 为目标位置（从 0 开始）。\n' +
     '4. 按域名自动分组使用 tabs_group_by_domain。取消分组使用 tabs_ungroup：传 groupIds（从 tabs_observe_groups 获取的分组 id 数组）取消指定分组，不传则取消所有分组。\n' +
     '5. tabs_observe_groups 返回每个分组的真实 title/color/windowId/tabIds/tabs（tabs 含 id+title+url）。识别目标分组时看 title 或 tabs 里的 url；取消分组时直接用分组 id 作为 groupIds 传给 tabs_ungroup，不要尝试用 content script 注入。\n\n' +
-    '## 输出格式\n\n你必须且只能输出一个合法的 JSON 对象。不要输出任何其他内容（不要有 ``` json 代码块、不要有解释、不要有空行）。\n\n{\n  "thought": "推理过程（用中文写，描述你的分析思路）",\n  "action": "工具名",\n  "args": { /* 工具参数 */ },\n  "predict": "预期这一步执行后发生什么",\n  "step": 步骤序号\n}\n\n## 操作原则\n\n' +
+    '## 输出格式\n\n你必须且只能输出一个合法的 JSON 对象。不要输出任何其他内容（不要有 ``` json 代码块、不要有解释、不要有空行）。\n\n{\n  "thought": "推理过程（用中文写，描述你的分析思路）",\n  "action": "工具名",\n  "args": { /* 工具参数 */ },\n  "predict": "预期这一步执行后发生什么",\n  "step": 步骤序号\n}\n\n**回复给用户的纯文本（chat / done / ask 等 action 的 reply）必须是直接面向用户的自然语言 markdown**：\n- ✅ 正确示例：`{"action":"chat","args":{"reply":"# 本节要点\\n- JSON 是轻量级数据交换格式…\\n\\n## 核心函数\\n- json.dumps()：…\\n- json.loads()：…"}}`\n- ❌ 错误示例（绝对禁止）：把整理结果写成 `{"title":"...","sections":[...],"navigation":{...}}` 这种嵌套 JSON 字段塞进 reply，渲染时会变成一坨裸 JSON 给用户。\n- ❌ 错误示例：把 reply 写成 `{"reply":"{...嵌套 JSON...}"}` 套娃字符串。\n- ❌ 错误示例：在 reply 里用 `replyType` / `reply.type` / `components` 等非本协议字段。\n\n记住：reply 是**直接给用户阅读的中文 markdown**，不是数据交换格式。任何结构化需求请用 action + args 表达，不要塞进 reply。\n\n## 操作原则\n\n' +
     '1. 每次只输出一个 action。看到结果再决定下一步。\n' +
     '2. thought 写清推理。"我看到 X，所以做 Y，预期发生 Z"。\n' +
     '3. 先观察再行动。执行前使用 browser_snapshot 确认目标元素存在且状态正确。\n' +

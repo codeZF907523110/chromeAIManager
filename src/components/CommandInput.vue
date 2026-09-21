@@ -64,8 +64,14 @@
             <StopCircle :size="16" />
           </button>
 
-          <!-- 发送按钮（思考中隐藏） -->
-          <button v-else class="send-btn" :disabled="!inputValue.trim()" @click="handleSend">
+          <!-- 发送按钮（思考中隐藏；扩展未初始化完时也禁用，避免初始化期间 push 的 user 消息被后续历史消息加载挤到末尾） -->
+          <button
+            v-else
+            class="send-btn"
+            :disabled="!inputValue.trim() || !isInitialized"
+            :title="isInitialized ? '' : '正在加载历史消息...'"
+            @click="handleSend"
+          >
             <ArrowUp :size="16" />
           </button>
         </div>
@@ -78,13 +84,24 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Mic, ArrowUp, StopCircle } from 'lucide-vue-next'
 import { useAIEngine } from '../composables/useAIEngine'
-import { useCommandHistory } from '../composables/useCommandHistory'
+import { useMessageHistory } from '../composables/useCommandHistory'
 import { SLASH_COMMANDS } from '../shared/slash-commands'
 import type { SlashCommand } from '../types'
 
 const props = defineProps<{
   modelValue: string
   isRunning: boolean
+  /**
+   * 消息日志：用于按上键从历史 user 消息中取上一条。
+   * 由 App.vue 从 useAIEngine().state.messageLog 透传。
+   */
+  messages: readonly import('../types').MessageLog[]
+  /**
+   * 扩展是否已完成初始化（IndexedDB 历史消息已加载）。
+   * 初始化期间禁用发送，避免 user 消息 push 到空数组后被加载完成的历史消息"挤到后面"，
+   * 造成视觉上的"乱序"。
+   */
+  isInitialized?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -100,7 +117,8 @@ defineExpose({
 })
 
 const { models, getActiveModel, selectModel } = useAIEngine()
-const { addToHistory, navigateHistory } = useCommandHistory()
+const { navigateHistory, resetHistoryNav } = useMessageHistory()
+const messagesRef = computed<readonly import('../types').MessageLog[]>(() => props.messages)
 
 const inputValue = computed({
   get: () => props.modelValue,
@@ -193,11 +211,11 @@ function handleKeydown(e: KeyboardEvent) {
     return
   }
 
-  // 选择器关闭时，上下键导航已发送过的命令（包括 /sort、/history 等斜杠命令）
+  // 选择器关闭时，上下键导航已发送过的 user 命令（包括 /sort、/history 等斜杠命令）
   if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
     e.preventDefault()
     const direction = e.key === 'ArrowUp' ? -1 : 1
-    const previous = navigateHistory(direction, inputValue.value)
+    const previous = navigateHistory(direction, inputValue.value, messagesRef)
     if (previous !== null) {
       inputValue.value = previous
       handleInput()
@@ -239,7 +257,10 @@ function selectSlashCommand(cmd: SlashCommand) {
 
 function handleSend() {
   if (!inputValue.value.trim()) return
-  addToHistory(inputValue.value)
+  // 初始化期间拒绝提交：避免 user 消息 push 到空 messageLog，
+  // 然后被异步加载的历史消息 "挤到末尾" 造成视觉顺序错乱。
+  if (!props.isInitialized) return
+  resetHistoryNav()
   emit('submit')
   inputValue.value = ''
 }
