@@ -17,6 +17,7 @@
 import type { Component } from 'vue'
 import type { MessageLog, EmbeddedComponent } from '../types'
 import { blockRegistry } from '../components/blocks/registry'
+import { openDB, promisifyRequest, STORE_MESSAGES, STORE_META } from './db'
 
 /**
  * 把 Component 对象反查为 blockRegistry 的 tagName。
@@ -33,40 +34,13 @@ function resolveTagName(component: Component): string {
   return ''
 }
 
-const DB_NAME = 'ai_commander'
-const DB_VERSION = 1
-const STORE_MESSAGES = 'messages'
-const STORE_META = 'meta'
-
 /** meta store key：消息容量上限 */
 const META_MAX_KEY = 'maxMessages'
 /** 默认消息容量上限 */
 export const DEFAULT_MAX_MESSAGES = 100
 
-let dbPromise: Promise<IDBDatabase> | null = null
-
-/**
- * 打开数据库（懒加载、单例）
- */
-function openDB(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(STORE_MESSAGES)) {
-        const store = db.createObjectStore(STORE_MESSAGES, { keyPath: 'id' })
-        store.createIndex('createdAt', 'createdAt', { unique: false })
-      }
-      if (!db.objectStoreNames.contains(STORE_META)) {
-        db.createObjectStore(STORE_META, { keyPath: 'key' })
-      }
-    }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'))
-  })
-  return dbPromise
-}
+/** IndexedDB 连接由 ./db 统一管理，避免与 block-expanded-store 出现版本竞态 */
+export { openDB, promisifyRequest }
 
 /**
  * 持久化消息记录
@@ -199,13 +173,6 @@ function toMessageBody(record: PersistedMessage): MessageLog {
 }
 
 type IDBValidResult = PersistedMessage[]
-
-function promisifyRequest<T>(req: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB request failed'))
-  })
-}
 
 async function getMaxFromDB(db: IDBDatabase): Promise<number> {
   try {
@@ -359,15 +326,7 @@ export const messageStore = {
  * 仅在测试或调试时使用：重置整个数据库（删除所有 store）
  */
 export async function _resetForTest(): Promise<void> {
-  if (dbPromise) {
-    const db = await dbPromise
-    db.close()
-    dbPromise = null
-  }
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(DB_NAME)
-    req.onsuccess = () => resolve()
-    req.onerror = () => reject(req.error ?? new Error('deleteDatabase failed'))
-    req.onblocked = () => resolve()
-  })
+  const { closeDB, resetDB } = await import('./db')
+  await closeDB()
+  await resetDB()
 }

@@ -221,6 +221,9 @@ export function useAIEngine() {
         if (Date.now() - startTime > TOTAL_TASK_TIMEOUT_MS) {
           const timeoutSec = Math.round(TOTAL_TASK_TIMEOUT_MS / 1000)
           addMessage('system', `任务执行超时（${timeoutSec} 秒），已停止。`)
+          reportUserFacingError(
+            `任务跑得有点久喵，已经超过 ${timeoutSec} 秒自动停了。要不换条简单的指令再来一次？`
+          )
           cleanup()
           return
         }
@@ -255,6 +258,7 @@ export function useAIEngine() {
           if (activeLoopId.value !== loopId) {
             console.log('[AI Commander] Agent loop stopped during AI call, aborting')
             addMessage('system', '已停止当前任务')
+            reportUserFacingError('收到你的停止信号啦喵，已经中断当前任务～')
             cleanup()
             return
           }
@@ -275,8 +279,12 @@ export function useAIEngine() {
           const msg = e instanceof Error ? e.message : String(e)
           if (msg === 'NO_AI_BACKEND') {
             addMessage('system', 'AI 服务未配置，请在设置中添加 API Key 或使用 Gemini Nano')
+            reportUserFacingError(
+              '还没配置 AI 服务喵～打开设置页添加一个模型（API Key 或 Gemini Nano）就能用啦'
+            )
           } else {
             addMessage('system', '抱歉，AI 服务暂时不可用，请稍后再试喵~')
+            reportUserFacingError('AI 服务现在有点小情绪喵～稍等一下再试一次，或者换个模型试试看？')
           }
           cleanup()
           return
@@ -285,6 +293,7 @@ export function useAIEngine() {
         if (!raw || raw.trim() === '') {
           console.error('[AI Commander] AI returned empty response!')
           addMessage('system', '抱歉，AI 没有返回任何内容，请重新输入试试喵~')
+          reportUserFacingError('我这次什么都没想出来喵～再换个说法问一次试试？')
           cleanup()
           return
         }
@@ -326,6 +335,11 @@ export function useAIEngine() {
           const truncated = isTruncated(raw)
           if (jsonRetryCount >= 2) {
             addMessage('system', '抱歉，我没有理解您的请求，能再详细说说吗喵？')
+            reportUserFacingError(
+              truncated
+                ? '我想说的有点长被截断了喵～换个简单点的问法再试试？'
+                : '没太懂你想让我做什么喵～再详细说说？'
+            )
             console.error(
               '[AI Commander] AI failed to understand (truncated:',
               truncated,
@@ -791,7 +805,7 @@ export function useAIEngine() {
         }
 
         messages.push({ role: 'assistant', content: raw })
-        const sanitized = sanitizeResult(result)
+        const sanitized = sanitizeResult(result, toolName)
         const resultContent = `执行结果(${toolName}): ${JSON.stringify(sanitized)}`
         console.log(
           '[AI Commander] Tool result:',
@@ -889,6 +903,15 @@ export function useAIEngine() {
           if (typeof result.mode === 'string') {
             lastScreenshotMode.value = result.mode as string
           }
+          // 截图任务下立即弹截图气泡（非"其他任务里误触发图表"）：
+          // 这里 showScreenshot 自成一个 ai-chat 气泡，与后续 chat/done/ask 收尾气泡互不干扰。
+          // emitAIChat 不再消费 lastScreenshot，所以截图数据只在这里出现一次。
+          void showScreenshot(
+            result.screenshot as string,
+            undefined,
+            (typeof result.mode === 'string' ? (result.mode as string) : undefined) as
+              string | undefined
+          )
         }
 
         const stepStatus = !result.error && !result.code ? '✓' : '❌'
@@ -910,6 +933,9 @@ export function useAIEngine() {
 
         if (consecutiveErrors >= MAX_CONSECUTIVE_FAILURES) {
           addMessage('system', `连续 ${consecutiveErrors} 步执行失败，已停止。`)
+          reportUserFacingError(
+            `连着 ${consecutiveErrors} 步都翻车了喵，我先停下吧～换个思路再试试？`
+          )
           cleanup()
           return
         }
@@ -925,6 +951,7 @@ export function useAIEngine() {
       )
     } catch {
       addMessage('system', `抱歉，执行过程中遇到了问题喵~`)
+      reportUserFacingError('执行到一半出了点意外喵～我再看看，你可以重新说一次指令试试')
       cleanup()
     }
   }
@@ -1136,6 +1163,7 @@ export function useAIEngine() {
         await handleSlashCommand(trimmedText)
       } catch {
         addMessage('system', '抱歉，处理命令时遇到了问题喵~')
+        reportUserFacingError('这条命令我没处理成功喵～换个写法或再试一次？')
       }
     } else {
       addMessage('user', trimmedText)
@@ -1143,6 +1171,7 @@ export function useAIEngine() {
         await handleNaturalLanguage(trimmedText)
       } catch {
         addMessage('system', '抱歉，处理您的请求时遇到了问题喵~')
+        reportUserFacingError('这条请求我没接住喵～再详细说说你的需求？')
       }
     }
   }
@@ -1233,6 +1262,9 @@ export function useAIEngine() {
       })) as ExecutionResult
     } catch (e: unknown) {
       addMessage('system', '抱歉，Service Worker 暂时无法响应喵~')
+      reportUserFacingError(
+        '后台的 Service Worker 没回应喵～可能是扩展刚被回收了，刷新一下页面再试？'
+      )
       return { success: false, code: 'SW_ERROR', message: String(e) }
     }
     await renderExecutionResult(userIntent, response, slots)
@@ -1643,10 +1675,13 @@ export function useAIEngine() {
       await messageStore.append(msg)
     } catch (e: unknown) {
       console.warn('[AI管家] 持久化消息失败:', e instanceof Error ? e.message : String(e))
-      addMessage(
-        'system',
-        `⚠ 上一条消息保存失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
-      )
+      // 不在 catch 里直接 addMessage：fire-and-forget 时机不可控，会在后续消息
+      // push 完成后再插入 system 警告 → 视觉上"乱序"（警告出现在 ai-chat 之后）。
+      // 改为：把警告入队到下一轮微任务，确保它在当前同步代码段之后的下一帧执行，
+      // 但仍然保持 push 顺序（先到先 push）—— 警告会紧跟最近的 system 步骤摘要后面，
+      // 而不是插到 ai-chat 之后。
+      const warnText = `⚠ 上一条消息保存失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
+      queueMicrotask(() => addMessage('system', warnText))
     }
   }
 
@@ -1815,7 +1850,7 @@ export function useAIEngine() {
     return null
   }
 
-  function sanitizeResult(obj: unknown): unknown {
+  function sanitizeResult(obj: unknown, toolName?: string): unknown {
     if (obj === null || obj === undefined) return obj
     if (typeof obj === 'string') {
       return obj.length > 500 ? obj.slice(0, 200) + `...[截断, 原长 ${obj.length} 字符]` : obj
@@ -1839,7 +1874,17 @@ export function useAIEngine() {
           truncatedArrays.push({ field: key || '(root)', total: val.length })
           return val.slice(0, MAX_ARRAY)
         }
-        if (/data[_]?url|screenshot/i.test(key)) return undefined
+        // 截图 / 大体积 dataURL 不塞进文本上下文（会撑爆 token）。
+        // 但要让 AI 知道结果存在：把这类字段替换成一个简短标记，AI 知道截图已经捕获、
+        // 已存入 lastScreenshot，可继续基于"已知页面状态"推理；不要让 AI 以为结果是空的。
+        if (/data[_]?url|screenshot/i.test(key)) {
+          if (typeof val !== 'string' || val.length === 0) return undefined
+          const isScreenshotTool =
+            toolName === 'screenshot' || toolName === 'browser_take_screenshot'
+          return isScreenshotTool
+            ? `[screenshot: 截图已捕获 ${val.length} 字符（${toolName}），UI 已展示，请基于已有页面上下文继续推理]`
+            : `[${key}: 已捕获 ${val.length} 字符的二进制数据，UI 已展示]`
+        }
         if (typeof val === 'string' && val.length > 500) {
           return val.slice(0, 200) + `...[截断, 原长 ${val.length} 字符]`
         }
@@ -2171,6 +2216,21 @@ export function useAIEngine() {
   // ──── 录制执行器（由独立模块管理，避免本文件状态膨胀） ────
   // 所有录制逻辑（状态机、资源管理、cleanup）都在 recordingExecutor 内部完成
   // 此处仅作为依赖注入入口
+  /**
+   * 在 system 错误气泡之外，再补一个 ai-chat 友好反馈。
+   *
+   * 为什么需要：system 气泡字号小、视觉上像日志。AI 错误/超时/服务不可用时如果只
+   * 有 system 气泡，用户会以为"AI 没回复我"。再补一个 ai-chat（cat 语气）让用户
+   * 明确感知到这是 AI 在说话、且告知出了什么问题。
+   *
+   * 调用方已经在 addMessage('system', ...) 后调用本函数，避免重复文案。
+   *
+   * @param friendlyReply 给用户看的友好解释（与 system 文案不同角度，cat 语气）
+   */
+  function reportUserFacingError(friendlyReply: string): void {
+    addMessage('ai-chat', { markdown: wrapCatReply(friendlyReply) })
+  }
+
   const recordingExecutor = createRecordingExecutor({
     addSystemMessage: (text) => addMessage('system', text),
     addAIChat: (text, recordingFile) => {
@@ -2232,37 +2292,68 @@ export function useAIEngine() {
       (args.reply as string | undefined) ??
       (args.message as string | undefined) ??
       (args.content as string | undefined)
-    if (ai.reply && typeof ai.reply === 'object') return ai.reply
-    if (typeof ai.reply === 'string') return { markdown: wrapCatReply(ai.reply) }
-    if (typeof ai.content === 'string') return { markdown: wrapCatReply(ai.content) }
-    if (typeof nested === 'string') return { markdown: wrapCatReply(nested) }
+    if (ai.reply && typeof ai.reply === 'object') return unwrapStructuredReply(ai.reply)
+    if (typeof ai.reply === 'string') {
+      return { markdown: wrapCatReply(unwrapNestedString(ai.reply) ?? ai.reply) }
+    }
+    if (typeof ai.content === 'string') {
+      return { markdown: wrapCatReply(unwrapNestedString(ai.content) ?? ai.content) }
+    }
+    if (typeof nested === 'string') {
+      return { markdown: wrapCatReply(unwrapNestedString(nested) ?? nested) }
+    }
     return { markdown: wrapCatReply(fallback) }
   }
 
   /**
-   * 发送 AI 对话消息，自动附带待处理的截图。
-   * 保证文字和截图在同一个气泡中显示；截图气泡按模式生成文案并尝试复制到剪贴板。
+   * 从一个 MessageBody / 结构化对象里取可读的 markdown 文本。
+   * 仅做最小剥离：markdown 字段是字符串时原样保留，components 透传。
+   * 不再尝试格式化 JSON 对象 —— 这种代偿逻辑会让 prompt 失效（模型会觉得"反正代码会兜底"）。
+   */
+  function unwrapStructuredReply(body: MessageBody): MessageBody {
+    const next: MessageBody = {
+      markdown: typeof body.markdown === 'string' ? wrapCatReply(body.markdown) : wrapCatReply(''),
+    }
+    if (body.components) next.components = body.components
+    return next
+  }
+
+  /**
+   * 把明显的套娃字符串剥到最里层 reply/content/message 字段（最多 2 层）。
    *
-   * text 支持两种形态：
-   *   - string：纯 markdown（被 wrapCatReply 加语气）
-   *   - MessageBody：富文本（components 透传，不重复加语气）
+   * 只处理 `{"reply":"..."}` / `{"content":"..."}` / `{"message":"..."}` 这种外层包装。
+   * 不处理 JSON 对象（不格式化嵌套对象 —— 见 unwrapStructuredReply 注释）。
+   * 主要修复一类具体 bug：AI 把整段 markdown 包成 `{"reply": "..."}` 字符串塞进 args.reply。
+   */
+  function unwrapNestedString(text: string): string | undefined {
+    const trimmed = text.trim()
+    if (trimmed[0] !== '{') return undefined
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (!parsed || typeof parsed !== 'object') return undefined
+      const v =
+        (parsed as Record<string, unknown>).reply ??
+        (parsed as Record<string, unknown>).content ??
+        (parsed as Record<string, unknown>).message
+      return typeof v === 'string' ? v : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 发送 AI 对话消息（chat / done / ask 等收尾 action）。
    *
-   * AI 协议里的多形态 reply 收敛在 resolveAIReply，这里只接受已规范化的 body。
+   * 不再附带截图气泡：截图气泡由 screenshot 工具步骤显式触发（见 agent loop 中的
+   * if (toolName === 'screenshot' || ...) 分支），避免一个 ai-chat 任务里同时出现
+   * "网页内容" + "整页截图" 两个气泡。lastScreenshot 只在收尾 action 是 chat 时才
+   * 被消费（chat 路径用 message.history / next chat 即可消费，不需要单独气泡）。
    */
   function emitAIChat(text: string | MessageBody, doCleanup: boolean) {
-    const image = lastScreenshot.value
-    const mode = lastScreenshotMode.value
-    if (image) {
-      // 复用 showScreenshot 路径：统一生成「[模式截图: 标题]，复制结果」气泡
-      // 调用前先把 ref 清掉，避免 showScreenshot 内部再次走 emitAIChat 形成闭环
-      lastScreenshot.value = null
-      lastScreenshotMode.value = null
-      void showScreenshot(image, undefined, mode ?? undefined)
-      const body: MessageBody = typeof text === 'string' ? { markdown: wrapCatReply(text) } : text
-      addMessage('ai-chat', body)
-      if (doCleanup) cleanup()
-      return
-    }
+    // 消费掉截图数据，避免下次 chat 又把旧截图带出来。
+    // 但不再调用 showScreenshot 弹截图气泡——截图由 screenshot 工具步骤单独呈现。
+    lastScreenshot.value = null
+    lastScreenshotMode.value = null
     const body: MessageBody = typeof text === 'string' ? { markdown: wrapCatReply(text) } : text
     addMessage('ai-chat', body)
     if (doCleanup) cleanup()
@@ -2330,6 +2421,9 @@ export function useAIEngine() {
       },
       get commandInputValue() {
         return commandInputValue.value
+      },
+      get isInitialized() {
+        return isInitialized.value
       },
     },
 

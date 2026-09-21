@@ -13,18 +13,16 @@
       <span class="task-block__count">{{ messages.length }} 条</span>
       <span v-if="!expanded" class="task-block__preview">— {{ lastPreview }}</span>
     </header>
-    <Transition name="collapse">
-      <div v-show="expanded" class="task-block__body">
-        <MessageBubble
-          v-for="(m, i) in messages"
-          :key="indices[i]"
-          :msg="m"
-          :index="indices[i]"
-          :disable-fold="true"
-          @delete="(idx) => emit('delete', idx)"
-        />
-      </div>
-    </Transition>
+    <div v-show="expanded" class="task-block__body">
+      <MessageBubble
+        v-for="(m, i) in messages"
+        :key="indices[i]"
+        :msg="m"
+        :index="indices[i]"
+        :disable-fold="true"
+        @delete="(idx) => emit('delete', idx)"
+      />
+    </div>
   </div>
 </template>
 
@@ -111,15 +109,5 @@ const lastPreview = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.collapse-enter-active,
-.collapse-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.collapse-enter-from,
-.collapse-leave-to {
-  opacity: 0;
 }
 </style>

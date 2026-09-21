@@ -199,7 +199,9 @@
     <CommandInput
       ref="commandInputRef"
       v-model="commandInput"
+      :messages="state.messageLog"
       :is-running="!!state.activeLoopId"
+      :is-initialized="state.isInitialized"
       @submit="handleSubmit"
       @stop="handleStop"
     />

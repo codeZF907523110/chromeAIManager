@@ -14,7 +14,6 @@ export type { Lesson, PlanTracker } from './context'
 
 export interface AgentState {
   messageLog: MessageLog[]
-  commandHistory: string[]
   contextCache: Context | null
   isSettingsOpen: boolean
   activeLoopId: string | null
