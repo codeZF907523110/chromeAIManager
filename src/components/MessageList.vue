@@ -7,29 +7,44 @@
 -->
 
 <template>
-  <div ref="containerRef" class="messages">
-    <template v-for="item in renderItems" :key="renderKey(item)">
-      <MessageBubble
-        v-if="item.kind === 'bubble'"
-        :msg="item.msg"
-        :index="item.index"
-        @delete="(idx) => emit('delete', idx)"
-      />
-      <TaskBlock
-        v-else
-        :block-id="item.blockId"
-        :messages="item.messages"
-        :indices="item.indices"
-        :expanded="item.expanded"
-        @toggle="toggleExpanded(item.blockId)"
-        @delete="(idx) => emit('delete', idx)"
-      />
-    </template>
+  <div class="messages-wrap">
+    <div ref="containerRef" class="messages">
+      <template v-for="item in renderItems" :key="renderKey(item)">
+        <MessageBubble
+          v-if="item.kind === 'bubble'"
+          :msg="item.msg"
+          :index="item.index"
+          @delete="(idx) => emit('delete', idx)"
+        />
+        <TaskBlock
+          v-else
+          :block-id="item.blockId"
+          :messages="item.messages"
+          :indices="item.indices"
+          :expanded="item.expanded"
+          @toggle="toggleExpanded(item.blockId)"
+          @delete="(idx) => emit('delete', idx)"
+        />
+      </template>
+    </div>
+
+    <!-- 回到本次提问：目标 user 气泡在视口上方时显示，点击平滑滚回当前对话的提问位置 -->
+    <transition name="jump-fade">
+      <button
+        v-show="showJumpBtn"
+        class="jump-to-user-btn"
+        title="回到本次提问"
+        @click="scrollToCurrentUser"
+      >
+        <ArrowUp :size="14" />
+      </button>
+    </transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, computed } from 'vue'
+import { ref, watch, nextTick, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ArrowUp } from 'lucide-vue-next'
 import type { MessageLog } from '../types'
 import MessageBubble from './MessageBubble.vue'
 import TaskBlock from './TaskBlock.vue'
@@ -72,6 +87,84 @@ function scrollToBottom(smooth = true) {
   })
 }
 
+/**
+ * 找当前视口顶部可见的消息下标：按 DOM 顺序找第一个「底边越过容器顶边」的
+ * [data-msg-index] 气泡。收起 TaskBlock 内的气泡 display:none（矩形为 0）会被自然跳过。
+ *
+ * @returns messageLog 下标；容器不存在或找不到时返回 -1
+ */
+function findVisibleMessageIndex(): number {
+  const container = containerRef.value
+  if (!container) return -1
+  const cTop = container.getBoundingClientRect().top
+  const nodes = Array.from(container.querySelectorAll<HTMLElement>('[data-msg-index]'))
+  for (const node of nodes) {
+    if (node.getBoundingClientRect().bottom > cTop) {
+      const idx = Number(node.dataset.msgIndex)
+      return Number.isFinite(idx) ? idx : -1
+    }
+  }
+  return -1
+}
+
+/**
+ * 找当前视口所属对话的 user 消息下标：从顶部可见消息往前扫描最近的 user 消息。
+ * 可见消息是对话中间的 system / ai-chat 时，同样回溯到该对话的 user 气泡，
+ * 保证「视图停在第 N 条对话 → 点击回到第 N 条对话的提问」。
+ *
+ * @returns user 消息下标；找不到返回 -1
+ */
+function findConversationUserIndex(): number {
+  const visibleIdx = findVisibleMessageIndex()
+  for (let i = visibleIdx; i >= 0; i--) {
+    if (props.messages[i].type === 'user') return i
+  }
+  return -1
+}
+
+/** 「回到本次提问」按钮是否显示：目标 user 气泡在视口上方（需要回跳）时为 true */
+const showJumpBtn = ref(false)
+
+/**
+ * 按当前滚动位置更新「回到本次提问」按钮显隐。
+ * 目标 user 气泡顶边在容器顶边之上 → 显示；已可见则隐藏，保证「显示即可点、点了必有效」。
+ * 显隐与点击共用 findConversationUserIndex 同一目标。
+ */
+function updateJumpBtn(): void {
+  const container = containerRef.value
+  if (!container || props.messages.length === 0) {
+    showJumpBtn.value = false
+    return
+  }
+  const userIdx = findConversationUserIndex()
+  const bubble =
+    userIdx >= 0 ? container.querySelector<HTMLElement>(`[data-msg-index="${userIdx}"]`) : null
+  if (!bubble) {
+    showJumpBtn.value = false
+    return
+  }
+  showJumpBtn.value = bubble.getBoundingClientRect().top < container.getBoundingClientRect().top - 1
+}
+
+/**
+ * 点击「回到本次提问」：平滑滚动到当前视口所属对话的 user 气泡位置。
+ * 异常情况（无容器/找不到 user 消息/气泡未挂载）直接返回，不做任何滚动。
+ */
+function scrollToCurrentUser(): void {
+  const container = containerRef.value
+  if (!container) return
+  const userIdx = findConversationUserIndex()
+  if (userIdx < 0) return
+  const bubble = container.querySelector<HTMLElement>(`[data-msg-index="${userIdx}"]`)
+  if (!bubble) return
+  bubble.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+/** 容器 scroll 事件回调：passive 监听，仅刷新按钮显隐 */
+function handleScroll(): void {
+  updateJumpBtn()
+}
+
 // 延迟滚动，确保 DOM 渲染完成
 function scheduleScroll(smooth = true) {
   if (scrollTimer) clearTimeout(scrollTimer)
@@ -88,22 +181,39 @@ watch(
   () => {
     // 初始化阶段统一走瞬时滚动，避免历史消息恢复时还带动画
     scheduleScroll(!isInitializing)
+    // DOM 渲染完成后刷新按钮显隐（新消息可能把 user 气泡顶出可视区）
+    nextTick(() => updateJumpBtn())
   }
 )
 
 // 初始化时滚动到底部（侧边栏打开瞬间，不需要动画直接到位）
 onMounted(() => {
   scheduleScroll(false)
+  containerRef.value?.addEventListener('scroll', handleScroll, { passive: true })
   // 等异步恢复（读取持久化的 messageLog）结束再放开 watcher 的动画
   setTimeout(() => {
     isInitializing = false
   }, 500)
 })
+
+onBeforeUnmount(() => {
+  containerRef.value?.removeEventListener('scroll', handleScroll)
+})
 </script>
 
 <style scoped>
+/* 消息区外层容器：承载滚动区和顶部浮动按钮（按钮不随内容滚动） */
+.messages-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px 20px;
   display: flex;
@@ -124,5 +234,44 @@ onMounted(() => {
 .messages::-webkit-scrollbar-thumb {
   background: var(--app-border);
   border-radius: 2px;
+}
+
+/* 「回到本次提问」浮动按钮：顶部居中，仅 user 气泡滚出可视区时显示 */
+.jump-to-user-btn {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--app-border);
+  background: var(--app-bg-card);
+  color: var(--app-text-secondary);
+  cursor: pointer;
+  z-index: 20;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.jump-to-user-btn:hover {
+  color: var(--app-text-primary);
+  background: var(--app-picker-item-hover);
+}
+
+/* 按钮显隐淡入淡出 */
+.jump-fade-enter-active,
+.jump-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.jump-fade-enter-from,
+.jump-fade-leave-to {
+  opacity: 0;
 }
 </style>

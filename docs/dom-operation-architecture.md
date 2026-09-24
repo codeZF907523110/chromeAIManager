@@ -1429,10 +1429,14 @@ case 'browser_tab_close':
 
 | 策略 | 说明 | 效果 |
 |------|------|------|
+| 剔除未渲染元素 | `display:none` / `aria-hidden` 子树剪枝，0×0 元素不入快照（详见问题 12） | 对标 Chrome a11y tree，消除 hover 按钮/隐藏弹层噪声 |
 | 只保留交互元素 | 非交互元素不入快照 | 减少 60-80% |
 | 文本截断 | 单元素文本超过 200 字符截断 | 减少 20-30% |
-| 深度限制 | 递归深度不超过 10 层 | 防止过深树 |
-| Token 预算 | 总 Token 不超过 4000 | 控制上下文窗口 |
+| 全局 role 预算 | 非表单 role 在 AI 视图最多 20 个，超出按 role 汇总为"已省略 N 个"标记；表单类 role 豁免（详见问题 11/12） | 侧边栏/长列表降噪，对交替序列同样生效 |
+| 传输瘦身 | `toAISnapshot()` 剥掉 xpath/rect/tagName，AI 视图只留决策字段（xpath 留在 content script 本地缓存供 ref 定位） | 单节点 token 减少约 70% |
+| 回灌格式 | AI 视图剔除 nodes 数组，只回灌 Playwright 式逐行文本 `nodesText`（对标 4.1 设计）；通用字符串 500 截断对快照放宽到 8000（详见问题 13） | 单快照 token 降约 60%，模型逐行可读 |
+| 回灌截断 | AI 视图总量上限 120 在 `toAISnapshot` 收口；`sanitizeResult` 对快照 nodes 同步放宽到 120，其余大数组 30 条 | 兼顾视野完整性与上下文窗口 |
+| 深度限制 | 递归深度不超过 24 层（覆盖现代 SPA 包装层） | 防止过深树 |
 | iframe 限制 | 最多扫描 3 个 iframe | 防止性能问题 |
 
 ### 14.2 增量更新
@@ -1631,6 +1635,255 @@ if (toolName === 'chat') {
 ### 问题 8：Manifest 缺少 Content Script 配置
 **根因**：`manifest.json` 没有 `content_scripts` 字段
 **解决**：按文档第 12.1 节添加 content_scripts 配置
+
+### 问题 10：DeepSeek 等 SPA 的输入框（textarea）AI 扫不到、输不进（关键）
+
+**现象**：agent 在 DeepSeek 页面反复「扫描 → 点开启新对话 → 等待」，始终宣称"页面上没有输入框"，
+最后直接放弃。用户确认对话框存在，是一个 `<textarea>`。
+
+**根因（三层叠加，任一层都足以让 AI 看不见/用不了输入框）**：
+
+1. **`executeType` 写 textarea 抛异常**（`content/index.ts`）
+   - 写值统一用 `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, text)`；
+   - WebIDL 对 setter 做 brand check，receiver 是 `HTMLTextAreaElement` 时直接抛 `Illegal invocation`；
+   - 异常发生在消息 listener 内且无 try/catch → `sendResponse` 永远不会被调用，SW 侧请求挂起。
+   - **就算 AI 找到了 textarea，输入也必然失败。**
+2. **`MAX_DEPTH = 10` 过浅**（`dom-perception.ts`）
+   - DeepSeek/Next.js 类 SPA 的输入框嵌套普遍在 10 层以上，深度剪枝导致扫描根本到不了 textarea。
+3. **后序遍历 + 回灌截断，textarea 进不了 AI 视野**
+   - `traverseNode` 先递归子节点、后 push 当前节点（后序），节点数组不是文档序，
+     数组前段全是页头/侧栏深处的叶子交互元素；
+   - `useAIEngine.sanitizeResult` 把回灌给 AI 的数组统一截断为前 30 项（`MAX_ARRAY = 30`），
+     日志中的"本次快照只返回了前 30 个元素"即来源于此；
+   - 排在数组尾部的 textarea 永远落不进这 30 项窗口。
+
+**对标**：Playwright MCP 的 aria snapshot 按**文档序**（前序 DFS，父先于子）输出，
+且没有 10 层深度上限；token 控制靠"只输出交互元素 + 文本截断"，而非粗暴截断条数。
+
+**修复方案**：
+
+| # | 位置 | 改动 |
+|---|------|------|
+| 1 | `content/index.ts` `executeType` | 按元素类型取原生 prototype：textarea 用 `HTMLTextAreaElement.prototype` 的 value setter，input 维持原样；contenteditable 分支不变 |
+| 2 | `dom-perception.ts` | `MAX_DEPTH` 10 → 24（覆盖现代 SPA 包装层深度） |
+| 3 | `dom-perception.ts` `traverseNode` | 改为前序：交互元素**先 push 再递归子节点**，节点顺序 = 文档序，ref 编号自上而下 |
+| 4 | `dom-perception.ts` | heading 节点补 `level`（h1-h6）；textarea 同样回填 `value`（让 AI 看到已有草稿） |
+| 5 | `dom-perception.ts` | 新增 `toAISnapshot()`：回传给 sidepanel 的快照瘦身——剥掉 `xpath`/`rect`/`tagName`（AI 按 ref 操作，xpath 仅 content script 内部 `findElementByRef` 用 `snapshotCache` 全量副本，通道里不需要）；删除无任何调用的死代码 `serializeSnapshot` |
+| 6 | `useAIEngine.ts` `sanitizeResult` | `browser_snapshot` 的数组截断上限放宽为 120（节点已瘦身、单条约 10-15 token），其余大数组（历史/书签）维持 30 |
+
+**自查**：
+- ref 定位链不受影响：`findElementByRef` 走 content script 本地 `snapshotCache`（含 xpath），传输副本瘦身不影响定位；
+- `scanCurrentPage`（sidepanel）只消费 `role/name/ref`，瘦身字段无外部消费方（已 grep 确认 xpath/rect/tagName 在 content 目录外无引用）；
+- 前序遍历只改 push 时机，"非交互节点也要递归子树"的关键修复保留；
+- MAX_DEPTH 变深仅增加按需扫描时的遍历量，扫描由 agent 显式触发，无常态开销。
+
+### 问题 11：侧边栏长列表淹没快照窗口，输入框仍进不了 AI 视野（问题 10 修复后的遗留）
+
+**现象**：修复问题 10 后实测 DeepSeek：点击「开启新对话」成功（URL 正确跳到 `chat.deepseek.com/`），
+120 项回灌上限也生效，但 AI 仍宣称"快照前 120 项被侧边栏内容占满，尚未显示对话输入框"，
+最终只能靠截图兜底。
+
+**根因**：前序遍历的文档序 = **侧边栏 DOM 在前**。DeepSeek 侧边栏的聊天历史列表有上百个可点击项
+（每个都满足交互判定，role 多为 link/generic/menuitem），在节点数组前段把 120 项窗口全部占满，
+主内容区的 textarea 排在 120 之后。AI 调大 `maxElements` 无效——窗口在回灌侧（`sanitizeResult`），
+不在采集侧。
+
+**对标**：Playwright MCP 输出完整树不截断（token 成本高）；browser-use 等框架对长列表做降噪。
+本项目采用**同类元素折叠**（run-length 折叠）：
+
+- 连续同 role 的节点最多保留前 `MAX_SAME_ROLE_RUN`（15）个，其余折叠为一条
+  `{ role: 'text', name: '（同类元素已省略 N 项）', ref: '' }` 标记节点（无 ref，AI 不可点击，纯信息）；
+- 表单类 role（textbox/searchbox/combobox/spinbutton/checkbox/radio/slider/switch）是 agent
+  的核心操作目标，**不参与折叠、永远保留**；
+- 折叠只作用于 AI 视图（`toAISnapshot`），content script 本地 `snapshotCache` 保留全量；
+- AI 视图总量上限 `MAX_AI_NODES`（120）在 `toAISnapshot` 内收口，与
+  `sanitizeResult` 对 browser_snapshot 的 120 上限一致（双保险）。
+
+折叠后 DeepSeek 首页侧边栏 100+ 项塌缩为 16 条，textarea 落在窗口前段，且保持文档序。
+
+**自查**：
+- 标记节点 `ref` 为空串，`findElementByRef` 按 `[ref=eN]` 匹配永不命中，无可 click 性；
+- 折叠不改变 ref 编号（采集期不变），AI 引用的 ref 均来自它真实看到的节点；
+- 复杂页面（如 40 个并排按钮的工具栏）折叠后 AI 通过"已省略 N 项"标记知晓有更多元素，
+  且 `totalElements` 与 nodes 数不一致也可作为"视图不全"的信号。
+
+### 问题 12：隐藏元素噪声使折叠失效，AI 陷入原地循环（问题 11 修复后的遗留）
+
+**现象**：修复问题 11 后实测 DeepSeek：点击「开启新对话」实际已成功（URL 从 `/a/chat/s/…` 跳到
+`chat.deepseek.com/`，而**首页本身就是新对话页**，输入框就在页面上），但 AI 在两次首页快照里
+仍然看不到输入框，转而反复点击同一个已无效的按钮 4 次，最终放弃并询问用户。
+
+**根因（两个）**：
+
+1. **快照采集了未渲染的元素**。`isInteractive` 基于标签/role/tabIndex/cursor 判定，
+   `display:none` 的元素（React 应用 DOM 里常驻的 hover 操作按钮、关闭的弹层、隐藏表单等）
+   全部被采集。侧边栏每个历史项挂 2-3 个隐藏按钮，节点序列变成
+   `generic → button → button → generic → …` **交替排列**，问题 11 的"连续同 role 折叠"
+   前提（同 role 长跑）被打破，折叠失效，侧边栏噪声继续淹没 120 窗口。
+   对标：Chrome 无障碍树与 Playwright aria snapshot 都会剔除 `display:none` / `aria-hidden` 子树，
+   这是我们与业界方案的真实差距。
+2. **提示词缺少"快照一致"的防循环规则**。点击后页面无变化时（其实已在新对话页），
+   AI 选择重复同一操作而不是重新审视目标是否存在。
+
+**修复方案**：
+
+| # | 位置 | 改动 |
+|---|------|------|
+| 1 | `dom-perception.ts` `traverseNode` | 未渲染子树整体剪枝：`getComputedStyle(el).display === 'none'` 或 `aria-hidden="true"` 直接 return（对标 Chrome a11y tree / Playwright） |
+| 2 | `dom-perception.ts` 采集守卫 | `rect` 为 0×0 的元素不入快照（未渲染/不可用），子树继续遍历（`visibility:hidden` 的子元素可能可见） |
+| 3 | `dom-perception.ts` `buildAINodes` | 折叠从"连续同 role 长跑"升级为**全局 role 预算**：非表单 role 在 AI 视图中最多出现 20 次（`MAX_ROLE_TOTAL`），超出省略并按 role 汇总为末尾标记节点（`已省略 N 个 <role> 元素`）——对交替序列同样生效；表单 role 仍豁免 |
+| 4 | `prompts.ts` 操作原则 | 新增第 16 条：连续两次快照结果一致时不得重复同一操作；聊天类站点首页往往就是新对话页，应先在当前页面找输入框 |
+
+**自查**：
+- 剪枝只影响可见性判定，不改变 ref 语义：`findElementByRef` 走本地全量缓存（缓存同样只含已渲染节点，AI 不会引用到已剪枝节点）；
+- `display:none` 子树整体剪枝是安全的（后代必然未渲染）；`visibility:hidden` 不剪枝、只靠 0×0 守卫兜底（后代可单独 `visibility:visible`）；
+- 全局 role 预算替换连续折叠后逻辑更简单（无 run 状态机），文档序保持不变，表单元素永不省略；
+- `getComputedStyle` 每元素一次的开销被"隐藏子树整体剪枝"抵消（整块 DOM 不再遍历），扫描仍由 agent 按需触发。
+
+### 问题 13：快照回灌是嵌套 JSON 大块，模型"看不见"输入框；且缺少采集侧诊断手段
+
+**现象**：问题 10-12 修复后，可见的 textarea 在机械链路上已必然进入 AI 视野
+（表单 role 豁免预算、120 窗口、隐藏元素剪枝），但模型仍宣称"没有输入框"。
+
+**根因**：
+
+1. **回灌格式违背了本文档 4.1 的设计**。4.1 明确快照应为 Playwright MCP 式紧凑文本
+   （`- textbox "Email" [ref=e4]`），但实现从未跟上——一直把 120 个节点的嵌套 JSON 数组
+   （约 18KB）整块塞给模型。每个节点 token 是紧凑行的 2-3 倍，且 deepseek 类模型在
+   超长嵌套 JSON 中定位单个元素的能力明显弱于逐行文本。
+2. **采集侧没有诊断手段**。"输入框进不了 AI 视野"存在两类可能（没采集到 / 采集了但模型没看见），
+   此前只能靠日志推断，无法一锤定音。
+
+**修复方案**：
+
+| # | 位置 | 改动 |
+|---|------|------|
+| 1 | `dom-perception.ts` | `toAISnapshot` 在瘦节点列表之外新增 `nodesText` 字段：Playwright 式逐行紧凑文本（`- role "名称" [ref=eN] [状态…]`），折叠标记渲染为 `- text "（已省略 N 个 …）"` |
+| 2 | `useAIEngine.ts` `sanitizeResult` | browser_snapshot 专属：AI 视图剔除 `nodes` 数组（仅程序消费，如 `scanCurrentPage`），只留 `nodesText/url/title/totalElements`；字符串截断阈值对 browser_snapshot 放宽到 8000（nodesText 是一整段文本，500→200 的通用截断会毁掉它） |
+| 3 | `prompts.ts` | 工具说明中补充 nodesText 逐行格式说明：textbox/searchbox 等输入元素**永远完整列出**，看到 `- textbox "…" [ref=eN]` 即可用 browser_type 直接输入 |
+| 4 | `content/dom-perception.ts` | 临时诊断 `diagnoseInputBoxes()`（textarea/input/contenteditable 逐个报告 rect、placeholder、未采集原因，SNAPSHOT 时打印到页面 console）：已确认采集层无问题、链路端到端验证成功（DeepSeek textarea 成功定位并输入）后**按"第一版不留无用代码"规则移除** |
+
+**自查**：
+- `scanCurrentPage`（斜杠命令/上下文/后验证）继续消费 `nodes` 数组，不受 AI 视图剔除影响——
+  它把结果转换成 `{totalCount, count, elements}` 后以 `scan` 名义走 sanitize，toolName 不命中 browser_snapshot；
+- `verifyPredict` 对 `JSON.stringify(result)` 做关键词匹配，nodesText 保留了全部 name，匹配能力不降级；
+- 折叠标记在文本里呈现为普通行，模型可读。
+
+### 问题 14：扩展重载后，已打开页面所有 DOM 工具报「Content Script 未响应」（关键）
+**现象**：每次 `pnpm build` 后在 chrome://extensions 重载扩展，之前已打开的网页上执行
+browser_snapshot / browser_click / browser_type 等全部报
+`[CONTENT_SCRIPT_ERROR] Content Script 未响应，请确认页面已加载扩展`。
+
+**根因**：Chrome 的既定行为——**扩展重载不会给已打开的标签页重新注入 content script**。
+旧 content script 挂在被销毁的旧扩展实例上成为孤儿（收不到新 service worker 的消息），
+新 SW 的 `chrome.tabs.sendMessage` 抛 "Receiving end does not exist"，
+`executeBrowserTool` 的裸 catch 统一映射为该错误。
+截图链路 `forwardScreenshotToContent` 早前已针对同一问题做过「动态注入 + 重试」兜底
+（`injectContentScript()`，依赖 scripting + `<all_urls>` 权限），但主 DOM 工具链路没有接入。
+
+**修复方案**：
+
+| # | 位置 | 改动 |
+|---|------|------|
+| 1 | `service-worker/executor.ts` | 抽通用 helper `sendToContentScriptWithInjection(tabId, message, retryDelayMs?)`：先 sendMessage，接收端不存在时动态注入 content.js 并重试一次；注入失败（chrome:// 等受限页）抛 INJECTION_FAILED |
+| 2 | `service-worker/executor.ts` `executeBrowserTool` | 改用 helper（retryDelayMs=1200：content script 的 `enabled` 有 1s 就绪延迟，注入后立即重试会得到"DOM感知未启用"）；错误按"受限页 / 仍无响应"区分文案 |
+| 3 | `service-worker/executor.ts` `forwardScreenshotToContent` | 同样改用 helper（retryDelayMs=0，SCREENSHOT 分支不检查 enabled），消除两段重复的 try/catch |
+| 4 | `content/index.ts` `init()` | 幂等守卫：window 标记防重复注入产生双 listener——bundle 重执行会重建模块作用域，必须用 window 标记；否则双 listener 会导致 click 等副作用执行两次 |
+
+**自查**：
+- 动态注入发生在页面加载完成后（executeScript 由 SW 主动调用），readyState 不会是 loading，
+  走 1000ms 就绪分支，1200ms 等待窗口足够；
+- 兜底只在「接收端不存在」时触发，正常通信零开销（一次 try/catch）；
+- 双 listener 场景：刷新过的新 script 已注册、因其它原因 sendMessage 失败再注入一次 →
+  window 守卫拦截，不会双响应/双点击；
+- 两条链路错误文案保持"受限页 vs 未响应"的区分，AI 可据此换标签页或提示刷新。
+
+### 问题 15：AI 视图裁剪形成"黑洞"，目标元素被折叠后 AI 永远找不到（关键）
+**现象**：用户让 AI 点「开启新对话」，AI 回复找不到该按钮。实际按钮在页面上。
+
+**根因**：两层。
+1. **裁剪黑洞（结构性）**：AI 视图 = 文档序前 120 个保留节点 + 每 role 预算 20
+  （问题 11/12 的降噪方案）。侧边栏历史列表几十个 button + 噪声角色会把目标按钮挤出窗口；
+  而折叠标记只有「（已省略 N 个 button 元素）」一行——AI 既不知道里面有没有目标，
+  也拿不到被省略元素的 ref。**被裁剪的元素对 AI 不可见也不可恢复**。
+2. **语义匹配失败**：用户口语（"开启新对话"）与页面文案（"新的对话"）不完全一致时，
+  AI 直接断言"页面上没有"，不做模糊匹配、不换关键词。
+
+**业界方案**：Playwright 的语义 locator `getByRole('button', { name: /新对话/ })`——
+按名称模糊匹配、实时查询、与快照截断无关；browser-use / Chrome DevTools MCP 均提供
+"find element by description" 类工具。核心思想：**整页概览负责"看"，按需检索负责"查"**，
+概览可以裁剪，检索必须能找回任意元素。
+
+**修复方案**：新增 `browser_find` 工具（对标 Playwright 语义 locator）
+
+| # | 位置 | 改动 |
+|---|------|------|
+| 1 | `content/dom-perception.ts` | 新增 `findNodesByText(query)`：实时重新采集（保证 ref 新鲜，顺带刷新 snapshotCache），在**全量**节点（500 上限，不经 120/20 裁剪）上做包含匹配；匹配范围 = 可访问名 + 输入框 value，空白归一化 + 大小写不敏感；返回 serializeAINodes 逐行文本（最多 10 条 + count + truncated） |
+| 2 | `content/messages.ts` | 消息联合类型新增 `{ type: 'FIND'; query: string }` |
+| 3 | `content/index.ts` | FIND case：query 缺失返回 MISSING_QUERY，否则返回 findNodesByText 结果 |
+| 4 | `service-worker/executor.ts` | `executeCommand` 增加 `case 'browser_find'` 分发；`BROWSER_TOOL_TO_MESSAGE` 增加 `browser_find → 'FIND'`（响应映射走通用 mapContentScriptResponse，无需改） |
+| 5 | `shared/prompts.ts` | ①工具列表加 browser_find 说明；②「快照阅读方法」补充：折叠标记只说明该类元素过多、不代表目标不存在；③操作原则新增第 17 条：找不到目标时的标准动作序列 = 语义模糊匹配名称 → browser_find 用核心关键词检索 → 仍找不到才 ask，禁止直接断言"页面上没有" |
+| 6 | `shared/commands.ts` | COMMANDS 注册表新增 browser_find 条目（slots: query 必填 / role 可选，swIntent: 'browser_find'）。**首轮改动遗漏**：sidepanel `executeCommand` 先经 `getCommand()` 查该注册表，未注册直接返回"未知命令： browser_find"，SW 侧分发根本不会触达——教训：新增 AI 工具必须同时登记 SW executor 与 shared/commands.ts 两处 |
+
+**自查**：
+- findNodesByText 复用 captureAccessibilityTree 而非读旧 snapshotCache——每次 find 都是
+  新鲜采集，返回的 ref 必然可被 findElementByRef 解析，规避"页面已变、缓存 ref 失效"；
+- 回灌体积：10 行 × 约 35 字符 ≈ 350 字符 < sanitize 非快照工具 500 上限；
+  count/truncated 让 AI 知道结果是否被截断、可换更精确关键词；
+- FIND 与其它消息共用 enabled 门禁 + SW 兜底注入/1.2s 等待链路，无特殊路径；
+- 纯新增分支，SNAPSHOT/CLICK 等既有路径零改动；
+- 裁剪黑洞的定位不变：概览继续裁剪（控 token），黑洞由 browser_find 按需找回（保可达）。
+
+### 问题 16：操作准确性综合优化（四项，对标 Playwright / Playwright MCP）
+**背景**：问题 15 落地后继续排查"AI 操作不准确"的剩余来源，确认四项：
+
+| # | 问题 | 根因 | 业界对标 | 方案 |
+|---|------|------|----------|------|
+| 1 | 名称含换行/多空格破坏快照行格式 | `getAccessibleName` 只 trim 首尾，textContent 中部的 `\n`+缩进原样进入 nodesText——一行元素被拆成多行乱码，模型阅读与 browser_find 匹配同时失配；名称含 `"` 还会破坏引号格式 | Playwright aria snapshot 的 yaml 对文本做归一化/转义 | `getAccessibleName` 出口统一 `replace(/\s+/g,' ').trim()`；`serializeAINodes` 对 name/value 做 `"` → `'` 转义 + 同样归一化（双保险，value 来自 textarea 可含换行） |
+| 2 | 扁平列表无层级上下文 | 20 个 button 平铺，模型无法判断哪个在侧边栏/主区域，只能猜 | Playwright aria snapshot 是**缩进树**，层级就是模型的定位上下文 | 采集时记录 `depth`，`serializeAINodes` 按深度输出行首缩进（上限 6 层防超长行）；折叠造成的空隙不影响相对分组 |
+| 3 | browser_find 命中按文档序取前 10，低质量命中挤占配额 | 历史会话标题包含查询词时（如"帮我写开启新对话的文案"），可能把精确命中的按钮挤出 10 条配额 | Playwright `getByRole(role, { name })`：role 限定 + 名称匹配 | 匹配结果分档排序：名称完全相等 > 前缀匹配 > 包含匹配，档内保持文档序（Array.sort 稳定）；新增可选 `args.role` 过滤（大小写不敏感） |
+| 4 | 操作后 AI 需再调一次 browser_snapshot 验证，且存在竞态 | click/submit 返回是同步的，SPA 渲染是异步的——AI 紧接着的快照可能拍到旧 DOM，误判"操作没生效"再乱点 | **Playwright MCP：所有 mutation action 的返回都自动附带操作后的新 aria snapshot**，一步顶两步 | content script 对 DOM 操作类消息（CLICK/TYPE/SELECT/HOVER/PRESS_KEY/CHECK/UNCHECK/FILL_FORM）改为异步响应：执行后等 500ms（SPA 渲染窗口）再采集，响应 `data.snapshot = {url,title,totalElements,nodesText}`；采集失败降级为原响应。sanitizeResult 把这些工具纳入快照级（剔 nodes 留 nodesText、放宽阈值）；提示词引导"操作结果自带最新快照，先读它，别再单独调 browser_snapshot" |
+
+**自查**：
+- #4 的竞态兜底：操作导致页面跳转时响应可能丢失 → SW 兜底注入重发 → `findElementByRef` 的 URL 守卫判定 ref 失效返回 ELEMENT_NOT_FOUND，**不会跨页面重复执行动作**；
+- #4 异步响应通道：与 SCREENSHOT 相同的 `return true` 模式，成功/失败/异常三条路径都有且仅有一次 sendResponse；
+- #2 缩进只加在 serializeAINodes 输出层，nodes 数据结构（transport/scanCurrentPage 消费方）不受影响；
+- #3 排序在同分档内保持文档序（ES2019+ sort 稳定），行为可预期；role 过滤缺省不过滤，兼容既有调用；
+- #1 归一化在采集源头做，snapshotCache/scanCurrentPage/browser_find 全部自动受益；
+- 提示词同步更新：快照阅读方法（缩进语义 + find 排序说明）、操作原则第 4 条（验证 = 读操作结果自带的 snapshot）。
+
+### 问题 17：browser_find 按 role 硬过滤漏检 + AI 用截图兜底 DOM 操作
+
+**现象**：让 AI 点「开启新对话」，`browser_find(query="新对话", role="button")` 返回 `count:0`，
+AI 随即调截图"看图找元素"，任务失败。
+
+**根因**：两层。
+1. **role 硬过滤**：页面大量"按钮"是 div/span 模拟（无原生 button 语义），a11y role 是
+  `generic`/`text` 而非 `button`。AI 按用户口语（"按钮"）传 `role="button"`，
+  findNodesByText 把 role 当硬过滤条件 → 文本明明存在却被筛光。语义检索场景里
+  role 是 AI 的**猜测**，猜测不能作为召回的前置条件。
+2. **截图兜底无禁令**：提示词只在"整理/总结"场景禁止截图，DOM 操作失败路径没有任何
+  限制，模型自发退化成多模态"看图猜元素"——但截图拿不到 ref，点了也没用，纯属浪费步数。
+
+**业界方案**：模糊检索工具的过滤参数只作**优先级**不作召回门槛（检索保召回、排序保精度）；
+Playwright 的 getByRole 是精确匹配，但前提是 role 来自真实 aria 树而非模型猜测。
+截图在 browser自动化里只用于"给用户看"，不用于"给 agent 看"（Playwright MCP 同样不靠
+截图定位元素）。
+
+**修复方案**：
+
+| # | 位置 | 改动 |
+|---|------|------|
+| 1 | `content/dom-perception.ts` | `findNodesByText`：role 从硬过滤改为**优先筛选**——先按文本取全量命中 pool；role 命中非空则返回 role 子集；role 命中为空则返回全量 pool 并标记 `roleRelaxed: true`。返回类型增加 `roleRelaxed` |
+| 2 | `shared/prompts.ts` | ①browser_find 工具说明：args.role 不要随意传（div 模拟按钮的真实 role 多为 generic），仅快照里明确看到目标 role 时才传；限定后无匹配自动放宽并返回 `roleRelaxed: true`。②操作原则第 17 条：处置序列第②步改为 browser_find **不传 role**。③新增第 18 条：DOM 操作全程禁止截图兜底——找不到就 find 换关键词 → ask 用户；截图仅在用户明确要求时使用 |
+
+**自查**：
+- 放宽逻辑只在 role 命中为空时触发，role 命中非空时行为与之前完全一致（精确优先）；
+- `roleRelaxed` 是纯新增字段，旧消费方（mapContentScriptResponse 透传 + sanitize 白名单
+  标量）无需改动；
+- 排序/截断/新鲜采集逻辑不变，find 的 ref 有效性保证不受影响；
+- 截图工具本体保留（用户明确要求时仍可用），仅约束 agent 的自主兜底行为；
+- 既有 browser_* 工具与快照链路零改动。
 
 ### 问题 9：`traverseNode` 闭包作用域问题
 **根因**：文档第 4.3 节的 `traverseNode` 函数引用了 `options?.maxElements`，但 `options` 是 `captureAccessibilityTree` 的参数，在 `traverseNode` 闭包中无法直接访问

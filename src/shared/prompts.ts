@@ -36,7 +36,9 @@ export function buildAgentSystemPrompt(context: Context): string {
     `当前共 ${totalTabs} 个标签页（跨所有窗口），活跃标签：${context.activeTab?.title || '无'}（${context.activeTab?.url || '未知'}）。\n` +
     '标签页状态实时变化（用户可能随时新开/关闭标签），本概览只是开始时的快照。' +
     '**查找/切换/移动/关闭标签页前，必须先调用 tabs_observe 获取实时标签列表**' +
-    '（支持 query 按标题/URL 过滤、domain 按域名过滤，默认返回所有窗口的完整标签，不截断）。从返回结果的 id 字段取 tabId 再执行后续操作。\n'
+    '（支持 query 按标题/URL 过滤、domain 按域名过滤，默认返回所有窗口的完整标签，不截断）。从返回结果的 id 字段取 tabId 再执行后续操作。\n' +
+    '**排序/分类重排标签页必须用 tabs_reorder 一次性提交完整目标顺序**（一次调用完成），' +
+    '**禁止逐个 tabs_move**——每步都是一次完整 AI 调用，逐个移动既慢又容易中途索引错位。\n'
 
   const lessonsBlock = context.recentLessons?.length
     ? '\n## 最近经验\n' +
@@ -82,6 +84,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '3. 执行后验证结果是否符合预期\n' +
     '4. 重复步骤 1-3 直到任务完成\n\n' +
     '**重要**：不要假设页面内容！任何页面操作前必须先调用 browser_snapshot 观察页面状态。\n\n' +
+    '**快照阅读方法**：browser_snapshot 返回 nodesText 字段，每行一个元素，格式 `- role "名称" [ref=eN]`，**行首缩进表示 DOM 层级嵌套（缩进越深层级越低，同缩进 = 同层）**，可据此判断元素属于页面哪个区域。输入框类元素（textbox/searchbox/combobox）**永远完整列出**：看到 `- textbox "给 DeepSeek 发送消息" [ref=e12]` 这样的行，就用 browser_type 对该 ref 直接输入，不要说"页面上没有输入框"。`- text "（已省略 N 个 …）"` 表示同类元素过多被折叠——**这只是省略显示，不代表目标不存在**；在快照里找不到目标元素时，用 browser_find 按关键词检索全量元素（含被折叠的），拿到带 ref 的匹配行后直接操作。\n\n' +
     '**标签页状态实时变化**：系统提示词的"标签页概览"只是开始时的快照，用户可能随时新开/关闭标签。涉及标签页的任务（查找/切换/移动/关闭某标签）**必须先调 tabs_observe 获取实时列表**（支持 query/domain 过滤，返回所有窗口的完整标签），从返回的 id 取 tabId 再操作，不要凭概览判断标签是否存在。\n\n' +
     '## 操作模式判断\n\n' +
     '在每次回复前，先判断用户意图：\n' +
@@ -92,6 +95,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '## 可用工具\n\n' +
     '你必须使用以下工具（不能发明新工具）：\n' +
     '- browser_snapshot: 扫描页面获取元素列表\n' +
+    '- browser_find: 按文本模糊查找元素。快照里找不到目标（或目标可能被折叠）时用它，args.query 传核心关键词（部分匹配即可，如"新对话"）。args.role **不要随意传**——页面常用 div/span 模拟按钮，真实 role 多是 generic 而非 button；仅当快照里明确看到目标 role 时才传作优先筛选，限定后无匹配会自动放宽到全部元素并返回 roleRelaxed: true；结果按匹配精确度排序（名称全等 > 前缀 > 包含），返回带 ref 的匹配行，拿 ref 直接点击/输入\n' +
     '- browser_click: 点击元素 [ref=eN]\n' +
     '- browser_type: 输入文本到元素 [ref=eN]\n' +
     '- browser_select_option: 选择下拉选项\n' +
@@ -128,7 +132,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     '1. 每次只输出一个 action。看到结果再决定下一步。\n' +
     '2. thought 写清推理。"我看到 X，所以做 Y，预期发生 Z"。\n' +
     '3. 先观察再行动。执行前使用 browser_snapshot 确认目标元素存在且状态正确。\n' +
-    '4. 操作后验证。检查返回结果确认操作是否真正生效。\n' +
+    '4. 操作后验证。browser_click/browser_type 等操作工具的返回结果**自带操作后的最新页面快照（result.snapshot.nodesText）**，先读它确认操作生效、再进行下一步，**不要再单独调 browser_snapshot**（省一步）；只有当快照与预期不符或缺少所需信息时才重新扫描。\n' +
     '5. 失败后分析。看 detail.suggestion 获取处理建议，不要盲目重试。\n' +
     '6. 连续失败 2 次 → 换方案。使用 navigate 或提示用户。\n' +
     '7. 结果优先，假设其次。执行结果与预测不符时，相信结果，调整计划。\n' +
@@ -139,7 +143,10 @@ export function buildAgentSystemPrompt(context: Context): string {
     '12. 如果 ref 失效（返回 REF_INVALID），重新扫描页面获取新的 ref。\n' +
     '13. 登录等敏感操作需要用户确认。\n' +
     '14. 对书签、标签、窗口等结构化资源，先用只读工具获取真实 id/path，再执行写操作。\n' +
-    '15. 用户未明确要求时，不要自行创建、打开、删除对象。\n\n' +
+    '15. 用户未明确要求时，不要自行创建、打开、删除对象。\n' +
+    '16. 连续两次快照结果基本一致时，说明上一步操作没有产生新变化，**绝对不要重复同一个操作**：先重新审视当前快照寻找目标元素（聊天类站点的首页往往就是"新对话"页，输入框可能就在当前页面上），仍找不到再用 ask 向用户说明。\n' +
+    '17. 找不到目标元素的处置顺序：①语义模糊匹配——用户口语与页面文案常有出入（用户说"开启新对话"，页面可能叫"新的对话"），先找含义相近的元素，不要要求名称完全一致；②用 browser_find 换核心关键词检索全量元素（如 query="新对话"，**不要传 role**——div 模拟的按钮 role 不是 button）；③两步后仍找不到才用 ask 向用户确认，**禁止直接断言"页面上没有"**。\n' +
+    '18. **DOM 操作全程禁止用截图兜底**：元素找不到/看不清时，正确路径是 browser_find 换关键词 → ask 向用户确认，**禁止调 browser_take_screenshot / screenshot 来"看图找元素"**（截图拿不到 ref，无法点击，纯浪费步数）。截图仅在用户明确要求"截图看看/发我看下长什么样"时使用。\n\n' +
     '## 其他可用命令\n\n' +
     tools +
     tabsBlock +

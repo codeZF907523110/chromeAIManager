@@ -108,6 +108,8 @@ export async function executeCommand(
       return await updateTab(payload)
     case 'tabs_move':
       return await moveTabs(payload)
+    case 'tabs_reorder':
+      return await reorderTabs(payload)
     case 'tabs_remove':
       return await removeTabs(payload)
     case 'tabs_remove_by_url':
@@ -224,6 +226,8 @@ export async function executeCommand(
     // ──── BROWSER DOM 操作（Playwright MCP 兼容）────
     case 'browser_snapshot':
       return await executeBrowserTool('browser_snapshot', payload)
+    case 'browser_find':
+      return await executeBrowserTool('browser_find', payload)
     case 'browser_click':
       return await executeBrowserTool('browser_click', payload)
     case 'browser_type':
@@ -488,6 +492,79 @@ async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResu
       suggestion: '请检查 tabIds 是否有效，标签页可能已被关闭',
     }
   }
+}
+
+/**
+ * 按期望顺序一次性重排窗口内标签页（批量排序原语）。
+ *
+ * 解决"排序任务被 AI 拆成逐个 tabs_move"的低效模式：每个 tabs_move 都是一轮
+ * 完整 LLM 调用，且每次移动后 index 变化，AI 只能反复 observe 再移动下一个。
+ * 本原语一次提交目标终态，一次 LLM 步骤完成整个排序。
+ *
+ * @param payload.order 期望顺序的 tabId 数组（可只给部分标签）；未列出的标签
+ *                      保持当前相对顺序排在最后；无效 id 显式报错不静默忽略
+ * @param payload.windowId 目标窗口 ID，缺省为最近聚焦的普通窗口
+ * @returns 成功返回 sorted（id+title 终态列表）供 AI 免 observe 直接验证；
+ *          失败返回 MISSING_ORDER / INVALID_TAB_IDS / REORDER_FAILED
+ */
+async function reorderTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const order = Array.isArray(payload.order)
+    ? [...new Set((payload.order as unknown[]).map(Number).filter((n) => !isNaN(n)))]
+    : []
+  if (!order.length) {
+    return {
+      success: false,
+      code: 'MISSING_ORDER',
+      message: 'order 不能为空：请按期望顺序传入标签 ID 数组（来自 tabs_observe 的 id 字段）',
+    }
+  }
+  // windowId 归一化：模型可能把数字输出成字符串（tabs_update 的描述里已证实这点），
+  // 直接透传非数字会给 chrome.tabs.query 传非法类型；NaN/0 回退到最近聚焦窗口
+  const requestedWindowId = Number(payload.windowId)
+  const windowId =
+    Number.isFinite(requestedWindowId) && requestedWindowId > 0
+      ? requestedWindowId
+      : await getFallbackWindowId()
+  const tabs = await chrome.tabs.query({ windowId })
+  const byId = new Map(tabs.map((t) => [t.id, t]))
+  const invalid = order.filter((id) => !byId.has(id))
+  if (invalid.length) {
+    return {
+      success: false,
+      code: 'INVALID_TAB_IDS',
+      message: `以下 tabId 不在该窗口中: ${invalid.join(', ')}`,
+      suggestion: '请先 tabs_observe 获取最新标签列表',
+    }
+  }
+
+  // pinned 标签固定占窗口前部且不可移到非 pinned 位，不参与重排：
+  // 从 order 中过滤掉（Chrome 对 pinned→非 pinned 位置直接报错），它们保持在最前
+  const pinnedIds = tabs.filter((t) => t.pinned).map((t) => t.id!)
+  const orderIds = order.filter((id) => !byId.get(id)!.pinned)
+  const orderSet = new Set(orderIds)
+  const restIds = tabs
+    .filter((t) => !t.pinned)
+    .map((t) => t.id!)
+    .filter((id) => !orderSet.has(id))
+  const finalOrder = [...pinnedIds, ...orderIds, ...restIds]
+
+  try {
+    // move-to-index 收敛：处理到 i 时位置 0..i-1 已是终态，把 finalOrder[i] 挪到 i 即固定，
+    // 它当前位置必然 ≥ i（前面都是已固定的其它标签），全程无中间态依赖
+    for (let i = 0; i < finalOrder.length; i++) {
+      await chrome.tabs.move([finalOrder[i]], { index: i })
+    }
+  } catch (err: unknown) {
+    const e = err as { message?: string }
+    return {
+      success: false,
+      code: 'REORDER_FAILED',
+      message: e?.message || '重排标签失败',
+      suggestion: '标签页可能已被关闭，请先 tabs_observe 获取最新列表后重试',
+    }
+  }
+  const sorted = finalOrder.map((id) => byId.get(id)!).map((t) => ({ id: t.id, title: t.title }))
+  return { success: true, moved: finalOrder.length, sorted }
 }
 
 async function removeTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -1182,37 +1259,24 @@ async function forwardScreenshotToContent(
     return { success: false, code: 'ELE_NOT_FOUND', message: '未找到活动标签' }
   }
 
+  // 接收端不存在（扩展重载后已打开页面不会自动注入）时兜底注入并重试一次；
+  // SCREENSHOT 分支不检查 enabled，无需等待就绪
   let response: unknown
   try {
-    response = await chrome.tabs.sendMessage(targetTabId, {
+    response = await sendToContentScriptWithInjection(targetTabId, {
       type: 'SCREENSHOT',
       mode,
       timestamp: Date.now(),
     })
-  } catch {
-    // content script 未注入（扩展重载后已打开页面不会自动注入）→ 动态注入后重试一次
-    const injected = await injectContentScript(targetTabId)
-    if (!injected) {
-      return {
-        success: false,
-        code: 'CONTENT_SCRIPT_ERROR',
-        message: '无法在此页面截图，请刷新页面后重试',
-        suggestion: 'RELOAD_PAGE',
-      }
-    }
-    try {
-      response = await chrome.tabs.sendMessage(targetTabId, {
-        type: 'SCREENSHOT',
-        mode,
-        timestamp: Date.now(),
-      })
-    } catch {
-      return {
-        success: false,
-        code: 'CONTENT_SCRIPT_ERROR',
-        message: 'Content Script 未响应，请刷新页面后重试',
-        suggestion: 'RELOAD_PAGE',
-      }
+  } catch (error) {
+    const isRestricted = error instanceof Error && error.message === 'INJECTION_FAILED'
+    return {
+      success: false,
+      code: 'CONTENT_SCRIPT_ERROR',
+      message: isRestricted
+        ? '无法在此页面截图（如浏览器内部页面），请切换到普通网页后重试'
+        : 'Content Script 未响应，请刷新页面后重试',
+      suggestion: 'RELOAD_PAGE',
     }
   }
 
@@ -1235,6 +1299,33 @@ async function forwardScreenshotToContent(
     code: r.error || 'UNKNOWN_ERROR',
     message: r.message || r.error,
     suggestion: r.suggestion,
+  }
+}
+
+/**
+ * 向 content script 发送消息；接收端不存在（扩展重载后已打开页面未注入新 script）时
+ * 动态注入 content.js 并重试一次。Chrome 重载扩展不会给已打开标签页重新注入 content script，
+ * 旧 script 成为孤儿收不到消息，此兜底让用户无需手动刷新页面。
+ * @param tabId - 目标标签页 ID
+ * @param message - 消息体（含 type 等）
+ * @param retryDelayMs - 注入成功后、重试前的等待毫秒数（默认 0；DOM 工具传 1200 避开
+ *   content script 的 enabled 1s 就绪延迟，否则重试只会得到"DOM感知未启用"）
+ * @returns content script 的响应
+ * @throws 注入失败（chrome:// 等受限页）抛 message 为 INJECTION_FAILED 的错误；
+ *   重试仍失败时抛出原始 sendMessage 错误，由调用方映射文案
+ */
+async function sendToContentScriptWithInjection(
+  tabId: number,
+  message: unknown,
+  retryDelayMs = 0
+): Promise<unknown> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message)
+  } catch {
+    const injected = await injectContentScript(tabId)
+    if (!injected) throw new Error('INJECTION_FAILED')
+    if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
+    return await chrome.tabs.sendMessage(tabId, message)
   }
 }
 
@@ -1885,6 +1976,7 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
 
 const BROWSER_TOOL_TO_MESSAGE: Record<string, string> = {
   browser_snapshot: 'SNAPSHOT',
+  browser_find: 'FIND',
   browser_click: 'CLICK',
   browser_type: 'TYPE',
   browser_select_option: 'SELECT',
@@ -1921,19 +2013,27 @@ async function executeBrowserTool(
   }
 
   try {
-    const response = await chrome.tabs.sendMessage(tabInfo.tabId, {
-      type: message,
-      ...args,
-      timestamp: Date.now(),
-    })
+    // 接收端不存在（扩展重载后旧页面）时兜底注入并重试；等 1200ms 让 content script 的 enabled 就绪
+    const response = await sendToContentScriptWithInjection(
+      tabInfo.tabId,
+      {
+        type: message,
+        ...args,
+        timestamp: Date.now(),
+      },
+      1200
+    )
     return mapContentScriptResponse(response)
-  } catch {
-    // chrome.tabs.sendMessage 失败（如 content script 未加载）
+  } catch (error) {
+    // 受限页（chrome:// 等）注入失败 vs 注入后仍无响应，提示不同动作
+    const isRestricted = error instanceof Error && error.message === 'INJECTION_FAILED'
     return {
       success: false,
       code: 'CONTENT_SCRIPT_ERROR',
-      message: 'Content Script 未响应，请确认页面已加载扩展',
-      suggestion: 'RELOAD_PAGE',
+      message: isRestricted
+        ? '当前页面无法注入扩展脚本（如浏览器内部页面），请切换到普通网页后重试'
+        : 'Content Script 未响应，请刷新页面后重试',
+      suggestion: isRestricted ? 'SWITCH_TAB' : 'RELOAD_PAGE',
     }
   }
 }

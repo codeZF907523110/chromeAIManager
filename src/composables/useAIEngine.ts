@@ -179,6 +179,37 @@ export function useAIEngine() {
   // Agent loop 当前活动的 AbortController（用于立即停止按钮）
   let abortController: AbortController | null = null
 
+  /**
+   * 折叠历史消息里的整页 dump（快照 nodesText / 页面扫描结果），只保留最新一份。
+   *
+   * 背景：browser_* 操作类工具每步返回操作后快照（nodesText 数百行），scan 返回整页
+   * 元素列表；push 进 messages 后若不裁剪，第 N 步要把前 N-1 步的全部快照重发一遍，
+   * 服务端 prefill 随步数叠加 → "思考中"越来越久。业界做法（Playwright MCP /
+   * browser-use）：对话里只保留最新页面状态，旧快照用占位符替代——旧 ref 随
+   * snapshotCache 刷新本已失效，留着只有 prefill 成本、没有信息价值。
+   *
+   * @param messages agent loop 的对话消息数组（就地修改）
+   */
+  function foldStaleSnapshots(messages: ChatMessage[]): void {
+    let keptLatest = false
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role !== 'user') continue
+      const isDump = m.content.includes('"nodesText"') || m.content.startsWith('页面扫描结果(')
+      if (!isDump) continue
+      if (!keptLatest) {
+        keptLatest = true // 从尾部数第一个命中 = 最新，保留
+        continue
+      }
+      const toolMatch = m.content.match(/^执行结果\(([^)]+)\):/)
+      const what = toolMatch ? `工具 ${toolMatch[1]} 的页面快照` : '页面扫描结果'
+      messages[i] = {
+        ...m,
+        content: `[历史快照已折叠] ${what}已被更新的快照取代，仅保留最新一份以控制上下文长度；页面当前状态以最新快照为准。`,
+      }
+    }
+  }
+
   async function agentLoop(userText: string) {
     const loopId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
     activeLoopId.value = loopId
@@ -229,6 +260,9 @@ export function useAIEngine() {
         }
 
         let raw: string
+        // 本次 AI 调用的起始时间：try/catch 两侧的耗时日志共用，必须声明在 try 之外
+        // （定义在 try 块内时 catch 里不可见，会报 TS2304）
+        const chatStart = Date.now()
         try {
           // 根据最后一条 assistant 消息的 action 决定 temperature：工具调用用 0.1（严格），闲聊/首轮用 1.2（宽松）
           const lastAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant')
@@ -238,11 +272,11 @@ export function useAIEngine() {
             /"action"\s*:\s*"(browser_|tabs_|bookmarks_|history_|windows_|storage_|cookies_|permissions_|extensions_|theme_|font_|downloads_|sessions_|top_sites_|task_plan|navigate|screenshot|batch|scan|exec_plan|askUserResponse|done|exec_tool|execute|zoom)"/.test(
               lastAssistantMsg.content
             )
-          const chatStart = Date.now()
           console.log('[AI-debug] useAIEngine.chatWithHistory start', {
             step: stepCount + 1,
             isToolCall,
             messagesCount: messages.length,
+            totalChars: messages.reduce((n, m) => n + m.content.length, 0),
           })
           raw = await aiEngine.chatWithHistory(messages, {
             temperature: isToolCall ? 0.1 : 1.2,
@@ -256,10 +290,8 @@ export function useAIEngine() {
           })
           // AI 响应已返回，再次检查是否被中途停止（网络请求发出后无法取消，但返回后可以中断处理）
           if (activeLoopId.value !== loopId) {
+            // 用户已点停止：反馈消息由 stopAgentLoop 统一发出，这里静默退出防重复
             console.log('[AI Commander] Agent loop stopped during AI call, aborting')
-            addMessage('system', '已停止当前任务')
-            reportUserFacingError('收到你的停止信号啦喵，已经中断当前任务～')
-            cleanup()
             return
           }
           console.log('[AI Commander] Raw response:', raw?.slice(0, 500))
@@ -388,6 +420,7 @@ export function useAIEngine() {
             : '扫描失败'
           messages.push({ role: 'assistant', content: raw })
           messages.push({ role: 'user', content: scanStr })
+          foldStaleSnapshots(messages)
           addMessage('system', '已重新扫描页面')
           continue
         }
@@ -821,6 +854,8 @@ export function useAIEngine() {
           role: 'user',
           content: resultContent,
         })
+        // 维持"历史中至多一份整页 dump"不变式，防止请求体随步数线性膨胀
+        foldStaleSnapshots(messages)
 
         if (result.result === undefined) {
           messages.push({
@@ -988,7 +1023,17 @@ export function useAIEngine() {
     }
 
     if (resolvedIntent === 'clear_chat') {
-      clearMessages()
+      // 刚 addMessage 的 user 消息（handleSlashCommand 是 handleSubmit 的同步下一步，
+      // 中间无其它 addMessage）；clearMessages 会连它一起清掉，先留引用
+      const userMsg = messageLog.value.at(-1)
+      await clearMessages()
+      if (userMsg) {
+        // 清空后只保留 user 消息并显式重新落盘（put 按 id upsert，幂等），
+        // 后续 addMessage 的反馈也会正常落盘 → 重启后看到的是"清除动作 + 反馈"，旧消息不复活
+        messageLog.value = [userMsg]
+        await persistMessage(userMsg)
+      }
+      addMessage('ai-chat', wrapCatReply('聊天记录已经清空啦喵～有什么新需求随时告诉我 ✨'))
       return
     }
 
@@ -1670,7 +1715,12 @@ export function useAIEngine() {
    * - 错误仅记录，不抛到 UI
    * - 失败时插一条 system 警告，让用户知道"消息没存上"
    */
-  async function persistMessage(msg: MessageLog): Promise<void> {
+  /**
+   * 持久化执行层：落盘单条消息，失败时仅告警不抛出（永不 reject）。
+   *
+   * @param msg 待落盘消息
+   */
+  async function persistMessageTask(msg: MessageLog): Promise<void> {
     try {
       await messageStore.append(msg)
     } catch (e: unknown) {
@@ -1685,7 +1735,26 @@ export function useAIEngine() {
     }
   }
 
+  /** 落盘在途任务集合：clearMessages / deleteMessage 清库前必须等它们落定（见 docs/clear-chat-resurrection.md） */
+  const pendingPersists = new Set<Promise<void>>()
+
+  /**
+   * 持久化注册层：登记在途落盘任务供清库 barrier 等待，落定后解除登记。
+   *
+   * @param msg 待落盘消息
+   * @returns 落盘任务（内部已 try/catch 兜底，永不 reject）
+   */
+  function persistMessage(msg: MessageLog): Promise<void> {
+    const task = persistMessageTask(msg)
+    pendingPersists.add(task)
+    void task.finally(() => pendingPersists.delete(task))
+    return task
+  }
+
   async function clearMessages(): Promise<void> {
+    // barrier：等所有在途落盘任务落定后再清库，杜绝"put 事务创建晚于 clear 事务、
+    // 在清库之后落地"导致的消息复活（IndexedDB 按事务创建顺序提交）
+    await Promise.allSettled([...pendingPersists])
     // 先清 IndexedDB，成功后再清内存；避免磁盘残留导致下次启动数据"复活"
     if (isInitialized.value) {
       try {
@@ -1716,6 +1785,9 @@ export function useAIEngine() {
       deleteCount++
       if (msg.id) removedIds.push(msg.id)
     }
+    // barrier：等在途落盘任务落定再删库，同 clearMessages——刚 add 的消息若正被删除，
+    // 其 put 事务可能晚于 delete 落地而复活
+    await Promise.allSettled([...pendingPersists])
     // 先删 IndexedDB，成功后再 splice 内存；失败保留磁盘+内存一致
     if (isInitialized.value && removedIds.length > 0) {
       try {
@@ -1754,6 +1826,26 @@ export function useAIEngine() {
     } catch {
       // ignore
     }
+  }
+
+  /**
+   * 用户点击停止按钮的统一入口：先补齐"用户输入 → AI 回复"的反馈对，再中断请求并清理状态。
+   *
+   * 背景：停止可能发生在三个时机（AI 请求中 / 响应已返回 / 工具执行中），此前反馈不一致——
+   * 只发 system 日志气泡时用户会觉得"输入了但没有回答"（聊天里缺少 ai-chat 回复），
+   * 响应已返回的路径还会重复发 system 消息。收敛到这里统一发一次：
+   * - system 标记（保留步骤日志语义）+ ai-chat 猫式回复（对齐 reportUserFacingError 双气泡惯例）
+   * - cleanup() 中断后 agentLoop 的所有退出路径静默 return，不会重复反馈
+   *
+   * @returns void；无进行中任务时直接返回（停止按钮兜底防误触）
+   */
+  function stopAgentLoop(): void {
+    if (!activeLoopId.value) return
+    addMessage('system', '已停止当前任务')
+    addMessage('ai-chat', {
+      markdown: wrapCatReply('收到你的停止信号啦喵，已经中断当前任务～有新的需求随时告诉我'),
+    })
+    cleanup()
   }
 
   function compressMessages(messages: ChatMessage[]) {
@@ -1850,6 +1942,21 @@ export function useAIEngine() {
     return null
   }
 
+  /**
+   * 操作类 browser_* 工具集合：content script 执行后会自动附带操作后的最新页面快照
+   * （data.snapshot，对标 Playwright MCP），sanitize 时与 browser_snapshot 同级处理。
+   */
+  const POST_ACTION_SNAPSHOT_TOOLS = new Set([
+    'browser_click',
+    'browser_type',
+    'browser_select_option',
+    'browser_hover',
+    'browser_press_key',
+    'browser_check',
+    'browser_uncheck',
+    'browser_fill_form',
+  ])
+
   function sanitizeResult(obj: unknown, toolName?: string): unknown {
     if (obj === null || obj === undefined) return obj
     if (typeof obj === 'string') {
@@ -1860,7 +1967,14 @@ export function useAIEngine() {
     // 数组截断阈值：回灌给 AI 的数组最多 30 项，超出则截断 + 记录提示。
     // 避免 history_search(100条)/bookmarks_observe_tree(500节点) 等大数组
     // 完整回灌撑爆 AI 上下文，导致输出被截断、JSON 解析失败（"我没有理解您的请求"）。
-    const MAX_ARRAY = 30
+    // browser_snapshot 及操作类工具例外：AI 视图只回灌 nodesText 逐行文本（nodes 数组
+    // 仅供程序消费），文本放宽到 8000 字符——通用 500→200 截断会把快照毁掉。
+    // 操作类工具的 nodesText 嵌在 data.snapshot 里，replacer 按 key 名 'nodes' 任意深度剔除。
+    const isSnapshot =
+      toolName === 'browser_snapshot' ||
+      (toolName !== undefined && POST_ACTION_SNAPSHOT_TOOLS.has(toolName))
+    const MAX_ARRAY = isSnapshot ? 120 : 30
+    const MAX_STR = isSnapshot ? 8000 : 500
     const truncatedArrays: Array<{ field: string; total: number }> = []
     const seen = new WeakSet()
     try {
@@ -1874,6 +1988,10 @@ export function useAIEngine() {
           truncatedArrays.push({ field: key || '(root)', total: val.length })
           return val.slice(0, MAX_ARRAY)
         }
+        // browser_snapshot：AI 只阅读 nodesText 逐行文本，嵌套的 nodes 数组不回灌（省 token 且模型更好读）
+        if (isSnapshot && key === 'nodes') {
+          return undefined
+        }
         // 截图 / 大体积 dataURL 不塞进文本上下文（会撑爆 token）。
         // 但要让 AI 知道结果存在：把这类字段替换成一个简短标记，AI 知道截图已经捕获、
         // 已存入 lastScreenshot，可继续基于"已知页面状态"推理；不要让 AI 以为结果是空的。
@@ -1885,8 +2003,8 @@ export function useAIEngine() {
             ? `[screenshot: 截图已捕获 ${val.length} 字符（${toolName}），UI 已展示，请基于已有页面上下文继续推理]`
             : `[${key}: 已捕获 ${val.length} 字符的二进制数据，UI 已展示]`
         }
-        if (typeof val === 'string' && val.length > 500) {
-          return val.slice(0, 200) + `...[截断, 原长 ${val.length} 字符]`
+        if (typeof val === 'string' && val.length > MAX_STR) {
+          return val.slice(0, MAX_STR) + `...[截断, 原长 ${val.length} 字符]`
         }
         return val
       })
@@ -2445,6 +2563,7 @@ export function useAIEngine() {
     getContext,
     scanCurrentPage,
     cleanup,
+    stopAgentLoop,
     mdToHtml,
     renderExecutionResult,
     toggleSettings,
