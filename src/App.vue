@@ -131,8 +131,8 @@
     <!-- 添加模型弹窗 -->
     <el-dialog v-model="showAddDialog" title="添加模型" width="90%" style="max-width: 400px">
       <el-form label-position="top">
-        <el-form-item label="模型名称">
-          <el-input v-model="newModel.name" placeholder="如：DeepSeek V3" />
+        <el-form-item label="显示名称">
+          <el-input v-model="newModel.name" placeholder="如：DeepSeek V3（列表展示用）" />
         </el-form-item>
         <el-form-item label="提供商">
           <el-select v-model="newModel.provider" placeholder="选择提供商" style="width: 100%">
@@ -153,8 +153,8 @@
           <el-form-item label="API 端点">
             <el-input v-model="newModel.apiEndpoint" placeholder="如：https://api.openai.com" />
           </el-form-item>
-          <el-form-item label="模型名称">
-            <el-input v-model="newModel.modelName" placeholder="如：gpt-4o" />
+          <el-form-item label="模型 ID">
+            <el-input v-model="newModel.modelName" placeholder="如：gpt-4o（API 调用的模型标识）" />
           </el-form-item>
         </template>
       </el-form>
@@ -167,8 +167,8 @@
     <!-- 编辑模型弹窗 -->
     <el-dialog v-model="editDialogVisible" title="编辑模型" width="90%" style="max-width: 400px">
       <el-form label-position="top">
-        <el-form-item label="模型名称">
-          <el-input v-model="editingModel!.name" />
+        <el-form-item label="显示名称">
+          <el-input v-model="editingModel!.name" placeholder="如：DeepSeek V3（列表展示用）" />
         </el-form-item>
         <el-form-item label="提供商">
           <el-select v-model="editingModel!.provider" style="width: 100%">
@@ -184,8 +184,11 @@
           <el-form-item label="API 端点">
             <el-input v-model="editingModel!.apiEndpoint" />
           </el-form-item>
-          <el-form-item label="模型名称">
-            <el-input v-model="editingModel!.modelName" />
+          <el-form-item label="模型 ID">
+            <el-input
+              v-model="editingModel!.modelName"
+              placeholder="如：gpt-4o（API 调用的模型标识）"
+            />
           </el-form-item>
         </template>
       </el-form>
@@ -230,8 +233,7 @@ const appVersion =
 const {
   state,
   handleSubmit: aiHandleSubmit,
-  cleanup: aiCleanup,
-  addMessage: aiAddMessage,
+  stopAgentLoop: aiStopAgentLoop,
   toggleSettings,
   initEngine,
   models,
@@ -337,12 +339,10 @@ async function handleSubmit() {
   lastSubmittedText = '' // 清零，允许发送相同命令（非连续）
 }
 
-// 停止当前对话：先给用户一条 system 反馈，再中断 AI 请求并清理状态。
-// cleanup() 中断 abortController 后，进行中的 chatWithHistory 会抛 AbortError，
-// agentLoop 的 catch 分支会静默 return（不重复反馈），所以这里加一条即可。
+// 停止当前任务：反馈（system 标记 + ai-chat 回复）与中断、清理统一收敛在 stopAgentLoop，
+// 三种中断时机（AI 请求中/响应已返回/工具执行中）行为一致，agentLoop 内部静默退出不重复反馈。
 function handleStop() {
-  aiAddMessage('system', '已停止当前任务')
-  aiCleanup()
+  aiStopAgentLoop()
 }
 
 onMounted(async () => {

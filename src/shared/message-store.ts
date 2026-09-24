@@ -2,7 +2,7 @@
  * 消息存储 — IndexedDB 封装
  *
  * 设计：
- *   - 每条消息一条记录（keyPath: id），按 createdAt 索引排序
+ *   - 每条消息一条记录（keyPath: id），按 createdAt + seq 排序（seq 保证同毫秒消息全序）
  *   - 不做老数据迁移（chrome.storage.local 的 ai_message_log 直接丢弃；第一版干净）
  *   - 默认容量上限 100 条；超出按 createdAt 删除最早
  *   - 所有 API 异步；append/load 都不阻塞 UI 渲染
@@ -36,6 +36,8 @@ function resolveTagName(component: Component): string {
 
 /** meta store key：消息容量上限 */
 const META_MAX_KEY = 'maxMessages'
+/** meta store key：消息序号计数器（单调递增，保证同毫秒消息的稳定排序） */
+const META_SEQ_KEY = 'lastMessageSeq'
 /** 默认消息容量上限 */
 export const DEFAULT_MAX_MESSAGES = 100
 
@@ -47,6 +49,9 @@ export { openDB, promisifyRequest }
  *
  * - createdAt 默认 Date.now()
  * - id 默认 crypto.randomUUID()
+ * - seq 单调递增序号：同毫秒创建的消息（如同一个同步代码段里的 user 输入 + AI 回复）
+ *   createdAt 相同，createdAt 索引内顺序会退化为随机主键序 → 重启加载后乱序；
+ *   seq 是稳定次序键（IM 领域标准做法），list() 按 createdAt + seq 排序
  * - 超出上限时删除最早的多余记录
  *
  * 注意：PersistedMessage.text 实际是 StorableMessageBody（components 被替换成 tagName）。
@@ -56,6 +61,7 @@ export { openDB, promisifyRequest }
 export interface PersistedMessage extends MessageLog {
   id: string
   createdAt: number
+  seq: number
 }
 
 /**
@@ -194,6 +200,30 @@ async function setMaxInDB(db: IDBDatabase, n: number): Promise<void> {
 }
 
 /**
+ * 读取并递增消息序号计数器，返回本次消息使用的 seq。
+ * 计数器的读、改、写在同一个 readwrite 事务内完成，多写方场景也不会发出重复 seq
+ * （IM 领域标准做法：单调 seq 作次序键，时间戳只用于展示/裁剪）。
+ *
+ * @param db 已打开的数据库连接
+ * @returns 本次分配的单调递增序号（从 1 开始）
+ * @throws 事务失败时抛错，由 append 上抛（persistMessage 会兜底提示）
+ */
+async function nextSeq(db: IDBDatabase): Promise<number> {
+  const tx = db.transaction(STORE_META, 'readwrite')
+  const store = tx.objectStore(STORE_META)
+  const current = await promisifyRequest<{ key: string; value: number } | undefined>(
+    store.get(META_SEQ_KEY)
+  )
+  const next = (current?.value ?? 0) + 1
+  store.put({ key: META_SEQ_KEY, value: next, updatedAt: Date.now() })
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error ?? new Error('seq update failed'))
+  })
+  return next
+}
+
+/**
  * 删除最早的多余记录，保持总数不超过 max
  */
 async function trimOldest(db: IDBDatabase, max: number): Promise<void> {
@@ -229,10 +259,12 @@ export const messageStore = {
   async append(msg: MessageLog): Promise<PersistedMessage> {
     const db = await openDB()
     const storable = toStorable(msg)
+    const seq = await nextSeq(db)
     const record = {
       ...storable,
       id: msg.id ?? crypto.randomUUID(),
       createdAt: msg.createdAt ?? Date.now(),
+      seq,
     } as unknown as PersistedMessage
     {
       const tx = db.transaction(STORE_MESSAGES, 'readwrite')
@@ -250,6 +282,10 @@ export const messageStore = {
   /**
    * 按时间升序返回全部消息（已还原 MessageBody.components）
    *
+   * 排序：createdAt 升序，同毫秒按 seq 升序（seq 单调递增，是稳定次序键；
+   * createdAt 索引内同键多条的顺序是随机主键序，不能依赖）。
+   * 老数据无 seq 时兜底 0——新消息 createdAt ≥ 老消息，两种记录不会混排。
+   *
    * 调用方拿到的是 MessageLog 形态，可直接传给 MessageBubble 渲染。
    * toMessageBody 在每条记录上独立执行，单条失败不影响其他消息。
    */
@@ -258,6 +294,7 @@ export const messageStore = {
     const tx = db.transaction(STORE_MESSAGES, 'readonly')
     const index = tx.objectStore(STORE_MESSAGES).index('createdAt')
     const items = (await promisifyRequest<IDBValidResult>(index.getAll())) ?? []
+    items.sort((a, b) => a.createdAt - b.createdAt || (a.seq ?? 0) - (b.seq ?? 0))
     return items.map(toMessageBody)
   },
 

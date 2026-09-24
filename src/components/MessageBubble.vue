@@ -13,8 +13,10 @@
 -->
 
 <template>
+  <!-- data-msg-index：与 messageLog 下标一致，供 MessageList「回到本次提问」按钮定位气泡 DOM -->
   <div
     class="message-item"
+    :data-msg-index="index"
     :class="{
       'message-item-user': msg.type === 'user',
       'message-item-ai-chat': msg.type === 'ai-chat',
@@ -275,6 +277,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   animation: bubbleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  /* scrollIntoView 贴顶定位时保留 12px 上边距，避免 user 气泡被容器顶部裁切 */
+  scroll-margin-top: 12px;
 }
 
 .message-item-user {

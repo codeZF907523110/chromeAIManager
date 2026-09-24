@@ -67,13 +67,27 @@ export const COMMANDS: Command[] = [
   {
     intent: 'tabs_move',
     description:
-      '移动标签页位置。tabIds 为空移动当前标签，index 为目标位置(0-based)。返回结果包含 id、index 字段用于验证',
+      '移动标签页位置，仅适用于小范围位置调整。tabIds 为空移动当前标签，index 为目标位置(0-based)。返回结果包含 id、index 字段用于验证',
     dangerous: false,
     slots: {
       tabIds: { type: 'array', optional: true, description: '标签 ID 数组，元素为数字' },
       index: { type: 'number', description: '目标位置 (0-based)' },
     },
     swIntent: 'tabs_move',
+  },
+  {
+    intent: 'tabs_reorder',
+    description:
+      '按期望顺序一次性重排窗口内全部标签页（排序/分类任务必须用这个，一次调用完成，禁止逐个 tabs_move）。order 传按目标顺序排列的 tabId 数组；未列出的标签保持相对顺序排在后面；固定(pinned)标签不参与重排。返回 sorted 列表（id+title）即最终顺序',
+    dangerous: false,
+    slots: {
+      order: {
+        type: 'array',
+        description: '期望顺序的标签 ID 数组（数字），来自 tabs_observe 的 id 字段',
+      },
+      windowId: { type: 'number', optional: true, description: '目标窗口 ID，缺省为当前窗口' },
+    },
+    swIntent: 'tabs_reorder',
   },
   {
     intent: 'tabs_remove',
@@ -1081,6 +1095,16 @@ export const COMMANDS: Command[] = [
       includeIframes: { type: 'boolean', optional: true, description: '是否包含iframe，默认true' },
     },
     swIntent: 'browser_snapshot',
+  },
+  {
+    intent: 'browser_find',
+    description: '按文本关键词模糊查找页面元素（含快照中被折叠的元素），返回带 ref 的匹配行',
+    dangerous: false,
+    slots: {
+      query: { type: 'string', description: '查找关键词，部分匹配即可，如"新对话"' },
+      role: { type: 'string', optional: true, description: '限定元素角色，如 button、textbox' },
+    },
+    swIntent: 'browser_find',
   },
   {
     intent: 'browser_click',

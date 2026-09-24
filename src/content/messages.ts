@@ -4,6 +4,7 @@
 
 export type ContentScriptMessage =
   | { type: 'SNAPSHOT'; timestamp: number }
+  | { type: 'FIND'; query: string; role?: string; timestamp: number }
   | { type: 'CLICK'; ref: string; timestamp: number }
   | { type: 'TYPE'; ref: string; text: string; submit?: boolean; timestamp: number }
   | { type: 'SELECT'; ref: string; value: string; timestamp: number }

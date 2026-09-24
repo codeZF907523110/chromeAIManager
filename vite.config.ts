@@ -66,13 +66,15 @@ function chromeExtensionPlugin() {
       // 复制 manifest.json
       copyFileSync(resolve(__dirname, 'manifest.json'), resolve(distDir, 'manifest.json'))
 
-      // 复制 icons 目录
+      // 复制 icons 目录（只拷贝 manifest 用到的 .png，源图等设计稿不进 dist）
       const iconsSrc = resolve(__dirname, 'icons')
       const iconsDst = resolve(distDir, 'icons')
       if (existsSync(iconsSrc)) {
         mkdirSync(iconsDst, { recursive: true })
         readdirSync(iconsSrc).forEach((file) => {
-          copyFileSync(resolve(iconsSrc, file), resolve(iconsDst, file))
+          if (file.endsWith('.png')) {
+            copyFileSync(resolve(iconsSrc, file), resolve(iconsDst, file))
+          }
         })
       }
 

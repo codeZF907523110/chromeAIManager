@@ -6,7 +6,7 @@
         <textarea
           ref="textareaRef"
           v-model="inputValue"
-          placeholder="输入命令或 / 查看帮助..."
+          :placeholder="isListening ? '正在聆听，请说话…' : '输入命令或 / 查看帮助...'"
           rows="3"
           @keydown="handleKeydown"
           @input="handleInput"
@@ -33,6 +33,13 @@
         </div>
       </div>
 
+      <!-- 语音输入状态栏：聆听中显示（声浪条 + 计时 + 结束按钮） -->
+      <div v-if="isListening" class="voice-bar">
+        <span class="voice-eq" aria-hidden="true"><i /><i /><i /></span>
+        <span class="voice-hint">正在聆听… {{ elapsedText }}</span>
+        <button class="voice-stop" @click="stopVoice">结束</button>
+      </div>
+
       <!-- 工具栏 -->
       <div class="toolbar">
         <div class="toolbar-right">
@@ -54,8 +61,14 @@
             </template>
           </el-dropdown>
 
-          <!-- 麦克风按钮 -->
-          <button class="icon-btn" title="语音输入">
+          <!-- 麦克风按钮（浏览器不支持语音识别时隐藏；聆听中变红脉冲） -->
+          <button
+            v-if="speechSupported"
+            class="icon-btn"
+            :class="{ 'mic-active': isListening }"
+            :title="isListening ? '点击结束聆听' : '语音输入'"
+            @click="toggleSpeech"
+          >
             <Mic :size="16" />
           </button>
 
@@ -81,10 +94,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { ChevronDown, Mic, ArrowUp, StopCircle } from 'lucide-vue-next'
 import { useAIEngine } from '../composables/useAIEngine'
 import { useMessageHistory } from '../composables/useCommandHistory'
+import { useSpeechRecognition } from '../composables/useSpeechRecognition'
 import { SLASH_COMMANDS } from '../shared/slash-commands'
 import type { SlashCommand } from '../types'
 
@@ -132,6 +147,108 @@ const currentModelName = computed(() => {
 
 const textareaRef = ref<HTMLTextAreaElement>()
 
+// ──── 语音输入（Web Speech API，封装见 useSpeechRecognition）────
+const {
+  isListening,
+  finalText,
+  interimText,
+  elapsedText,
+  lastError,
+  isSupported: speechSupported,
+  start: startSpeech,
+  stop: stopSpeech,
+  reset: resetSpeech,
+} = useSpeechRecognition({ lang: 'zh-CN' })
+
+/** 开始聆听时的输入框内容快照：转写文字以空格追加在其后，不覆盖用户已输入内容 */
+const speechBaseText = ref('')
+
+/** 尾句冲刷窗口：stop() 后识别器会把最后一段 final 补发给 onresult，窗口期内允许写回输入框 */
+const flushWindow = ref(false)
+/** 冲刷窗口计时器句柄 */
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+
+// final/interim 任一变化 → 同步进输入框（flush: 'sync' 让文字随识别事件即时出现）
+watch(
+  [finalText, interimText],
+  () => {
+    // 仅聆听中或冲刷窗口内同步；发送路径不开窗口，补发尾句不得写回已清空的输入框
+    if (!isListening.value && !flushWindow.value) return
+    inputValue.value = speechBaseText.value + finalText.value + interimText.value
+  },
+  { flush: 'sync' }
+)
+
+// 识别错误 → 提示（no-speech / aborted 不会写入 lastError，无需过滤）
+watch(lastError, (code) => {
+  if (!code) return
+  if (code === 'permission-dismissed') {
+    // 侧边栏弹不出授权气泡，自动打开本扩展的站点设置页引导授权
+    openMicPermissionSettings()
+    ElMessage.warning(voiceErrorMessage(code))
+    return
+  }
+  ElMessage.error(voiceErrorMessage(code))
+})
+
+/**
+ * 打开本扩展的站点设置页（麦克风权限所在处）。
+ * 侧边栏页面无法锚定 Chrome 授权气泡（请求会被直接 dismissed），
+ * 需要用户在站点设置里把「麦克风」设为允许；扩展自己知道 ID，无需用户复制。
+ */
+function openMicPermissionSettings(): void {
+  try {
+    const url = `chrome://settings/content/siteDetails?site=chrome-extension://${chrome.runtime.id}`
+    chrome.tabs.create({ url })
+  } catch (e) {
+    console.warn('[CommandInput] 打开麦克风权限设置页失败:', e)
+  }
+}
+
+/**
+ * 把语音识别/权限预检的错误码转成用户可读文案。
+ * @param code 错误码（not-allowed / no-device / device-busy / network 等）
+ * @returns 中文提示文案
+ */
+function voiceErrorMessage(code: string): string {
+  if (code === 'permission-dismissed') {
+    return '已在新标签页打开本扩展的权限设置：请把「麦克风」设为「允许」，回来后再点一次麦克风'
+  }
+  if (code === 'not-allowed' || code === 'service-not-allowed') {
+    return '麦克风权限被拒绝：请检查 macOS「系统设置→隐私与安全性→麦克风」中 Chrome 是否开启，并允许本扩展使用麦克风'
+  }
+  if (code === 'no-device') return '未检测到麦克风设备，请检查系统声音输入设置'
+  if (code === 'device-busy') return '麦克风被其它应用占用，请关闭占用后重试'
+  if (code === 'network') return '语音识别服务网络异常，请检查网络后重试'
+  return `语音识别出错（${code}），请重试`
+}
+
+/**
+ * 结束聆听并保留文字（点击「结束」/麦克风）：开启 300ms 冲刷窗口，
+ * 让识别器 stop() 后补发的最后一段 final 落进输入框，避免丢尾句。
+ */
+function stopVoice(): void {
+  stopSpeech()
+  flushWindow.value = true
+  if (flushTimer) clearTimeout(flushTimer)
+  flushTimer = setTimeout(() => {
+    flushWindow.value = false
+  }, 300)
+}
+
+/**
+ * 点击麦克风：聆听中 → 结束聆听（文字保留在输入框）；未开始 → 快照当前输入内容后开始聆听。
+ */
+function toggleSpeech(): void {
+  if (isListening.value) {
+    stopVoice()
+    return
+  }
+  speechBaseText.value = inputValue.value.trim() ? inputValue.value + ' ' : ''
+  resetSpeech()
+  startSpeech()
+}
+
 // 输入法组合输入状态：中文/日文等输入候选词期间为 true，此时 Enter 用于确认候选词而非提交。
 // compositionstart/end 由 @composition* 事件维护，isComposing 由 keydown 原生属性兜底双保险。
 const isComposing = ref(false)
@@ -162,7 +279,11 @@ function handleDocClick(e: MouseEvent) {
 }
 
 onMounted(() => document.addEventListener('click', handleDocClick))
-onUnmounted(() => document.removeEventListener('click', handleDocClick))
+onUnmounted(() => {
+  document.removeEventListener('click', handleDocClick)
+  // 清理冲刷窗口计时器，防止组件卸载后回写状态
+  if (flushTimer) clearTimeout(flushTimer)
+})
 
 function handleInput() {
   const val = inputValue.value
@@ -260,6 +381,8 @@ function handleSend() {
   // 初始化期间拒绝提交：避免 user 消息 push 到空 messageLog，
   // 然后被异步加载的历史消息 "挤到末尾" 造成视觉顺序错乱。
   if (!props.isInitialized) return
+  // 聆听中先停止语音识别，避免发送后仍在转写
+  if (isListening.value) stopSpeech()
   resetHistoryNav()
   emit('submit')
   inputValue.value = ''
@@ -421,6 +544,95 @@ async function handleSelectModel(modelId: string) {
 .icon-btn:hover {
   background: var(--app-picker-item-hover);
   color: var(--app-text-muted);
+}
+
+/* 麦克风聆听中：红色 + 脉冲光圈 */
+.icon-btn.mic-active {
+  color: #ef4444;
+  animation: mic-pulse 1.4s ease-out infinite;
+}
+
+@keyframes mic-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+/* 语音输入状态栏：声浪条 + 提示 + 结束按钮 */
+.voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--app-picker-border);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+/* 三根声浪条跳动 */
+.voice-eq {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.voice-eq i {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: #ef4444;
+  transform-origin: bottom;
+  animation: voice-eq 0.9s ease-in-out infinite;
+}
+
+.voice-eq i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.voice-eq i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes voice-eq {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.voice-hint {
+  flex: 1;
+  font-size: 12px;
+  color: var(--app-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-stop {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #ef4444;
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.voice-stop:hover {
+  background: rgba(239, 68, 68, 0.08);
 }
 
 /* 停止按钮 */
