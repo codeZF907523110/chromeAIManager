@@ -1,5 +1,9 @@
 <script setup lang="ts">
 import { ElTooltip } from 'element-plus'
+import { useI18n } from 'vue-i18n'
+import { i18n } from '../../locales'
+
+const { t } = useI18n()
 
 /**
  * HistoryTable — 浏览历史表格
@@ -33,7 +37,11 @@ const props = withDefaults(
 
 function formatTime(ts?: number): string {
   if (!ts) return '-'
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  // 跟随当前界面语言的时间格式（12/24 小时制等由浏览器按 locale 决定）
+  return new Date(ts).toLocaleTimeString(i18n.global.locale.value, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function truncate(url: string): string {
@@ -45,9 +53,9 @@ function truncate(url: string): string {
   <table class="history-table">
     <thead>
       <tr>
-        <th class="col-time">时间</th>
-        <th class="col-title">标题</th>
-        <th class="col-link">链接</th>
+        <th class="col-time">{{ t('blocks.colTime') }}</th>
+        <th class="col-title">{{ t('blocks.colTitle') }}</th>
+        <th class="col-link">{{ t('blocks.colLink') }}</th>
       </tr>
     </thead>
     <tbody>
@@ -55,9 +63,9 @@ function truncate(url: string): string {
         <td class="col-time">{{ formatTime(it.lastVisitTime) }}</td>
         <td class="col-title">
           {{ it.title || it.url }}
-          <span v-if="it.visitCount && it.visitCount > 1" class="visits"
-            >· {{ it.visitCount }}次</span
-          >
+          <span v-if="it.visitCount && it.visitCount > 1" class="visits">
+            · {{ t('blocks.visitCount', { count: it.visitCount }) }}
+          </span>
         </td>
         <td class="col-link">
           <el-tooltip
@@ -73,7 +81,7 @@ function truncate(url: string): string {
         </td>
       </tr>
       <tr v-if="items.length === 0">
-        <td colspan="3" class="empty">还没有浏览记录呢~</td>
+        <td colspan="3" class="empty">{{ t('blocks.noHistory') }}</td>
       </tr>
     </tbody>
   </table>

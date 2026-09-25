@@ -12,10 +12,10 @@
 import type { MessageBody } from '../../types/message-block'
 import type { ExecutionResult } from '../../types/execution'
 import TabList from '../../components/blocks/TabList.vue'
-import ActionButtonGroup from '../../components/blocks/ActionButtonGroup.vue'
 import HistoryTable from '../../components/blocks/HistoryTable.vue'
 import DataTable, { type DataTableColumn } from '../../components/blocks/DataTable.vue'
 import { newBlockId } from '../../composables/useMarkdown'
+import { i18n } from '../../locales'
 
 interface HistoryItem {
   title?: string
@@ -25,24 +25,37 @@ interface HistoryItem {
 }
 
 /**
+ * 罐头文案取词入口（非组件模块）：走 i18n 全局 composer，语言切换即时生效
+ * @param key 词条 key
+ * @param params 插值参数（可选）
+ * @returns 当前语言的文案；词条缺失时由 fallbackLocale（en）兜底
+ */
+function t(key: string, params?: Record<string, unknown>): string {
+  return params ? i18n.global.t(key, params) : i18n.global.t(key)
+}
+
+/**
  * /history 命令反馈：开篇 markdown + HistoryTable 组件 + markdown 表格兜底
  *
  * 第一次渲染：HistoryTable 富组件（hover/点击新窗口打开）
  * 持久化后：B1 路径下组件按 tagName 反查注册表，仍渲染富组件
  * 极端兜底：组件缺失时 markdown 表格仍可读
  */
-export function historyMarkdownBody(r: ExecutionResult): MessageBody {
+function historyMarkdownBody(r: ExecutionResult): MessageBody {
   const items = ((r as Record<string, unknown>).items ?? []) as HistoryItem[]
   const timeRange = (r as Record<string, unknown>).timeRange as
     { label?: string; start?: number; end?: number } | undefined
   const count = (r.found as number | undefined) ?? items.length
-  const label = timeRange?.label || '今天'
+  const label = timeRange?.label || t('factory.today')
   if (count === 0) {
-    return { markdown: `今天还没有浏览记录呢~` }
+    return { markdown: t('factory.historyEmpty') }
   }
   const id = newBlockId('hi')
   return {
-    markdown: `为你找到 **${count}** 条**${label}**的浏览记录：\n\n<history-table data-id="${id}" />\n\n如需进一步筛选，请用 \`/history [关键词]\`。`,
+    markdown:
+      t('factory.historyHeader', { count, range: label }) +
+      `\n\n<history-table data-id="${id}" />` +
+      t('factory.historyTail'),
     components: [
       {
         id,
@@ -65,7 +78,7 @@ function dataTableBody(opts: {
 }): MessageBody {
   if (opts.rows.length === 0) {
     const header = opts.title ? `**${opts.title}**\n\n` : ''
-    return { markdown: `${header}${opts.empty ?? '暂无数据'}` }
+    return { markdown: `${header}${opts.empty ?? t('blocks.noData')}` }
   }
   const id = newBlockId('dt')
   const header = opts.title ? `**${opts.title}**\n\n` : ''
@@ -82,10 +95,10 @@ function cookiesMarkdownBody(r: ExecutionResult): MessageBody {
   const cookies = ((r as Record<string, unknown>).cookies ?? []) as Array<Record<string, unknown>>
   const domain = ((r as Record<string, unknown>).domain as string | undefined) ?? ''
   const columns: DataTableColumn[] = [
-    { key: 'name', title: '名称', ellipsis: 24 },
-    { key: 'value', title: '值', ellipsis: 24 },
-    { key: 'domain', title: '域名', ellipsis: 24 },
-    { key: 'path', title: '路径', width: 80 },
+    { key: 'name', title: t('factory.colName'), ellipsis: 24 },
+    { key: 'value', title: t('factory.colValue'), ellipsis: 24 },
+    { key: 'domain', title: t('factory.colDomain'), ellipsis: 24 },
+    { key: 'path', title: t('factory.colPath'), width: 80 },
     { key: 'sameSite', title: 'SameSite', width: 80 },
     {
       key: 'secure',
@@ -101,10 +114,10 @@ function cookiesMarkdownBody(r: ExecutionResult): MessageBody {
     },
   ]
   return dataTableBody({
-    title: `Cookie 列表（域名 ${domain || '?'}，共 ${cookies.length}）`,
+    title: t('factory.cookieTitle', { domain: domain || '?', count: cookies.length }),
     columns,
     rows: cookies,
-    empty: `${domain} 下暂无 Cookie`,
+    empty: t('factory.cookieEmpty', { domain }),
   })
 }
 
@@ -120,15 +133,15 @@ function extensionsMarkdownBody(r: ExecutionResult): MessageBody {
       width: 40,
       format: (row: Record<string, unknown>) => (row.enabled ? '✓' : '✗'),
     },
-    { key: 'name', title: '名称', ellipsis: 32 },
+    { key: 'name', title: t('factory.colName'), ellipsis: 32 },
     { key: 'id', title: 'ID', ellipsis: 36 },
-    { key: 'version', title: '版本', width: 80 },
+    { key: 'version', title: t('factory.colVersion'), width: 80 },
   ]
   return dataTableBody({
-    title: `已安装扩展（${list.length}）`,
+    title: t('factory.extTitle', { count: list.length }),
     columns,
     rows: list,
-    empty: '未安装扩展',
+    empty: t('factory.extEmpty'),
   })
 }
 
@@ -144,14 +157,14 @@ function topSitesMarkdownBody(r: ExecutionResult): MessageBody {
     url: s.url || '',
   }))
   const columns: DataTableColumn[] = [
-    { key: 'title', title: '标题', ellipsis: 32 },
+    { key: 'title', title: t('blocks.colTitle'), ellipsis: 32 },
     { key: 'url', title: 'URL', ellipsis: 48 },
   ]
   return dataTableBody({
-    title: `最常访问网站（${rows.length}）`,
+    title: t('factory.topSitesTitle', { count: rows.length }),
     columns,
     rows,
-    empty: '暂无最常访问网站',
+    empty: t('factory.topSitesEmpty'),
   })
 }
 
@@ -166,23 +179,27 @@ function sitePermsMarkdownBody(r: ExecutionResult): MessageBody {
   >
   const domain = ((r as Record<string, unknown>).domain as string | undefined) ?? ''
   const columns: DataTableColumn[] = [
-    { key: 'label', title: '权限', width: 120 },
+    { key: 'label', title: t('factory.colPermission'), width: 120 },
     {
       key: 'value',
-      title: '设置',
+      title: t('factory.colSetting'),
       width: 100,
       format: (row: Record<string, unknown>) => {
         const v = String(row.value || 'default')
-        return v === 'allow' ? '允许' : v === 'block' ? '阻止' : '默认'
+        return v === 'allow'
+          ? t('factory.permAllow')
+          : v === 'block'
+            ? t('factory.permBlock')
+            : t('factory.permDefault')
       },
     },
-    { key: 'key', title: '标识', ellipsis: 24 },
+    { key: 'key', title: t('factory.colIdentifier'), ellipsis: 24 },
   ]
   return dataTableBody({
-    title: `网站权限（${domain || '?'}，${entries.length} 项）`,
+    title: t('factory.sitePermsTitle', { domain: domain || '?', count: entries.length }),
     columns,
     rows: entries,
-    empty: `${domain} 下无可观察的权限项`,
+    empty: t('factory.sitePermsEmpty', { domain }),
   })
 }
 
@@ -203,13 +220,13 @@ function storageGetMarkdownBody(r: ExecutionResult): MessageBody {
           ? value
           : JSON.stringify(value)
     return dataTableBody({
-      title: `存储 ${rAny.key}`,
+      title: t('factory.storageSingleTitle', { key: rAny.key }),
       columns: [
-        { key: 'key', title: '键', width: 120 },
-        { key: 'value', title: '值', ellipsis: 60 },
+        { key: 'key', title: t('factory.colKey'), width: 120 },
+        { key: 'value', title: t('factory.colValue'), ellipsis: 60 },
       ],
       rows: [{ key: rAny.key, value: display }],
-      empty: '值为空',
+      empty: t('factory.valueEmpty'),
     })
   }
   // 全量：多行表格
@@ -222,13 +239,13 @@ function storageGetMarkdownBody(r: ExecutionResult): MessageBody {
     value: typeof v === 'string' ? v : JSON.stringify(v),
   }))
   return dataTableBody({
-    title: `扩展存储全部键值（${rows.length} 项）`,
+    title: t('factory.storageAllTitle', { count: rows.length }),
     columns: [
-      { key: 'key', title: '键', ellipsis: 32 },
-      { key: 'value', title: '值', ellipsis: 48 },
+      { key: 'key', title: t('factory.colKey'), ellipsis: 32 },
+      { key: 'value', title: t('factory.colValue'), ellipsis: 48 },
     ],
     rows,
-    empty: '扩展存储为空',
+    empty: t('factory.storageEmpty'),
   })
 }
 
@@ -246,14 +263,14 @@ function tabsSearchMarkdownBody(r: ExecutionResult): MessageBody {
     pinned?: boolean
   }>
   const columns: DataTableColumn[] = [
-    { key: 'title', title: '标题', ellipsis: 36 },
+    { key: 'title', title: t('blocks.colTitle'), ellipsis: 36 },
     { key: 'url', title: 'URL', ellipsis: 48 },
   ]
   return dataTableBody({
-    title: `搜索结果（${tabs.length} 个匹配标签）`,
+    title: t('factory.searchTitle', { count: tabs.length }),
     columns,
     rows: tabs as unknown as Record<string, unknown>[],
-    empty: '没有匹配的标签',
+    empty: t('factory.searchEmpty'),
   })
 }
 
@@ -271,23 +288,23 @@ function tabGroupsMarkdownBody(r: ExecutionResult): MessageBody {
     return {
       id: g.id,
       color: g.color || 'grey',
-      title: g.title || `分组 ${g.id}`,
+      title: g.title || t('factory.groupFallback', { id: g.id }),
       tabs: tabs.length,
       sample: firstUrl || '',
     }
   })
   const columns: DataTableColumn[] = [
-    { key: 'id', title: '分组 ID', width: 80 },
-    { key: 'title', title: '标题', ellipsis: 32 },
-    { key: 'tabs', title: '标签数', width: 70 },
-    { key: 'color', title: '颜色', width: 70 },
-    { key: 'sample', title: '示例 URL', ellipsis: 28 },
+    { key: 'id', title: t('factory.colGroupId'), width: 80 },
+    { key: 'title', title: t('blocks.colTitle'), ellipsis: 32 },
+    { key: 'tabs', title: t('factory.colTabsCount'), width: 70 },
+    { key: 'color', title: t('factory.colColor'), width: 70 },
+    { key: 'sample', title: t('factory.colSampleUrl'), ellipsis: 28 },
   ]
   return dataTableBody({
-    title: `当前窗口标签分组（${rows.length}）`,
+    title: t('factory.groupsTitle', { count: rows.length }),
     columns,
     rows,
-    empty: '当前窗口没有标签分组',
+    empty: t('factory.groupsEmpty'),
   })
 }
 
@@ -310,20 +327,21 @@ function bookmarksMarkdownBody(r: ExecutionResult): MessageBody {
     { key: 'id', title: 'ID', width: 64 },
     {
       key: 'type',
-      title: '类型',
+      title: t('factory.colType'),
       width: 56,
-      format: (row: Record<string, unknown>) => (row.type === 'folder' ? '文件夹' : '书签'),
+      format: (row: Record<string, unknown>) =>
+        row.type === 'folder' ? t('step.folder') : t('step.bookmark'),
     },
-    { key: 'title', title: '标题', ellipsis: 32 },
+    { key: 'title', title: t('blocks.colTitle'), ellipsis: 32 },
     { key: 'url', title: 'URL', ellipsis: 40 },
-    { key: 'path', title: '路径', ellipsis: 24 },
-    { key: 'childCount', title: '子项', width: 56 },
+    { key: 'path', title: t('factory.colPath'), ellipsis: 24 },
+    { key: 'childCount', title: t('factory.colChildCount'), width: 56 },
   ]
   return dataTableBody({
-    title: `书签节点（${rows.length}）`,
+    title: t('factory.bookmarksTitle', { count: rows.length }),
     columns,
     rows,
-    empty: '未匹配到书签节点',
+    empty: t('factory.bookmarksEmpty'),
   })
 }
 
@@ -341,34 +359,34 @@ function windowsMarkdownBody(r: ExecutionResult): MessageBody {
     state: w.state,
   }))
   const columns: DataTableColumn[] = [
-    { key: 'id', title: '窗口 ID', width: 80 },
+    { key: 'id', title: t('factory.colWindowId'), width: 80 },
     {
       key: 'focused',
-      title: '聚焦',
+      title: t('factory.colFocused'),
       width: 56,
       format: (row: Record<string, unknown>) => (row.focused ? '✓' : ''),
     },
-    { key: 'type', title: '类型', width: 80 },
+    { key: 'type', title: t('factory.colType'), width: 80 },
     {
       key: 'incognito',
-      title: '隐身',
+      title: t('factory.colIncognito'),
       width: 56,
       format: (row: Record<string, unknown>) => (row.incognito ? '✓' : ''),
     },
-    { key: 'state', title: '状态', width: 80 },
+    { key: 'state', title: t('factory.colState'), width: 80 },
   ]
   return dataTableBody({
-    title: `窗口（${rows.length}）`,
+    title: t('factory.windowsTitle', { count: rows.length }),
     columns,
     rows,
-    empty: '未找到窗口',
+    empty: t('factory.windowsEmpty'),
   })
 }
 
 /**
  * tabs_observe / 通用 tabs 列表反馈：开篇 + TabList 组件
  */
-export function tabsListMarkdownBody(r: ExecutionResult): MessageBody {
+function tabsListMarkdownBody(r: ExecutionResult): MessageBody {
   const tabs = ((r as Record<string, unknown>).tabs ?? []) as Array<{
     id?: number
     title?: string
@@ -379,7 +397,7 @@ export function tabsListMarkdownBody(r: ExecutionResult): MessageBody {
   const id = newBlockId('tabs')
   const count = (r.observed as number | undefined) ?? tabs.length
   return {
-    markdown: `当前有 **${count}** 个标签页：\n\n<tab-list data-id="${id}" />`,
+    markdown: t('factory.tabsHeader', { count }) + `\n\n<tab-list data-id="${id}" />`,
     components: [{ id, component: TabList, props: { tabs, variant: 'open-list' } }],
   }
 }
@@ -387,36 +405,44 @@ export function tabsListMarkdownBody(r: ExecutionResult): MessageBody {
 /**
  * /downloads-search 命令反馈：DataTable 表格
  *  - 数据来自 SW searchDownloads 的 downloads[]（id/filename/url/state/totalBytes/startTime）
- *  - state 做中文映射，totalBytes 转 KB/MB 可读单位
+ *  - state 做本地化映射，totalBytes 转 KB/MB 可读单位
  */
 function downloadsMarkdownBody(r: ExecutionResult): MessageBody {
   const downloads = ((r as Record<string, unknown>).downloads ?? []) as Array<
     Record<string, unknown>
   >
   const columns: DataTableColumn[] = [
-    { key: 'filename', title: '文件名', ellipsis: 40 },
-    { key: 'state', title: '状态', width: 90, format: formatDownloadState },
-    { key: 'totalBytes', title: '大小', width: 80, format: formatDownloadBytes },
-    { key: 'url', title: '来源', ellipsis: 36 },
+    { key: 'filename', title: t('factory.colFilename'), ellipsis: 40 },
+    { key: 'state', title: t('factory.colState'), width: 90, format: formatDownloadState },
+    { key: 'totalBytes', title: t('factory.colSize'), width: 80, format: formatDownloadBytes },
+    { key: 'url', title: t('factory.colSource'), ellipsis: 36 },
   ]
   return dataTableBody({
-    title: `下载记录（${downloads.length}）`,
+    title: t('factory.downloadsTitle', { count: downloads.length }),
     columns,
     rows: downloads,
-    empty: '没有匹配的下载记录',
+    empty: t('factory.downloadsEmpty'),
   })
 }
 
-/** 下载状态中文映射 */
+/**
+ * 下载状态本地化映射
+ * @param row - 下载记录行（含 state 字段）
+ * @returns 当前语言的状态文案；未知状态原样返回
+ */
 function formatDownloadState(row: Record<string, unknown>): string {
   const s = String(row.state || '')
-  if (s === 'in_progress') return '进行中'
-  if (s === 'complete') return '已完成'
-  if (s === 'interrupted') return '已中断'
+  if (s === 'in_progress') return t('factory.stateInProgress')
+  if (s === 'complete') return t('factory.stateComplete')
+  if (s === 'interrupted') return t('factory.stateInterrupted')
   return s
 }
 
-/** 字节数转可读单位（KB/MB） */
+/**
+ * 字节数转可读单位（KB/MB）
+ * @param row - 下载记录行（含 totalBytes 字段）
+ * @returns 可读的大小字符串；无有效字节数时返回 "-"
+ */
 function formatDownloadBytes(row: Record<string, unknown>): string {
   const bytes = Number(row.totalBytes) || 0
   if (bytes <= 0) return '-'
@@ -430,7 +456,7 @@ function formatDownloadBytes(row: Record<string, unknown>): string {
  */
 type FactoryFn = (r: ExecutionResult) => MessageBody
 
-export const markdownFactories: Record<string, FactoryFn> = {
+const markdownFactories: Record<string, FactoryFn> = {
   history_search: historyMarkdownBody,
   search_history: historyMarkdownBody,
   tabs_observe: tabsListMarkdownBody,
@@ -451,33 +477,13 @@ export const markdownFactories: Record<string, FactoryFn> = {
   downloads_search: downloadsMarkdownBody,
 }
 
+/**
+ * 按 intent 查找并调用对应的 markdown 工厂
+ * @param intent - SW intent 名
+ * @param result - 命令执行结果
+ * @returns MessageBody；未注册的 intent 返回 null（调用方走纯 markdown 兜底）
+ */
 export function buildMarkdownBody(intent: string, result: ExecutionResult): MessageBody | null {
   const fn = markdownFactories[intent]
   return fn ? fn(result) : null
-}
-
-/**
- * 命令执行失败的统一反馈（Markdown）
- */
-export function errorMarkdownBody(result: ExecutionResult): MessageBody {
-  const message = result.message || '操作失败'
-  const suggestion = result.suggestion ? `（${result.suggestion}）` : ''
-  return { markdown: `抱歉，操作 "${message}" 失败喵${suggestion ? ' ' + suggestion : ''}` }
-}
-
-/**
- * 用于操作的简单按钮组工厂：失败时给"重试"
- */
-export function retryActionButton(retryIntent: string) {
-  const id = newBlockId('act')
-  return {
-    markdown: `\n\n<action-group data-id="${id}" />`,
-    components: [
-      {
-        id,
-        component: ActionButtonGroup,
-        props: { buttons: [{ label: '重试', intent: retryIntent }] },
-      },
-    ],
-  }
 }

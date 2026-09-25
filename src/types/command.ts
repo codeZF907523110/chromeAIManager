@@ -40,13 +40,15 @@ export interface Command {
 
 // ──── 斜杠命令类型 ────
 
+/**
+ * 斜杠命令定义。说明/参数占位文案不在此处——
+ * 由词条 `slash.<intent>.desc` / `slash.<intent>.ph` 按当前界面语言提供（单一事实来源）。
+ */
 export interface SlashCommand {
   slash: string
   intent: string
-  description: string
   aliases?: string[]
   hasArg?: boolean
-  placeholder?: string
 }
 
 export interface SlashCommandMatch {

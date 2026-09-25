@@ -35,8 +35,19 @@ import { wrapCatReply } from '../shared/personality'
 import { buildMarkdownBody } from '../shared/block-renderers'
 import { useSettings } from './useSettings'
 import { createRecordingExecutor } from '../recording/executor'
+import { i18n } from '../locales'
 
 const SESSION_KEY = 'ai_commander_session'
+
+/**
+ * 罐头文案取词入口（非组件模块）：走 i18n 全局 composer，语言切换即时生效
+ * @param key 词条 key
+ * @param params 插值参数（可选）
+ * @returns 当前语言的文案；词条缺失时由 fallbackLocale（en）兜底
+ */
+function t(key: string, params?: Record<string, unknown>): string {
+  return params ? i18n.global.t(key, params) : i18n.global.t(key)
+}
 
 // ConfirmItem 和 PendingConfirm 是内部配置类型，保留本地定义
 interface ConfirmItem {
@@ -121,12 +132,14 @@ export function useAIEngine() {
         const savedPlan = data.planTracker
         const savedLessons = data.lessons || []
         pendingConfirm.value = {
-          title: '恢复上次的任务？',
-          description: '上次的任务还在进行中，是否要继续？',
+          title: t('engine.restoreTitle'),
+          description: t('engine.restoreDesc'),
           items: [
             {
-              primary: savedPlan.goal || '未完成的任务',
-              secondary: `${Math.round((Date.now() - data.timestamp) / 1000 / 60)} 分钟前`,
+              primary: savedPlan.goal || t('engine.restoreGoalFallback'),
+              secondary: t('engine.restoreMinutes', {
+                min: Math.round((Date.now() - data.timestamp) / 1000 / 60),
+              }),
             },
           ],
           onConfirm: async (_selectedTabIds: number[]) => {
@@ -136,11 +149,11 @@ export function useAIEngine() {
             if (data.conversationMessages) {
               conversationMessages.value = data.conversationMessages as ChatMessage[]
             }
-            addMessage('system', '已恢复上次任务的上下文。请继续告诉我你的需求。')
+            addMessage('system', t('engine.restoreDone'))
           },
           onCancel: () => {
             sessionStorage.removeItem(SESSION_KEY)
-            addMessage('system', '已放弃上次的任务。')
+            addMessage('system', t('engine.restoreDiscard'))
           },
         }
       }
@@ -243,7 +256,7 @@ export function useAIEngine() {
     let consecutiveErrors = 0
     let jsonRetryCount = 0
 
-    addMessage('system', `思考中... (${stepCount + 1}/${MAX_AGENT_STEPS})`)
+    addMessage('system', t('engine.thinking', { step: stepCount + 1, total: MAX_AGENT_STEPS }))
 
     try {
       while (stepCount < MAX_AGENT_STEPS) {
@@ -251,10 +264,8 @@ export function useAIEngine() {
 
         if (Date.now() - startTime > TOTAL_TASK_TIMEOUT_MS) {
           const timeoutSec = Math.round(TOTAL_TASK_TIMEOUT_MS / 1000)
-          addMessage('system', `任务执行超时（${timeoutSec} 秒），已停止。`)
-          reportUserFacingError(
-            `任务跑得有点久喵，已经超过 ${timeoutSec} 秒自动停了。要不换条简单的指令再来一次？`
-          )
+          addMessage('system', t('engine.taskTimeout', { sec: timeoutSec }))
+          reportUserFacingError(t('engine.taskTimeoutReply', { sec: timeoutSec }))
           cleanup()
           return
         }
@@ -310,13 +321,11 @@ export function useAIEngine() {
           }
           const msg = e instanceof Error ? e.message : String(e)
           if (msg === 'NO_AI_BACKEND') {
-            addMessage('system', 'AI 服务未配置，请在设置中添加 API Key 或使用 Gemini Nano')
-            reportUserFacingError(
-              '还没配置 AI 服务喵～打开设置页添加一个模型（API Key 或 Gemini Nano）就能用啦'
-            )
+            addMessage('system', t('engine.noBackend'))
+            reportUserFacingError(t('engine.noBackendReply'))
           } else {
-            addMessage('system', '抱歉，AI 服务暂时不可用，请稍后再试喵~')
-            reportUserFacingError('AI 服务现在有点小情绪喵～稍等一下再试一次，或者换个模型试试看？')
+            addMessage('system', t('engine.serviceUnavailable'))
+            reportUserFacingError(t('engine.serviceUnavailableReply'))
           }
           cleanup()
           return
@@ -324,8 +333,8 @@ export function useAIEngine() {
 
         if (!raw || raw.trim() === '') {
           console.error('[AI Commander] AI returned empty response!')
-          addMessage('system', '抱歉，AI 没有返回任何内容，请重新输入试试喵~')
-          reportUserFacingError('我这次什么都没想出来喵～再换个说法问一次试试？')
+          addMessage('system', t('engine.emptyResponse'))
+          reportUserFacingError(t('engine.emptyResponseReply'))
           cleanup()
           return
         }
@@ -357,7 +366,7 @@ export function useAIEngine() {
         // 不论后续是正常执行 / 重试 / 解析失败都能看到上一轮的思考。
         const cleanThought = sanitizeThought(json?.thought || '')
         if (cleanThought) {
-          addMessage('system', `💭 AI 思考：${cleanThought}`)
+          addMessage('system', t('engine.thought', { text: cleanThought }))
         }
 
         if (!json?.action) {
@@ -366,11 +375,9 @@ export function useAIEngine() {
           // 否则 AI 以为只是格式问题会原样重发大输出 → 再次截断 → 永远失败。
           const truncated = isTruncated(raw)
           if (jsonRetryCount >= 2) {
-            addMessage('system', '抱歉，我没有理解您的请求，能再详细说说吗喵？')
+            addMessage('system', t('engine.notUnderstood'))
             reportUserFacingError(
-              truncated
-                ? '我想说的有点长被截断了喵～换个简单点的问法再试试？'
-                : '没太懂你想让我做什么喵～再详细说说？'
+              truncated ? t('engine.notUnderstoodTruncatedReply') : t('engine.notUnderstoodReply')
             )
             console.error(
               '[AI Commander] AI failed to understand (truncated:',
@@ -399,7 +406,7 @@ export function useAIEngine() {
         jsonRetryCount = 0
 
         if (json.action === 'done') {
-          const replyBody = resolveAIReply(json, '操作完成')
+          const replyBody = resolveAIReply(json, t('engine.done'))
           emitAIChat(replyBody, true)
           return
         }
@@ -409,7 +416,7 @@ export function useAIEngine() {
           conversationMessages.value = [...messages]
           activeLoopId.value = null
           persistPlanTracker()
-          emitAIChat(resolveAIReply(json, '请提供更多信息'), false)
+          emitAIChat(resolveAIReply(json, t('engine.needMoreInfo')), false)
           return
         }
 
@@ -421,14 +428,14 @@ export function useAIEngine() {
           messages.push({ role: 'assistant', content: raw })
           messages.push({ role: 'user', content: scanStr })
           foldStaleSnapshots(messages)
-          addMessage('system', '已重新扫描页面')
+          addMessage('system', t('engine.rescanned'))
           continue
         }
 
         // 处理 exec_plan：任务规划执行器（analyze → scan → setPlan → executeStep循环 → finalReview）
         if (json.action === 'exec_plan') {
           stepCount++
-          addMessage('system', `执行中... (${stepCount}/${MAX_AGENT_STEPS})`)
+          addMessage('system', t('engine.running', { step: stepCount, total: MAX_AGENT_STEPS }))
 
           const args =
             ((json as unknown as Record<string, unknown>).args as Record<string, unknown>) || {}
@@ -466,7 +473,7 @@ export function useAIEngine() {
               role: 'user',
               content: `[步骤暂停] ${prompt}`,
             })
-            addMessage('system', `需要用户提供数据: ${prompt}`)
+            addMessage('system', t('engine.needUserData', { prompt }))
             conversationMessages.value = [...messages]
             activeLoopId.value = null
             persistPlanTracker()
@@ -481,7 +488,7 @@ export function useAIEngine() {
                 role: 'user',
                 content: `[阶段①完成] 意图分析结果:\n目标: ${(planResult.intent as Record<string, unknown>)?.goal}\n类型: ${(planResult.intent as Record<string, unknown>)?.type}\n状态: ${planResult.phase}\n请继续执行下一阶段：scan`,
               })
-              addMessage('system', '意图分析完成')
+              addMessage('system', t('engine.planAnalyzeDone'))
               continue
             } else {
               // 需要用户数据，中断
@@ -490,7 +497,7 @@ export function useAIEngine() {
                 role: 'user',
                 content: `[阶段①中断] ${planResult.error}\n请提供所需数据后重新发起任务`,
               })
-              addMessage('system', `需要您提供一些信息才能继续，请告诉我更多信息喵~`)
+              addMessage('system', t('engine.needMoreInfo'))
               cleanup()
               return
             }
@@ -505,12 +512,12 @@ export function useAIEngine() {
                 role: 'user',
                 content: `[阶段②完成] DOM 扫描结果:\n页面: ${scan?.url}\n标题: ${scan?.title}\n可交互元素: ${(scan?.elements as unknown[])?.length || 0}个\n${scan?.regions ? JSON.stringify(scan.regions) : ''}\n请继续执行阶段③：setPlan，提供步骤序列`,
               })
-              addMessage('system', '页面扫描完成')
+              addMessage('system', t('engine.planScanDone'))
               continue
             } else {
               messages.push({ role: 'assistant', content: raw })
               messages.push({ role: 'user', content: `[阶段②失败] ${planResult.error}` })
-              addMessage('system', '扫描页面时遇到了一点问题，请再试一次喵~')
+              addMessage('system', t('engine.scanProblem'))
               cleanup()
               return
             }
@@ -523,7 +530,7 @@ export function useAIEngine() {
               role: 'user',
               content: `[阶段③完成] 计划已就绪，共 ${planResult.totalSteps} 个步骤:\n${((planResult.steps as Array<Record<string, unknown>>) || []).map((s, i) => `${i + 1}. ${s.goal}`).join('\n')}\n请继续执行阶段④：executeStep`,
             })
-            addMessage('system', `计划已就绪，共 ${planResult.totalSteps} 个步骤`)
+            addMessage('system', t('engine.planReady', { count: planResult.totalSteps }))
             continue
           }
 
@@ -536,17 +543,17 @@ export function useAIEngine() {
             const total = planResult.totalSteps as number
 
             let statusIcon = '⏳'
-            let statusText = `执行中 (${stepIndex}/${total})`
+            let statusText = t('step.statusRunning', { index: stepIndex, total })
 
             if (status === 'SUCCESS') {
               statusIcon = '✓'
-              statusText = `步骤完成 (${stepIndex}/${total})`
+              statusText = t('step.statusDone', { index: stepIndex, total })
             } else if (status === 'SKIP') {
               statusIcon = '⊘'
-              statusText = `步骤跳过 (${stepIndex}/${total})`
+              statusText = t('step.statusSkipped', { index: stepIndex, total })
             } else if (status === 'FAIL') {
               statusIcon = '✗'
-              statusText = `步骤失败 (${stepIndex}/${total})`
+              statusText = t('step.statusFailed', { index: stepIndex, total })
             }
 
             let detail = `${statusIcon} ${lastResult?.goal || '步骤'} - ${statusText}`
@@ -564,7 +571,7 @@ export function useAIEngine() {
                 role: 'user',
                 content: `[阶段④完成] ${detail}\n请执行阶段⑤：finalReview`,
               })
-              addMessage('system', '所有步骤执行完毕，进入最终审查')
+              addMessage('system', t('engine.planAllDone'))
               continue
             }
 
@@ -589,7 +596,10 @@ export function useAIEngine() {
               role: 'user',
               content: `[阶段⑤完成] ${completionText}\n步骤统计: 成功 ${summary?.success || 0}，跳过 ${summary?.skipped || 0}，失败 ${summary?.failed || 0}\n${report?.userCanDo}`,
             })
-            addMessage('system', report?.taskComplete ? '任务完成' : '任务部分完成')
+            addMessage(
+              'system',
+              report?.taskComplete ? t('engine.planTaskDone') : t('engine.planTaskPartial')
+            )
             cleanup()
             return
           }
@@ -617,7 +627,7 @@ export function useAIEngine() {
               role: 'user',
               content: `已收到用户提供的数据，请继续调用 executeStep 继续执行任务`,
             })
-            addMessage('system', `已接收用户数据: ${dataKey}`)
+            addMessage('system', t('engine.receivedUserData', { key: dataKey }))
           }
           continue
         }
@@ -678,7 +688,7 @@ export function useAIEngine() {
           toolName = json.toolCall.name
           toolArgs = json.toolCall.args || {}
         } else {
-          addMessage('system', '抱歉，这个操作我无法执行喵~')
+          addMessage('system', t('engine.unknownAction'))
           cleanup()
           return
         }
@@ -692,7 +702,7 @@ export function useAIEngine() {
 
         const thought = json.thought || ''
         stepCount++
-        addMessage('system', `执行中... (${stepCount}/${MAX_AGENT_STEPS})`)
+        addMessage('system', t('engine.running', { step: stepCount, total: MAX_AGENT_STEPS }))
 
         let result: ExecutionResult
         try {
@@ -710,7 +720,7 @@ export function useAIEngine() {
           result = {
             success: false,
             code: 'ACT_TIMEOUT',
-            message: '操作执行超时（10 秒未完成）',
+            message: t('engine.stepTimeout'),
             detail: { reason: '单步操作超过 ' + STEP_TIMEOUT_MS / 1000 + ' 秒' },
           }
         }
@@ -735,10 +745,10 @@ export function useAIEngine() {
           const title = detail.title as string | undefined
           cleanup()
           pendingConfirm.value = {
-            title: (result.message as string) || '确认操作',
+            title: (result.message as string) || t('engine.confirmTitleFallback'),
             description:
               detail.childCount != null
-                ? `包含 ${detail.childCount} 个子项的文件夹 "${title || ''}"`
+                ? t('engine.confirmFolderDesc', { count: detail.childCount, title: title || '' })
                 : undefined,
             items: confirmItems.map((c) => {
               const numericId =
@@ -798,17 +808,17 @@ export function useAIEngine() {
                 if (confirmResult.success !== false) {
                   renderExecutionResult(toolName, confirmResult)
                 } else {
-                  addMessage('system', '抱歉，这个操作没有成功喵~')
+                  addMessage('system', t('engine.confirmRetryFailed'))
                 }
               } catch {
-                addMessage('system', '抱歉，执行过程中遇到了一点问题喵~')
+                addMessage('system', t('engine.confirmError'))
               }
               cleanup()
             },
             onCancel: () => {
               // 用 ai-chat 通道返回"已取消"，让 AI 看起来在主动回应用户意图；
               // system 通道虽然语义更准，但会让用户感觉"AI 没说话"，体验差。
-              addMessage('ai-chat', wrapCatReply('好嘞，已帮你取消啦~'))
+              addMessage('ai-chat', wrapCatReply(t('engine.canceled')))
               cleanup()
             },
           }
@@ -956,9 +966,9 @@ export function useAIEngine() {
         // 如果执行失败，用友好提示告知用户
         if (result.code || result.error) {
           const errorMsg = result.code
-            ? `操作「${result.message || '失败'}」`
-            : `操作失败: ${result.error}`
-          addMessage('system', `抱歉，上一步执行遇到问题: ${errorMsg}喵~`)
+            ? t('engine.opFailed', { message: result.message || t('step.failedFallback') })
+            : t('engine.opError', { error: result.error })
+          addMessage('system', t('engine.stepProblem', { msg: errorMsg }))
         }
 
         // 更早压缩消息，避免系统 prompt（含页面 DOM）+ 历史消息超过 token 限制
@@ -967,26 +977,19 @@ export function useAIEngine() {
         }
 
         if (consecutiveErrors >= MAX_CONSECUTIVE_FAILURES) {
-          addMessage('system', `连续 ${consecutiveErrors} 步执行失败，已停止。`)
-          reportUserFacingError(
-            `连着 ${consecutiveErrors} 步都翻车了喵，我先停下吧～换个思路再试试？`
-          )
+          addMessage('system', t('engine.consecutiveFailures', { count: consecutiveErrors }))
+          reportUserFacingError(t('engine.consecutiveFailuresReply', { count: consecutiveErrors }))
           cleanup()
           return
         }
 
-        addMessage('system', `思考中... (${stepCount + 1}/${MAX_AGENT_STEPS})`)
+        addMessage('system', t('engine.thinking', { step: stepCount + 1, total: MAX_AGENT_STEPS }))
       }
 
-      emitAIChat(
-        '已达到最大执行步数（' +
-          MAX_AGENT_STEPS +
-          ' 步），任务可能未完成。请告诉我下一步该做什么喵~',
-        true
-      )
+      emitAIChat(t('engine.maxSteps', { count: MAX_AGENT_STEPS }), true)
     } catch {
-      addMessage('system', `抱歉，执行过程中遇到了问题喵~`)
-      reportUserFacingError('执行到一半出了点意外喵～我再看看，你可以重新说一次指令试试')
+      addMessage('system', t('engine.unexpected'))
+      reportUserFacingError(t('engine.unexpectedReply'))
       cleanup()
     }
   }
@@ -1004,12 +1007,7 @@ export function useAIEngine() {
     if ('error' in result) {
       // 错误回执：必须用 ai-chat 通道，让用户感觉 AI 在主动回应；
       // system 通道虽然语义更准，但会让用户觉得"AI 没说话"
-      const errResult = result as { error?: string; hint?: string }
-      if (errResult.error === 'MISSING_ARG' && errResult.hint) {
-        addMessage('ai-chat', wrapCatReply(errResult.hint))
-      } else {
-        addMessage('ai-chat', wrapCatReply('没认出来这个命令呢，要不试试 /help 看看有哪些可用的？'))
-      }
+      addMessage('ai-chat', wrapCatReply(t('engine.unknownSlash')))
       return
     }
 
@@ -1033,20 +1031,20 @@ export function useAIEngine() {
         messageLog.value = [userMsg]
         await persistMessage(userMsg)
       }
-      addMessage('ai-chat', wrapCatReply('聊天记录已经清空啦喵～有什么新需求随时告诉我 ✨'))
+      addMessage('ai-chat', wrapCatReply(t('engine.clearChatDone')))
       return
     }
 
     if (resolvedIntent === 'reset_context') {
       cleanup()
-      addMessage('ai-chat', wrapCatReply('已清除全部上下文，可以重新开始对话啦~'))
+      addMessage('ai-chat', wrapCatReply(t('engine.resetDone')))
       return
     }
 
     const cmd = getCommand(resolvedIntent)
     if (!cmd) {
       // 已通过 matchSlashCommand 校验 intent 名，不会走到这里；但保留兜底
-      addMessage('ai-chat', wrapCatReply('没认出来这个命令呢，要不试试 /help 看看有哪些可用的？'))
+      addMessage('ai-chat', wrapCatReply(t('engine.unknownSlash')))
       return
     }
 
@@ -1091,13 +1089,12 @@ export function useAIEngine() {
         // close_*: 关键词没匹配到
         let msg: string
         if (resolvedIntent === 'ungroup_all') {
-          msg = '当前没有任何标签分组呢'
+          msg = t('engine.noGroups')
         } else if (resolvedIntent === 'delete_history') {
-          msg =
-            '时间范围不对哦，可用 today / yesterday / week / month / all，试试 /clear-history week'
+          msg = t('engine.invalidTimeRange')
         } else {
-          const keyword = (slotsAny.query as string) || '当前条件'
-          msg = `没找到匹配 "${keyword}" 的标签呢，要不换个关键词试试？`
+          const keyword = (slotsAny.query as string) || t('engine.currentCriteria')
+          msg = t('engine.noTabMatch', { keyword })
         }
         addMessage('ai-chat', wrapCatReply(msg))
         return
@@ -1172,7 +1169,7 @@ export function useAIEngine() {
         onCancel: () => {
           // 用 ai-chat 通道返回"已取消"，让 AI 看起来在主动回应用户意图；
           // system 通道虽然语义更准，但会让用户感觉"AI 没说话"，体验差。
-          addMessage('ai-chat', wrapCatReply('好嘞，已帮你取消啦~'))
+          addMessage('ai-chat', wrapCatReply(t('engine.canceled')))
           pendingConfirm.value = null // 关闭确认卡
         },
       }
@@ -1186,7 +1183,10 @@ export function useAIEngine() {
     if (!ai.available) {
       addMessage(
         'system',
-        `AI 不可用: ${ai.reason || '未配置'}\n\n可用斜杠命令:\n${formatSlashCommands()}`
+        t('engine.aiUnavailable', {
+          reason: ai.reason || t('engine.notConfigured'),
+          commands: formatSlashCommands(),
+        })
       )
       return
     }
@@ -1207,16 +1207,16 @@ export function useAIEngine() {
       try {
         await handleSlashCommand(trimmedText)
       } catch {
-        addMessage('system', '抱歉，处理命令时遇到了问题喵~')
-        reportUserFacingError('这条命令我没处理成功喵～换个写法或再试一次？')
+        addMessage('system', t('engine.submitSlashError'))
+        reportUserFacingError(t('engine.submitSlashErrorReply'))
       }
     } else {
       addMessage('user', trimmedText)
       try {
         await handleNaturalLanguage(trimmedText)
       } catch {
-        addMessage('system', '抱歉，处理您的请求时遇到了问题喵~')
-        reportUserFacingError('这条请求我没接住喵～再详细说说你的需求？')
+        addMessage('system', t('engine.submitError'))
+        reportUserFacingError(t('engine.submitErrorReply'))
       }
     }
   }
@@ -1228,7 +1228,7 @@ export function useAIEngine() {
     slots: Record<string, unknown>
   ): Promise<ExecutionResult> {
     const cmd = getCommand(intent)
-    if (!cmd) return { error: `未知命令: ${intent}` }
+    if (!cmd) return { error: t('engine.unknownIntent', { intent }) }
 
     // 客户端命令（录制等）：本地处理
     if (cmd.clientIntent) {
@@ -1237,11 +1237,11 @@ export function useAIEngine() {
       return {
         success: false,
         code: 'UNKNOWN_CLIENT_INTENT',
-        message: `未知客户端命令: ${cmd.clientIntent}`,
+        message: t('engine.unknownClientIntent', { intent: cmd.clientIntent }),
       }
     }
 
-    if (cmd.swIntent === null) return { error: `该命令不可执行: ${intent}` }
+    if (cmd.swIntent === null) return { error: t('engine.notExecutable', { intent }) }
 
     try {
       let payload = slots
@@ -1269,7 +1269,7 @@ export function useAIEngine() {
       return {
         success: false,
         code: 'COM_DISCONNECTED',
-        message: '命令执行失败: ' + errorMessage,
+        message: t('engine.commandFailed', { msg: errorMessage }),
         detail: { reason: errorMessage },
       }
     }
@@ -1306,10 +1306,8 @@ export function useAIEngine() {
         command: { intent: cmd.swIntent, payload },
       })) as ExecutionResult
     } catch (e: unknown) {
-      addMessage('system', '抱歉，Service Worker 暂时无法响应喵~')
-      reportUserFacingError(
-        '后台的 Service Worker 没回应喵～可能是扩展刚被回收了，刷新一下页面再试？'
-      )
+      addMessage('system', t('engine.swNoResponse'))
+      reportUserFacingError(t('engine.swNoResponseReply'))
       return { success: false, code: 'SW_ERROR', message: String(e) }
     }
     await renderExecutionResult(userIntent, response, slots)
@@ -1495,186 +1493,213 @@ export function useAIEngine() {
   // ──── 辅助函数 ────
 
   /**
-   * 结果字段解析 → 通用描述模板
-   *
-   * 用于 agent loop 步骤日志（formatStepSummary）和 markdown-factory 未覆盖时的 fallback。
-   */
-  /**
-   * 把执行结果格式化为简短描述文案（用于 agent loop 步骤摘要 & 渲染兜底）
+   * 把执行结果格式化为简短描述文案（用于 agent loop 步骤摘要 & 渲染兜底）。
+   * 所有文案走 t()，语言切换即时生效。
    * @param r - 执行结果对象
    * @param intent - 命令 intent（可选）；用于区分被多类命令共用的字段（如 removed）
    * @returns 简短描述字符串
    */
   function formatResultDescription(r: Record<string, unknown>, intent?: string): string {
+    /**
+     * 书签节点的展示类型：书签必有 url，文件夹必无（chrome.bookmarks 节点无 nodeType 字段）
+     * @param n - 书签节点
+     * @returns “书签”/“文件夹”的本地化名词
+     */
+    const nodeKind = (n: { url?: string }): string =>
+      n.url ? t('step.bookmark') : t('step.folder')
+    /**
+     * 书签节点的展示名：优先 title，退回 url
+     * @param n - 书签节点
+     * @returns 节点名称字符串
+     */
+    const nodeName = (n: { title?: string; url?: string }): string => n.title || n.url || ''
+
     if (r.code === 'NEEDS_CONFIRM') return `⚠️ ${r.message}`
-    if (r.code) return `[${r.code}] ${r.message || '操作失败'}`
-    if (r.error) return `失败: ${typeof r.error === 'object' ? JSON.stringify(r.error) : r.error}`
+    if (r.code) return `[${r.code}] ${r.message || t('step.failedFallback')}`
+    if (r.error)
+      return t('step.fail', {
+        error: typeof r.error === 'object' ? JSON.stringify(r.error) : String(r.error),
+      })
     // DOM 脚本结果
     if (r.result !== undefined) {
-      if (r.result === null) return '脚本结果: null（通常表示未命中元素）'
+      if (r.result === null) return t('step.scriptNull')
       const s = typeof r.result === 'string' ? r.result : JSON.stringify(r.result)
-      return '脚本结果: ' + s.slice(0, 100)
+      return t('step.scriptResult', { text: s.slice(0, 100) })
     }
     // Bookmarks 专属字段优先判定（removedNode 仅书签删除返回，
     // 必须排在 tabs 的 removed 之前，否则书签删除会被误判成"关闭标签"）
-    // 文件夹/书签区分：chrome.bookmarks 节点无 nodeType 字段，且 get/move/create 返回的节点
-    // 可能不含 children 字段，故用"无 url = 文件夹"判定（书签必有 url，文件夹必无）。
-    if (r.nodes) return `观察到 ${r.observed || (r.nodes as unknown[]).length} 个书签节点`
+    if (r.nodes)
+      return t('step.observedBookmarks', { count: r.observed || (r.nodes as unknown[]).length })
     if (r.movedNode) {
       const n = r.movedNode as { title?: string; url?: string }
-      return `移动 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+      return t('step.moved', { kind: nodeKind(n), name: nodeName(n) })
     }
     if (r.createdNode) {
       const n = r.createdNode as { title?: string; url?: string }
-      return `创建 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+      return t('step.created', { kind: nodeKind(n), name: nodeName(n) })
     }
     if (r.existingNode) {
       const n = r.existingNode as { title?: string; url?: string }
-      return `目标已存在，复用 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+      return t('step.reused', { kind: nodeKind(n), name: nodeName(n) })
     }
     if (r.updatedNode) {
       const n = r.updatedNode as { title?: string; url?: string }
-      return `更新 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+      return t('step.updated', { kind: nodeKind(n), name: nodeName(n) })
     }
     if (r.openedNode) {
       const n = r.openedNode as { title?: string; url?: string }
-      return `打开书签 *${n.title || n.url || ''}*`
+      return t('step.opened', { name: nodeName(n) })
     }
     if (r.removedNode) {
       const n = r.removedNode as { title?: string; url?: string }
-      return `删除 ${!n.url ? '文件夹' : '书签'} *${n.title || n.url || ''}*`
+      return t('step.removed', { kind: nodeKind(n), name: nodeName(n) })
     }
-    if (r.bookmark) return `添加书签 *${(r.bookmark as { title?: string }).title || ''}*`
+    if (r.bookmark)
+      return t('step.bookmarkAdded', { name: (r.bookmark as { title?: string }).title || '' })
     // Tabs
-    if (r.tabs) return `列出 ${r.observed || (r.tabs as unknown[]).length} 个标签`
+    if (r.tabs) return t('step.tabsListed', { count: r.observed || (r.tabs as unknown[]).length })
     if (r.tab && r.active !== undefined)
       return r.active
-        ? `切换到标签 *${(r.tab as { title?: string }).title || ''}*`
-        : `更新标签 *${(r.tab as { title?: string }).title || ''}*`
+        ? t('step.tabSwitched', { name: (r.tab as { title?: string }).title || '' })
+        : t('step.tabUpdated', { name: (r.tab as { title?: string }).title || '' })
     if (r.tab)
-      return `创建标签 *${(r.tab as { title?: string }).title || (r.tab as { url?: string }).url || ''}*`
-    if (r.moved !== undefined) return `移动 ${r.moved} 个标签`
+      return t('step.tabCreated', {
+        name: (r.tab as { title?: string }).title || (r.tab as { url?: string }).url || '',
+      })
+    if (r.moved !== undefined) return t('step.tabsMoved', { count: r.moved })
     // removed 字段被 tabs_remove（关闭标签）和 bookmarks_remove_node（删除书签/文件夹）共用，
     // 按 intent 区分；无 intent 时默认按"关闭标签"处理（向后兼容）
     if (r.removed !== undefined) {
-      if (intent === 'bookmarks_remove_node') return `删除 ${r.removed} 个书签/文件夹`
-      return `关闭 ${r.removed} 个标签`
+      if (intent === 'bookmarks_remove_node')
+        return t('step.bookmarksRemoved', { count: r.removed })
+      return t('step.tabsClosed', { count: r.removed })
     }
     if (r.groupedTabs !== undefined)
-      return `创建 ${r.groupedTabs} 个分组${r.failed ? `（${r.failed} 个失败）` : ''}`
-    if (r.groupId && !r.groupedTabs) return `更新分组 *${r.title || r.groupId}*`
+      return (
+        t('step.groupsCreated', { count: r.groupedTabs }) +
+        (r.failed ? t('step.failedCount', { count: r.failed }) : '')
+      )
+    if (r.groupId && !r.groupedTabs) return t('step.groupUpdated', { name: r.title || r.groupId })
     if (r.ungrouped !== undefined)
-      return `取消 ${r.ungrouped} 个分组（${r.tabsUngrouped || 0} 个标签解除分组）${r.failed ? `（${r.failed} 个失败）` : ''}`
-    if (r.groupsCleared !== undefined) return (r.message as string) || '当前没有任何标签分组'
-    if (r.groups) return `列出 ${(r.groups as unknown[]).length} 个标签组`
-    if (r.reloaded) return '刷新标签'
-    if (r.pinned !== undefined) return r.pinned ? '固定标签' : '取消固定'
-    if (r.discarded !== undefined) return `休眠 ${r.discarded} 个标签`
-    if (r.duplicated !== undefined) return '复制标签'
+      return (
+        t('step.groupsRemoved', { groups: r.ungrouped, tabs: r.tabsUngrouped || 0 }) +
+        (r.failed ? t('step.failedCount', { count: r.failed }) : '')
+      )
+    if (r.groupsCleared !== undefined) return (r.message as string) || t('step.noGroupsPlain')
+    if (r.groups) return t('step.groupsListed', { count: (r.groups as unknown[]).length })
+    if (r.reloaded) return t('step.tabReloaded')
+    if (r.pinned !== undefined) return r.pinned ? t('step.tabPinned') : t('step.tabUnpinned')
+    if (r.discarded !== undefined) return t('step.tabsDiscarded', { count: r.discarded })
+    if (r.duplicated !== undefined) return t('step.tabDuplicated')
     // Windows
-    if (r.windows) return `列出 ${(r.windows as unknown[]).length} 个窗口`
-    if (r.window) return '创建窗口'
+    if (r.windows) return t('step.windowsListed', { count: (r.windows as unknown[]).length })
+    if (r.window) return t('step.windowCreated')
     // History
-    if (r.items) return `搜索到 ${r.found} 条历史`
-    if (r.deleted !== undefined && r.timeRange) return `删除 ${r.deleted} 条历史 (${r.timeRange})`
-    if (r.deleted !== undefined) return `删除 ${r.deleted} 条记录`
+    if (r.items) return t('step.historyFound', { count: r.found })
+    if (r.deleted !== undefined && r.timeRange)
+      return t('step.historyDeletedRange', { count: r.deleted, range: r.timeRange })
+    if (r.deleted !== undefined) return t('step.recordsDeleted', { count: r.deleted })
     // Navigation
-    if (r.navigated) return `导航至 ${r.navigated}`
-    if (r.dataUrl && !r.stopped && !r.pendingRecording) return '截图已捕获'
+    if (r.navigated) return t('step.navigated', { url: r.navigated })
+    if (r.dataUrl && !r.stopped && !r.pendingRecording) return t('step.screenshotCaptured')
     // 截图（screenshot intent 返回 screenshot 字段，非 dataUrl）
-    if (r.screenshot && typeof r.screenshot === 'string') return '截图已捕获'
+    if (r.screenshot && typeof r.screenshot === 'string') return t('step.screenshotCaptured')
     // Page
-    if (r.zoomFactor !== undefined) return `缩放至 ${Math.round((r.zoomFactor as number) * 100)}%`
-    if (r.opened) return '打开下载页面'
+    if (r.zoomFactor !== undefined)
+      return t('step.zoomed', { percent: Math.round((r.zoomFactor as number) * 100) })
+    if (r.opened) return t('step.downloadsOpened')
     // Theme
-    if (r.themeMode !== undefined) return `主题: ${r.themeMode}`
+    if (r.themeMode !== undefined) return t('step.themeSet', { mode: r.themeMode })
     // Font
-    if (r.fontSize !== undefined) return `字号: ${r.fontSizeLabel || r.fontSize + 'px'}`
-    if (r.font) return `字体: ${r.font}`
+    if (r.fontSize !== undefined)
+      return t('step.fontSize', { label: r.fontSizeLabel || `${r.fontSize}px` })
+    if (r.font) return t('step.fontSet', { font: r.font })
     // Cookies
     if (r.cookies) {
       // observeCookies 返回 domain 或 url（按 url 过滤时），兼容两者
       const where = r.domain || r.url || ''
-      return `查看 ${r.found || 0} 个 Cookie (${where})`
+      return t('step.cookiesObserved', { count: r.found || 0, domain: where })
     }
-    if (r.cookie) return `写入 Cookie *${(r.cookie as { name?: string }).name || ''}*`
-    if (r.domain && r.deleted !== undefined) return `清除 ${r.domain} 的 ${r.deleted} 个 Cookie`
+    if (r.cookie) return t('step.cookieSet', { name: (r.cookie as { name?: string }).name || '' })
+    if (r.domain && r.deleted !== undefined)
+      return t('step.cookiesCleared', { domain: r.domain, count: r.deleted })
     // Downloads
-    if (r.downloads) return `查到 ${r.found || 0} 条下载记录`
+    if (r.downloads) return t('step.downloadsFound', { count: r.found || 0 })
     if (r.downloadId !== undefined)
-      return `开始下载 *${(r as { filename?: string }).filename || ''}*`
-    if (r.opened) return '打开下载管理页'
+      return t('step.downloadStarted', { name: (r as { filename?: string }).filename || '' })
     // Top Sites
-    if (r.sites) return `展示 ${r.found || 0} 个常用网站`
+    if (r.sites) return t('step.sitesShown', { count: r.found || 0 })
     // Extensions
-    if (r.extensions) return `列出 ${r.found || 0} 个扩展`
-    if (r.id && r.enabled !== undefined) return r.enabled ? '启用扩展' : '禁用扩展'
-    if (r.id && (r as { uninstalled?: string }).uninstalled) return `卸载扩展`
+    if (r.extensions) return t('step.extensionsListed', { count: r.found || 0 })
+    if (r.id && r.enabled !== undefined)
+      return r.enabled ? t('step.extEnabled') : t('step.extDisabled')
+    if (r.id && (r as { uninstalled?: string }).uninstalled) return t('step.extUninstalled')
     // Permissions：站点权限（contentSettings，permissions 是数组）vs 扩展自身权限（permissions 是 {origins,permissions} 对象）
     if (r.permissions) {
-      if (Array.isArray(r.permissions)) return `查看 ${r.domain} 的权限设置`
+      if (Array.isArray(r.permissions)) return t('step.permsObserved', { domain: r.domain })
       // 扩展自身权限：permissions 是 { origins, permissions } 对象
       const p = r.permissions as { origins?: unknown[]; permissions?: unknown[] }
       const cnt = (p.origins?.length || 0) + (p.permissions?.length || 0)
-      return `本扩展拥有 ${cnt} 项权限`
+      return t('step.extPermsCount', { count: cnt })
     }
-    if (r.setting && r.value) return `设置 ${r.domain} 的 ${r.setting} 权限`
+    if (r.setting && r.value) return t('step.permSet', { domain: r.domain, setting: r.setting })
     // Storage
     if (r.key && r.value !== undefined) {
       const area = r.area ? `(${r.area})` : ''
-      return `存储${area} *${r.key}* = ${typeof r.value === 'object' ? JSON.stringify(r.value) : r.value}`
+      return t('step.storageSet', {
+        area,
+        key: r.key,
+        value: typeof r.value === 'object' ? JSON.stringify(r.value) : String(r.value),
+      })
     }
     // getStorage 无 key 时返回整个区域全量（value 是对象，无 key）
     if (!r.key && r.value !== undefined && r.area) {
       const count =
         r.value && typeof r.value === 'object' ? Object.keys(r.value as object).length : 0
-      return `列出存储(${r.area}) ${count} 个键值`
+      return t('step.storageListed', { area: r.area, count })
     }
-    if (r.key && r.area) return `删除存储(${r.area}) *${r.key}*`
-    if (r.storageRemoved) return `删除存储 *${r.storageRemoved}*`
+    if (r.key && r.area) return t('step.storageRemoved', { area: r.area, key: r.key })
+    if (r.storageRemoved) return t('step.storageAreaRemoved', { name: r.storageRemoved })
     // Recording
-    if (r.recording === 'screen') return `开始录制屏幕`
-    if (r.recording) return `开始录制 ${r.recording}`
-    if (r.saved) return `录制已保存为 ${r.saved}`
+    if (r.recording === 'screen') return t('step.recordingScreen')
+    if (r.recording) return t('step.recordingStarted', { kind: r.recording })
+    if (r.saved) return t('step.recordingSaved', { name: r.saved })
     if (r.stopped) {
       const size = r.size as number | undefined
-      return size ? `录制已停止 (${(size / 1024 / 1024).toFixed(1)}MB)` : '录制已停止'
+      return size
+        ? t('step.recordingStoppedSize', { size: (size / 1024 / 1024).toFixed(1) })
+        : t('step.recordingStopped')
     }
     // Sessions
-    if (r.restored) return `恢复标签 ${r.restored}`
+    if (r.restored) return t('step.tabRestored', { id: r.restored })
     // Batch
-    if (r.results && r.total !== undefined) return `批量执行 ${r.total} 个操作`
-    // 旧格式兼容
-    if (r.action === 'query') return `查询 ${r.count} 个 "${r.value || r.selector || '元素'}"`
+    if (r.results && r.total !== undefined) return t('step.batchExecuted', { count: r.total })
+    // 旧格式兼容（DOM 脚本 action）
+    if (r.action === 'query')
+      return t('step.queryAction', {
+        count: r.count,
+        target: r.value || r.selector || t('step.elementFallback'),
+      })
     if (r.action === 'modify')
-      return `修改 ${r.changed} 个 "${r.value || r.selector}" 的 ${r.property}`
-    if (r.action === 'remove') return `删除 ${r.removed} 个 "${r.value || r.selector}"`
-    if (r.action === 'add') return `添加 <${r.tag}> 到 ${r.target || r.parentSelector || 'body'}`
-    if (r.action === 'style') return `修改 ${r.changed} 个 "${r.value || r.selector}" 样式`
+      return t('step.modifyAction', {
+        count: r.changed,
+        target: r.value || r.selector,
+        property: r.property,
+      })
+    if (r.action === 'remove')
+      return t('step.removeAction', { count: r.removed, target: r.value || r.selector })
+    if (r.action === 'add')
+      return t('step.addAction', { tag: r.tag, target: r.target || r.parentSelector || 'body' })
+    if (r.action === 'style')
+      return t('step.styleAction', { count: r.changed, target: r.value || r.selector })
     if (r.action === 'event') {
-      const evLabels: Record<string, string> = {
-        click: '点击',
-        input: '输入',
-        focus: '聚焦',
-        blur: '失焦',
-        submit: '提交表单',
-        change: '变更',
-        scroll: '滚动',
-        select: '全选',
-        keydown: '按键',
-        keyup: '抬起',
-      }
-      return `${evLabels[r.eventType as string] || r.eventType} "${r.value || r.selector}"${r.eventValue ? ' -> ' + r.eventValue : ''}`
+      // 事件类型词条缺失时（如新增事件类型尚未补词）回退展示原始类型名
+      const ev = r.eventType as string
+      const label = i18n.global.te(`step.event.${ev}`) ? t(`step.event.${ev}`) : ev
+      return `${label} "${r.value || r.selector}"${r.eventValue ? ' -> ' + r.eventValue : ''}`
     }
-    if (r.enabled) return `启用扩展 *${r.enabled}*`
-    if (r.disabled) return `禁用扩展 *${r.disabled}*`
-    if (r.moved && r.to) return `移动 *${r.moved}* → ${r.to}`
-    if (r.reordered) return `调整 *${r.reordered}* 位置`
-    if (r.sortedBookmarks) return `整理 *${r.folder}* 中 ${r.sortedBookmarks} 个书签`
-    if ((r.folder as { title?: string })?.title)
-      return `创建文件夹 *${(r.folder as { title: string }).title}*`
-    if (r.renamed && r.to) return `重命名 *${r.renamed}* -> *${r.to}*`
-    if (r.renamed) return `重命名 *${r.renamed}*`
+    if (r.enabled) return t('step.extEnabledNamed', { name: r.enabled })
+    if (r.disabled) return t('step.extDisabledNamed', { name: r.disabled })
     return JSON.stringify(r).slice(0, 100)
   }
 
@@ -1730,7 +1755,9 @@ export function useAIEngine() {
       // 改为：把警告入队到下一轮微任务，确保它在当前同步代码段之后的下一帧执行，
       // 但仍然保持 push 顺序（先到先 push）—— 警告会紧跟最近的 system 步骤摘要后面，
       // 而不是插到 ai-chat 之后。
-      const warnText = `⚠ 上一条消息保存失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
+      const warnText = t('warn.persistFailed', {
+        msg: (e instanceof Error ? e.message : String(e)) || t('warn.unknownError'),
+      })
       queueMicrotask(() => addMessage('system', warnText))
     }
   }
@@ -1763,7 +1790,9 @@ export function useAIEngine() {
         console.warn('[AI管家] 清空消息失败:', e instanceof Error ? e.message : String(e))
         addMessage(
           'system',
-          `⚠ 清空聊天记录失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
+          t('warn.clearFailed', {
+            msg: (e instanceof Error ? e.message : String(e)) || t('warn.unknownError'),
+          })
         )
         return
       }
@@ -1796,7 +1825,9 @@ export function useAIEngine() {
         console.warn('[AI管家] 删除消息失败:', e instanceof Error ? e.message : String(e))
         addMessage(
           'system',
-          `⚠ 删除消息失败：${e instanceof Error ? e.message : String(e) || '未知错误'}`
+          t('warn.deleteFailed', {
+            msg: (e instanceof Error ? e.message : String(e)) || t('warn.unknownError'),
+          })
         )
         return
       }
@@ -1841,9 +1872,9 @@ export function useAIEngine() {
    */
   function stopAgentLoop(): void {
     if (!activeLoopId.value) return
-    addMessage('system', '已停止当前任务')
+    addMessage('system', t('engine.stopped'))
     addMessage('ai-chat', {
-      markdown: wrapCatReply('收到你的停止信号啦喵，已经中断当前任务～有新的需求随时告诉我'),
+      markdown: wrapCatReply(t('engine.stoppedReply')),
     })
     cleanup()
   }
@@ -2072,11 +2103,13 @@ export function useAIEngine() {
         failed: failed.length,
         message:
           cleared > 0
-            ? `已取消 ${cleared} 个分组（${tabsUngrouped} 个标签解除分组）` +
-              (failed.length > 0 ? `（${failed.length} 个失败）` : '')
+            ? t('step.groupsRemoved', { groups: cleared, tabs: tabsUngrouped }) +
+              (failed.length > 0 ? t('step.failedCount', { count: failed.length }) : '')
             : failed.length > 0
-              ? `取消分组失败: ${failed.map((f) => f.reason).join('; ')}`
-              : '当前没有任何标签分组',
+              ? t('engine.ungroupFailedAll', {
+                  list: failed.map((f) => f.reason).join('; '),
+                })
+              : t('step.noGroupsPlain'),
       }
     }
 
@@ -2097,7 +2130,7 @@ export function useAIEngine() {
             }
           }
           if (validIds.length < 2) {
-            failed.push({ title: g.title, reason: '有效 tab 数 < 2' })
+            failed.push({ title: g.title, reason: t('engine.tooFewTabs') })
             continue
           }
           const resultGroupId = await chrome.tabs.group({
@@ -2122,13 +2155,18 @@ export function useAIEngine() {
         failed: failed.length,
         message:
           created > 0
-            ? `已创建 ${created} 个分组` +
+            ? t('step.groupsCreated', { count: created }) +
               (failed.length > 0
-                ? `（${failed.length} 个失败: ${failed.map((f) => `${f.title}(${f.reason})`).join(', ')}）`
+                ? t('engine.groupPartialFail', {
+                    count: failed.length,
+                    list: failed.map((f) => `${f.title}(${f.reason})`).join(', '),
+                  })
                 : '')
             : failed.length > 0
-              ? `分组失败: ${failed.map((f) => `${f.title}(${f.reason})`).join('; ')}`
-              : '没有需要分组的标签',
+              ? t('engine.groupFailedAll', {
+                  list: failed.map((f) => `${f.title}(${f.reason})`).join('; '),
+                })
+              : t('engine.noTabsToGroup'),
       }
     }
 
@@ -2144,27 +2182,28 @@ export function useAIEngine() {
 
   function formatHelp(): string {
     // markdown 表格：命令 / 别名 / 参数 / 说明
-    // - 表格里的 `|` 必须转义为 `\|`
+    // - 表格里的 `|` 必须转义为 `\|`（词条里的 {'|'} 会被 vue-i18n 解析回字面量 |）
     // - aliases 拼接多个别名，便于一眼看到
     const lines: string[] = [
-      '可用命令：',
+      t('slash.header'),
       '',
-      '| 命令 | 别名 | 参数 | 说明 |',
+      `| ${t('slash.colCommand')} | ${t('slash.colAlias')} | ${t('slash.colArg')} | ${t('slash.colDesc')} |`,
       '| --- | --- | --- | --- |',
     ]
     for (const c of SLASH_COMMANDS) {
       const cmd = `/${c.slash}`
       const aliases =
-        c.aliases && c.aliases.length > 0 ? c.aliases.map((a) => `/${a}`).join('、') : '-'
-      const arg = c.hasArg ? `<${c.placeholder || '参数'}>` : '-'
-      const desc = c.description.replace(/\|/g, '\\|').replace(/\n/g, ' ')
+        c.aliases && c.aliases.length > 0 ? c.aliases.map((a) => `/${a}`).join(', ') : '-'
+      // hasArg 命令在词条表里必有 ph；desc/ph 缺失时由 fallbackLocale（en）兜底
+      const arg = c.hasArg ? `<${t(`slash.${c.intent}.ph`)}>` : '-'
+      const desc = t(`slash.${c.intent}.desc`).replace(/\|/g, '\\|').replace(/\n/g, ' ')
       lines.push(`| \`${cmd}\` | ${aliases} | \`${arg}\` | ${desc} |`)
     }
     return lines.join('\n')
   }
 
   function formatSlashCommands(): string {
-    return SLASH_COMMANDS.map((c) => '/' + c.slash + ' — ' + c.description).join('\n')
+    return SLASH_COMMANDS.map((c) => `/${c.slash} — ${t(`slash.${c.intent}.desc`)}`).join('\n')
   }
 
   async function renderExecutionResult(
@@ -2178,16 +2217,21 @@ export function useAIEngine() {
     if (result.success === false && result.code) {
       // 失败提示：用 ai-chat 通道，让用户感觉 AI 在主动回应，
       // 而不是冷冰冰的系统消息
-      const message = result.message || '失败'
-      const suggestion = result.suggestion ? `（${result.suggestion}）` : ''
       addMessage(
         'ai-chat',
-        wrapCatReply(`抱歉，操作 "${message}" 失败喵${suggestion ? ' ' + suggestion : ''}`)
+        wrapCatReply(
+          t('engine.failWithMessage', {
+            message: result.message || t('engine.failGeneric'),
+            hint: result.suggestion
+              ? ' ' + t('engine.opSuggestion', { text: result.suggestion })
+              : '',
+          })
+        )
       )
       return
     }
     if (result.error) {
-      addMessage('ai-chat', wrapCatReply('抱歉，操作失败了喵~'))
+      addMessage('ai-chat', wrapCatReply(t('engine.failGeneric')))
       return
     }
 
@@ -2200,7 +2244,7 @@ export function useAIEngine() {
       const execResult = await executeClientExec(result)
       addMessage(
         'ai-chat',
-        wrapCatReply((execResult as { message?: string }).message || '操作完成')
+        wrapCatReply((execResult as { message?: string }).message || t('engine.done'))
       )
       return
     }
@@ -2225,11 +2269,11 @@ export function useAIEngine() {
 
     // 先按用户 intent 处理所有 tabs_update 语义，不能仅凭返回的 tab 字段猜成“创建”。
     if (intent === 'pin_tab') {
-      addMessage('ai-chat', { markdown: wrapCatReply('已固定标签') })
+      addMessage('ai-chat', { markdown: wrapCatReply(t('intent.pinned')) })
       return
     }
     if (intent === 'unpin_tab') {
-      addMessage('ai-chat', { markdown: wrapCatReply('已取消固定') })
+      addMessage('ai-chat', { markdown: wrapCatReply(t('intent.unpinned')) })
       return
     }
     if (intent === 'duplicate_tab') {
@@ -2237,7 +2281,9 @@ export function useAIEngine() {
       const url = (r.tab as { url?: string } | undefined)?.url
       const label = title || url
       addMessage('ai-chat', {
-        markdown: wrapCatReply(label ? `已复制标签：${label}` : '已复制当前标签'),
+        markdown: wrapCatReply(
+          label ? t('intent.tabDuplicated', { label }) : t('intent.tabDuplicatedPlain')
+        ),
       })
       return
     }
@@ -2246,7 +2292,9 @@ export function useAIEngine() {
       const url = (r.tab as { url?: string } | undefined)?.url
       const label = title || url
       addMessage('ai-chat', {
-        markdown: wrapCatReply(label ? `已创建标签：${label}` : '已创建标签'),
+        markdown: wrapCatReply(
+          label ? t('intent.tabCreated', { label }) : t('intent.tabCreatedPlain')
+        ),
       })
       return
     }
@@ -2254,7 +2302,9 @@ export function useAIEngine() {
       const bm = r.bookmark as { title?: string; url?: string } | undefined
       const label = bm?.title || bm?.url
       addMessage('ai-chat', {
-        markdown: wrapCatReply(label ? `已添加书签：${label}` : '已添加书签'),
+        markdown: wrapCatReply(
+          label ? t('intent.bookmarkAdded', { label }) : t('intent.bookmarkAddedPlain')
+        ),
       })
       return
     }
@@ -2267,10 +2317,10 @@ export function useAIEngine() {
       addMessage('ai-chat', {
         markdown: wrapCatReply(
           label && isFolder && removed > 1
-            ? `已删除文件夹：${label}（含 ${removed} 项）`
+            ? t('intent.folderDeleted', { label, count: removed })
             : label
-              ? `已删除书签：${label}`
-              : `已删除 ${removed} 个书签`
+              ? t('intent.bookmarkDeleted', { label })
+              : t('intent.bookmarksDeleted', { count: removed })
         ),
       })
       return
@@ -2279,18 +2329,15 @@ export function useAIEngine() {
       // /clear-history：基于 slots.timeRange 生成文案，不依赖不可靠的 r.deleted
       // （deleteAll/deleteRange 返回 void，无法精确计数；仅 query/selectedUrls 场景有 deleted）
       const timeRange = (slots?.timeRange as string) || 'all'
-      const rangeLabel: Record<string, string> = {
-        today: '今天',
-        yesterday: '昨天',
-        week: '最近一周',
-        month: '最近一个月',
-        all: '全部',
-      }
-      const label = rangeLabel[timeRange] || timeRange
+      const rangeKey = `intent.historyRange.${timeRange}`
+      // 未知时间范围词条缺失时回退展示原始值
+      const label = i18n.global.te(rangeKey) ? t(rangeKey) : timeRange
       const deleted = typeof r.deleted === 'number' ? r.deleted : null
       addMessage('ai-chat', {
         markdown: wrapCatReply(
-          deleted != null ? `已删除${label}的 ${deleted} 条浏览历史` : `已删除${label}的浏览历史`
+          deleted != null
+            ? t('intent.historyDeleted', { range: label, count: deleted })
+            : t('intent.historyDeletedAll', { range: label })
         ),
       })
       return
@@ -2301,7 +2348,9 @@ export function useAIEngine() {
       const removed = typeof r.removed === 'number' ? r.removed : 0
       addMessage('ai-chat', {
         markdown: wrapCatReply(
-          domain ? `已清除 ${domain} 的 ${removed} 个 Cookie` : `已清除 ${removed} 个 Cookie`
+          domain
+            ? t('intent.cookiesCleared', { domain, count: removed })
+            : t('intent.cookiesClearedAll', { count: removed })
         ),
       })
       return
@@ -2311,14 +2360,16 @@ export function useAIEngine() {
       const mode = tr.themeMode as string | undefined
       const color = tr.themeColor as string | undefined
       if (color) {
-        addMessage('ai-chat', { markdown: wrapCatReply(`已设置主题颜色：${color}`) })
+        addMessage('ai-chat', { markdown: wrapCatReply(t('intent.themeColorSet', { color })) })
       } else if (mode) {
-        const label: Record<string, string> = { light: '浅色', dark: '深色', device: '跟随设备' }
+        const modeKey = `intent.themeMode.${mode}`
+        // 未知主题模式词条缺失时回退展示原始值
+        const label = i18n.global.te(modeKey) ? t(modeKey) : mode
         addMessage('ai-chat', {
-          markdown: wrapCatReply(`已设置主题模式：${label[mode] || mode}`),
+          markdown: wrapCatReply(t('intent.themeModeSet', { mode: label })),
         })
       } else {
-        addMessage('ai-chat', { markdown: wrapCatReply('已设置主题') })
+        addMessage('ai-chat', { markdown: wrapCatReply(t('intent.themeSet')) })
       }
       return
     }
@@ -2327,7 +2378,9 @@ export function useAIEngine() {
     const body = buildMarkdownBody(intent, result)
     addMessage(
       'ai-chat',
-      body ?? { markdown: wrapCatReply(formatResultDescription(r, intent) || '操作完成') }
+      body ?? {
+        markdown: wrapCatReply(formatResultDescription(r, intent) || t('engine.done')),
+      }
     )
   }
 
@@ -2367,29 +2420,28 @@ export function useAIEngine() {
     recordingExecutor.dispose()
   })
 
-  /**
-   * 模式 → 中文标签，用于 AI 回复气泡里告诉用户「整页/选区/可视区域 截图」+ 复制结果
-   */
-  const SCREENSHOT_MODE_LABEL: Record<string, string> = {
-    full: '整页',
-    area: '选区',
-    visible: '可视区域',
+  /** 截图模式 → 词条 key（未知模式走无模式前缀文案，与旧 SCREENSHOT_MODE_LABEL 行为一致） */
+  const SCREENSHOT_MODE_KEYS: Record<string, string> = {
+    full: 'shot.modeFull',
+    area: 'shot.modeArea',
+    visible: 'shot.modeVisible',
   }
 
   /**
    * 显示截图气泡 + 异步复制到剪贴板。文案按 mode + 复制结果生成。
    * @param dataUrl - 截图 data URL
-   * @param tabTitle - 当前标签标题（缺省 fallback 为「页面」）
-   * @param mode - 截图模式：'visible' | 'full' | 'area'，缺省时不带模式前缀
+   * @param tabTitle - 当前标签标题（缺省 fallback 为「页面」词条）
+   * @param mode - 截图模式：'visible' | 'full' | 'area'，缺省/未知时不带模式前缀
    */
   async function showScreenshot(dataUrl: string, tabTitle?: string, mode?: string) {
     const ok = await copyScreenshotToClipboard(dataUrl)
-    const tail = ok ? '已自动复制到剪贴板~' : '可右键图片手动复制喵~'
-    const modeLabel = mode ? (SCREENSHOT_MODE_LABEL[mode] ?? '') : ''
-    const prefix = modeLabel
-      ? `[${modeLabel}截图: ${tabTitle || '页面'}]`
-      : `[截图: ${tabTitle || '页面'}]`
-    addMessage('ai-chat', wrapCatReply(`${prefix}，${tail}`), dataUrl)
+    const tail = ok ? t('shot.copiedTail') : t('shot.manualTail')
+    const title = tabTitle || t('shot.pageFallback')
+    const modeKey = mode ? SCREENSHOT_MODE_KEYS[mode] : undefined
+    const prefix = modeKey
+      ? t('shot.prefix', { mode: t(modeKey), title })
+      : t('shot.prefixPlain', { title })
+    addMessage('ai-chat', wrapCatReply(`${prefix} ${tail}`), dataUrl)
   }
 
   /**

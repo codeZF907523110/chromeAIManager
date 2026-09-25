@@ -1,0 +1,11 @@
+{
+  "extName": {
+    "message": "AI 浏览器管家"
+  },
+  "extDescription": {
+    "message": "AI 驱动的浏览器自主操作扩展"
+  },
+  "extCommandOpen": {
+    "message": "打开 AI 命令面板"
+  }
+}

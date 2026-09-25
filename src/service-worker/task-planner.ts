@@ -142,7 +142,6 @@ export interface ExecPlanResult {
   askUserKey?: string
   finalReport?: FinalReport
   error?: string
-  message?: string
 }
 
 export async function execPlan(payload: ExecPlanPayload): Promise<ExecPlanResult> {
@@ -155,11 +154,11 @@ export async function execPlan(payload: ExecPlanPayload): Promise<ExecPlanResult
       }
 
       // DOM 操作能力已移除，task_plan 暂时不可用
+      // error 字段进入 AI 对话（[阶段①中断] 等），保持中文，不属用户可见文案
       return {
         success: false,
         phase: 'ABORTED',
         error: 'task_plan 功能暂时不可用，等待新 DOM 操作架构实现',
-        message: 'DOM 操作功能正在重新架构中，暂不支持任务规划命令',
       }
     }
 
@@ -183,7 +182,6 @@ export async function execPlan(payload: ExecPlanPayload): Promise<ExecPlanResult
         steps: task.steps,
         planStatus: task.planStatus,
         totalSteps: task.steps.length,
-        message: `计划已就绪，共 ${task.steps.length} 个步骤`,
       }
     }
 

@@ -19,6 +19,9 @@
  *   - 其他分区显示存在/数量，单行展示
  *   - 空分区显示"未识别"，不渲染空卡
  */
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface LinkItem {
   text: string
@@ -57,8 +60,10 @@ const NAV_PREVIEW_LIMIT = 5
     <!-- navigation -->
     <div v-if="props.landmarks.navigation.length > 0" class="landmark-card">
       <div class="card-header">
-        <span class="card-title">导航 navigation</span>
-        <span class="card-meta">{{ props.landmarks.navigation.length }} 个</span>
+        <span class="card-title">{{ t('landmark.navTitle') }}</span>
+        <span class="card-meta">{{
+          t('landmark.count', { count: props.landmarks.navigation.length })
+        }}</span>
       </div>
       <ul class="nav-list">
         <li v-for="(l, i) in props.landmarks.navigation.slice(0, NAV_PREVIEW_LIMIT)" :key="i">
@@ -67,7 +72,7 @@ const NAV_PREVIEW_LIMIT = 5
           </a>
         </li>
         <li v-if="props.landmarks.navigation.length > NAV_PREVIEW_LIMIT" class="more">
-          等 {{ props.landmarks.navigation.length }} 项…
+          {{ t('landmark.more', { count: props.landmarks.navigation.length }) }}
         </li>
       </ul>
     </div>
@@ -75,49 +80,55 @@ const NAV_PREVIEW_LIMIT = 5
     <!-- main -->
     <div class="landmark-card">
       <div class="card-header">
-        <span class="card-title">主内容 main</span>
-        <span class="card-meta">{{ props.landmarks.main.exists ? '已识别' : '未识别' }}</span>
+        <span class="card-title">{{ t('landmark.mainTitle') }}</span>
+        <span class="card-meta">
+          {{ props.landmarks.main.exists ? t('landmark.recognized') : t('landmark.unrecognized') }}
+        </span>
       </div>
       <div v-if="props.landmarks.main.exists" class="kv-list">
         <div>
-          <span>子元素</span><b>{{ props.landmarks.main.childCount }}</b>
+          <span>{{ t('landmark.childElements') }}</span
+          ><b>{{ props.landmarks.main.childCount }}</b>
         </div>
         <div>
-          <span>标题数</span><b>{{ props.landmarks.main.headingCount }}</b>
+          <span>{{ t('landmark.headingCount') }}</span
+          ><b>{{ props.landmarks.main.headingCount }}</b>
         </div>
       </div>
-      <div v-else class="empty">无显式 main / article 容器</div>
+      <div v-else class="empty">{{ t('landmark.noMain') }}</div>
     </div>
 
     <!-- complementary -->
     <div v-if="props.landmarks.complementary > 0" class="landmark-card">
       <div class="card-header">
-        <span class="card-title">侧栏 complementary</span>
-        <span class="card-meta">{{ props.landmarks.complementary }} 个</span>
+        <span class="card-title">{{ t('landmark.asideTitle') }}</span>
+        <span class="card-meta">{{
+          t('landmark.count', { count: props.landmarks.complementary })
+        }}</span>
       </div>
     </div>
 
     <!-- contentinfo -->
     <div v-if="props.landmarks.contentinfo" class="landmark-card">
       <div class="card-header">
-        <span class="card-title">页脚 contentinfo</span>
-        <span class="card-meta">已识别</span>
+        <span class="card-title">{{ t('landmark.footerTitle') }}</span>
+        <span class="card-meta">{{ t('landmark.recognized') }}</span>
       </div>
     </div>
 
     <!-- banner -->
     <div v-if="props.landmarks.banner" class="landmark-card">
       <div class="card-header">
-        <span class="card-title">页首 banner</span>
-        <span class="card-meta">已识别</span>
+        <span class="card-title">{{ t('landmark.headerTitle') }}</span>
+        <span class="card-meta">{{ t('landmark.recognized') }}</span>
       </div>
     </div>
 
     <!-- search -->
     <div v-if="props.landmarks.search > 0" class="landmark-card">
       <div class="card-header">
-        <span class="card-title">搜索 search</span>
-        <span class="card-meta">{{ props.landmarks.search }} 个</span>
+        <span class="card-title">{{ t('landmark.searchTitle') }}</span>
+        <span class="card-meta">{{ t('landmark.count', { count: props.landmarks.search }) }}</span>
       </div>
     </div>
 
@@ -131,8 +142,8 @@ const NAV_PREVIEW_LIMIT = 5
       class="landmark-card"
     >
       <div class="card-header">
-        <span class="card-title">语义区块</span>
-        <span class="card-meta">附加统计</span>
+        <span class="card-title">{{ t('landmark.sectionsTitle') }}</span>
+        <span class="card-meta">{{ t('landmark.sectionsMeta') }}</span>
       </div>
       <div class="kv-list">
         <div v-if="(props.sectionsCount.section ?? 0) > 0">

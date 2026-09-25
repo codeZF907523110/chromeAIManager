@@ -14,7 +14,11 @@ import {
 } from '../shared/constants'
 import { collectContext } from './context-collector'
 import { executeCommand } from './executor'
+import { initSwLocale } from '../shared/sw-i18n'
 const OFFSCREEN_URL = 'offscreen/recorder.html'
+
+// 装载用户语言偏好并监听变化（供 SW 报错文案使用，失败不影响消息处理）
+void initSwLocale()
 
 // ──── 消息路由 ────
 

@@ -10,6 +10,9 @@
  * 长字段走"截断 + Element Plus tooltip"组合，避免撑爆气泡宽度。
  */
 import { ElTooltip } from 'element-plus'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 export interface DataTableColumn {
   /** 字段名（行对象的 key） */
@@ -30,7 +33,7 @@ const props = withDefaults(
     rows: Record<string, unknown>[]
     empty?: string
   }>(),
-  { empty: '暂无数据' }
+  { empty: '' }
 )
 
 function truncate(s: string, n: number): string {
@@ -59,7 +62,9 @@ function isLong(s: string, col: DataTableColumn): boolean {
     </thead>
     <tbody>
       <tr v-if="props.rows.length === 0">
-        <td :colspan="props.columns.length" class="empty">{{ props.empty }}</td>
+        <td :colspan="props.columns.length" class="empty">
+          {{ props.empty || t('blocks.noData') }}
+        </td>
       </tr>
       <tr v-for="(row, i) in props.rows" :key="i">
         <td v-for="c in props.columns" :key="c.key">

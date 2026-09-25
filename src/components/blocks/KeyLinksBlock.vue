@@ -10,6 +10,9 @@
  *   - target="_blank" 强制新窗口
  *   - href 截断到 60 字符，hover 通过 title 属性看完整
  */
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface LinkItem {
   text: string
@@ -46,7 +49,7 @@ function truncate(href: string): string {
       </a>
     </li>
   </ul>
-  <div v-else class="empty">未识别到关键链接</div>
+  <div v-else class="empty">{{ t('blocks.noKeyLinks') }}</div>
 </template>
 
 <style scoped>

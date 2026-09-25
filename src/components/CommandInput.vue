@@ -6,7 +6,7 @@
         <textarea
           ref="textareaRef"
           v-model="inputValue"
-          :placeholder="isListening ? '正在聆听，请说话…' : '输入命令或 / 查看帮助...'"
+          :placeholder="isListening ? t('input.listeningPlaceholder') : t('input.placeholder')"
           rows="3"
           @keydown="handleKeydown"
           @input="handleInput"
@@ -16,7 +16,7 @@
 
         <!-- 斜杠命令提示 -->
         <div v-if="showSlashPicker" class="slash-picker">
-          <div class="slash-picker-header">可用命令</div>
+          <div class="slash-picker-header">{{ t('input.availableCommands') }}</div>
           <div class="slash-picker-list">
             <div
               v-for="(cmd, idx) in filteredCommands"
@@ -26,9 +26,11 @@
               @click="selectSlashCommand(cmd)"
             >
               <span class="slash-name">/{{ cmd.slash }}</span>
-              <span class="slash-desc">{{ cmd.description }}</span>
+              <span class="slash-desc">{{ t(`slash.${cmd.intent}.desc`) }}</span>
             </div>
-            <div v-if="filteredCommands.length === 0" class="slash-empty">无匹配命令</div>
+            <div v-if="filteredCommands.length === 0" class="slash-empty">
+              {{ t('input.noMatchCommand') }}
+            </div>
           </div>
         </div>
       </div>
@@ -36,8 +38,8 @@
       <!-- 语音输入状态栏：聆听中显示（声浪条 + 计时 + 结束按钮） -->
       <div v-if="isListening" class="voice-bar">
         <span class="voice-eq" aria-hidden="true"><i /><i /><i /></span>
-        <span class="voice-hint">正在聆听… {{ elapsedText }}</span>
-        <button class="voice-stop" @click="stopVoice">结束</button>
+        <span class="voice-hint">{{ t('input.listening') }} {{ elapsedText }}</span>
+        <button class="voice-stop" @click="stopVoice">{{ t('input.voiceStop') }}</button>
       </div>
 
       <!-- 工具栏 -->
@@ -55,7 +57,9 @@
               <el-dropdown-menu>
                 <el-dropdown-item v-for="model in models" :key="model.id" :command="model.id">
                   <span>{{ model.name }}</span>
-                  <el-tag v-if="model.isDefault" size="small" class="ml-2">默认</el-tag>
+                  <el-tag v-if="model.isDefault" size="small" class="ml-2">
+                    {{ t('app.defaultTag') }}
+                  </el-tag>
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -66,14 +70,19 @@
             v-if="speechSupported"
             class="icon-btn"
             :class="{ 'mic-active': isListening }"
-            :title="isListening ? '点击结束聆听' : '语音输入'"
+            :title="isListening ? t('input.micStopHint') : t('input.micHint')"
             @click="toggleSpeech"
           >
             <Mic :size="16" />
           </button>
 
           <!-- 停止按钮（AI 思考中显示） -->
-          <button v-if="isRunning" class="stop-btn" title="停止生成" @click="emit('stop')">
+          <button
+            v-if="isRunning"
+            class="stop-btn"
+            :title="t('input.stopHint')"
+            @click="emit('stop')"
+          >
             <StopCircle :size="16" />
           </button>
 
@@ -82,7 +91,7 @@
             v-else
             class="send-btn"
             :disabled="!inputValue.trim() || !isInitialized"
-            :title="isInitialized ? '' : '正在加载历史消息...'"
+            :title="isInitialized ? '' : t('input.loadingHistory')"
             @click="handleSend"
           >
             <ArrowUp :size="16" />
@@ -95,13 +104,17 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ChevronDown, Mic, ArrowUp, StopCircle } from 'lucide-vue-next'
 import { useAIEngine } from '../composables/useAIEngine'
 import { useMessageHistory } from '../composables/useCommandHistory'
 import { useSpeechRecognition } from '../composables/useSpeechRecognition'
+import { speechLangFor } from '../locales'
 import { SLASH_COMMANDS } from '../shared/slash-commands'
 import type { SlashCommand } from '../types'
+
+const { t, locale } = useI18n()
 
 const props = defineProps<{
   modelValue: string
@@ -142,12 +155,14 @@ const inputValue = computed({
 
 const currentModelName = computed(() => {
   const model = getActiveModel()
-  return model?.name || '选择模型'
+  return model?.name || t('input.selectModel')
 })
 
 const textareaRef = ref<HTMLTextAreaElement>()
 
 // ──── 语音输入（Web Speech API，封装见 useSpeechRecognition）────
+// 识别语言跟随界面语言（zh-CN→zh-CN、en→en-US…），切换语言后下次聆听生效
+const speechLang = computed(() => speechLangFor(locale.value))
 const {
   isListening,
   finalText,
@@ -158,7 +173,7 @@ const {
   start: startSpeech,
   stop: stopSpeech,
   reset: resetSpeech,
-} = useSpeechRecognition({ lang: 'zh-CN' })
+} = useSpeechRecognition({ lang: speechLang })
 
 /** 开始聆听时的输入框内容快照：转写文字以空格追加在其后，不覆盖用户已输入内容 */
 const speechBaseText = ref('')
@@ -208,19 +223,19 @@ function openMicPermissionSettings(): void {
 /**
  * 把语音识别/权限预检的错误码转成用户可读文案。
  * @param code 错误码（not-allowed / no-device / device-busy / network 等）
- * @returns 中文提示文案
+ * @returns 当前界面语言的提示文案
  */
 function voiceErrorMessage(code: string): string {
   if (code === 'permission-dismissed') {
-    return '已在新标签页打开本扩展的权限设置：请把「麦克风」设为「允许」，回来后再点一次麦克风'
+    return t('voice.permissionDismissed')
   }
   if (code === 'not-allowed' || code === 'service-not-allowed') {
-    return '麦克风权限被拒绝：请检查 macOS「系统设置→隐私与安全性→麦克风」中 Chrome 是否开启，并允许本扩展使用麦克风'
+    return t('voice.notAllowed')
   }
-  if (code === 'no-device') return '未检测到麦克风设备，请检查系统声音输入设置'
-  if (code === 'device-busy') return '麦克风被其它应用占用，请关闭占用后重试'
-  if (code === 'network') return '语音识别服务网络异常，请检查网络后重试'
-  return `语音识别出错（${code}），请重试`
+  if (code === 'no-device') return t('voice.noDevice')
+  if (code === 'device-busy') return t('voice.deviceBusy')
+  if (code === 'network') return t('voice.network')
+  return t('voice.genericError', { code })
 }
 
 /**

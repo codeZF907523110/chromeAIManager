@@ -7,13 +7,13 @@
     <header class="header">
       <div class="header-brand">
         <span class="header-icon">◆</span>
-        <span class="header-title">AI 浏览器管家</span>
+        <span class="header-title">{{ t('app.brand') }}</span>
       </div>
       <div class="header-actions">
         <el-button
           text
           @click="toggleTheme"
-          :title="themeMode === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
+          :title="themeMode === 'dark' ? t('app.toLight') : t('app.toDark')"
         >
           <Moon v-if="themeMode === 'dark'" :size="16" />
           <Sun v-else :size="16" />
@@ -53,10 +53,16 @@
         <div class="drawer-nav">
           <div v-if="settingsPage !== 'home'" class="back-btn" @click="settingsPage = 'home'">
             <ChevronLeft :size="14" />
-            <span>返回</span>
+            <span>{{ t('app.back') }}</span>
           </div>
           <span class="drawer-nav-title">
-            {{ settingsPage === 'home' ? '设置' : settingsPage === 'models' ? '模型管理' : '关于' }}
+            {{
+              settingsPage === 'home'
+                ? t('app.settings')
+                : settingsPage === 'models'
+                  ? t('app.models')
+                  : t('app.about')
+            }}
           </span>
           <el-button
             v-if="settingsPage === 'models'"
@@ -73,15 +79,28 @@
       <div v-if="settingsPage === 'home'">
         <div class="settings-cell" @click="settingsPage = 'models'">
           <div class="cell-content">
-            <span class="cell-title">模型管理</span>
-            <span class="cell-desc">添加、编辑、删除 AI 模型</span>
+            <span class="cell-title">{{ t('app.models') }}</span>
+            <span class="cell-desc">{{ t('app.modelsDesc') }}</span>
           </div>
           <ChevronRight :size="16" class="cell-arrow" />
         </div>
+        <div class="settings-cell" @click.stop>
+          <div class="cell-content">
+            <span class="cell-title">{{ t('settings.language') }}</span>
+          </div>
+          <el-select
+            :model-value="locale"
+            size="small"
+            style="width: 130px"
+            @change="handleLocaleChange"
+          >
+            <el-option v-for="l in LOCALES" :key="l.code" :value="l.code" :label="l.label" />
+          </el-select>
+        </div>
         <div class="settings-cell" @click="settingsPage = 'about'">
           <div class="cell-content">
-            <span class="cell-title">关于</span>
-            <span class="cell-desc">版本信息和帮助</span>
+            <span class="cell-title">{{ t('app.about') }}</span>
+            <span class="cell-desc">{{ t('app.aboutDesc') }}</span>
           </div>
           <ChevronRight :size="16" class="cell-arrow" />
         </div>
@@ -93,7 +112,7 @@
           <div class="model-info">
             <div class="model-name-row">
               <span class="model-name">{{ model.name }}</span>
-              <el-tag v-if="model.isDefault" size="small">默认</el-tag>
+              <el-tag v-if="model.isDefault" size="small">{{ t('app.defaultTag') }}</el-tag>
             </div>
             <span class="model-provider">{{ getProviderLabel(model.provider) }}</span>
           </div>
@@ -104,9 +123,11 @@
               text
               @click="handleSetDefault(model.id)"
             >
-              设为默认
+              {{ t('app.setDefault') }}
             </el-button>
-            <el-button size="small" text @click="startEditModel(model)">编辑</el-button>
+            <el-button size="small" text @click="startEditModel(model)">
+              {{ t('app.edit') }}
+            </el-button>
             <el-button
               v-if="models.length > 1"
               size="small"
@@ -114,7 +135,7 @@
               type="danger"
               @click="handleDeleteModel(model.id)"
             >
-              删除
+              {{ t('app.delete') }}
             </el-button>
           </div>
         </div>
@@ -122,23 +143,32 @@
 
       <!-- 关于页 -->
       <div v-else-if="settingsPage === 'about'" class="about-content">
-        <h3>AI 浏览器管家</h3>
-        <p class="version">版本 {{ appVersion }}</p>
-        <p class="desc">一个基于 AI 的浏览器命令中心</p>
+        <h3>{{ t('app.brand') }}</h3>
+        <p class="version">{{ t('app.version', { version: appVersion }) }}</p>
+        <p class="desc">{{ t('app.appDesc') }}</p>
       </div>
     </el-drawer>
 
     <!-- 添加模型弹窗 -->
-    <el-dialog v-model="showAddDialog" title="添加模型" width="90%" style="max-width: 400px">
+    <el-dialog
+      v-model="showAddDialog"
+      :title="t('app.addModel')"
+      width="90%"
+      style="max-width: 400px"
+    >
       <el-form label-position="top">
-        <el-form-item label="显示名称">
-          <el-input v-model="newModel.name" placeholder="如：DeepSeek V3（列表展示用）" />
+        <el-form-item :label="t('app.displayName')">
+          <el-input v-model="newModel.name" :placeholder="t('app.namePlaceholder')" />
         </el-form-item>
-        <el-form-item label="提供商">
-          <el-select v-model="newModel.provider" placeholder="选择提供商" style="width: 100%">
-            <el-option value="openai" label="OpenAI 兼容 API" />
-            <el-option value="gemini-nano" label="Gemini Nano（本地）" />
-            <el-option value="auto" label="自动" />
+        <el-form-item :label="t('app.provider')">
+          <el-select
+            v-model="newModel.provider"
+            :placeholder="t('app.selectProvider')"
+            style="width: 100%"
+          >
+            <el-option value="openai" :label="t('app.providerOpenai')" />
+            <el-option value="gemini-nano" :label="t('app.providerNano')" />
+            <el-option value="auto" :label="t('app.providerAuto')" />
           </el-select>
         </el-form-item>
         <template v-if="newModel.provider !== 'gemini-nano'">
@@ -150,51 +180,53 @@
               show-password
             />
           </el-form-item>
-          <el-form-item label="API 端点">
-            <el-input v-model="newModel.apiEndpoint" placeholder="如：https://api.openai.com" />
+          <el-form-item :label="t('app.apiEndpoint')">
+            <el-input v-model="newModel.apiEndpoint" :placeholder="t('app.endpointPlaceholder')" />
           </el-form-item>
-          <el-form-item label="模型 ID">
-            <el-input v-model="newModel.modelName" placeholder="如：gpt-4o（API 调用的模型标识）" />
+          <el-form-item :label="t('app.modelId')">
+            <el-input v-model="newModel.modelName" :placeholder="t('app.modelPlaceholder')" />
           </el-form-item>
         </template>
       </el-form>
       <template #footer>
-        <el-button @click="showAddDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleAddModel">保存</el-button>
+        <el-button @click="showAddDialog = false">{{ t('app.cancel') }}</el-button>
+        <el-button type="primary" @click="handleAddModel">{{ t('app.save') }}</el-button>
       </template>
     </el-dialog>
 
     <!-- 编辑模型弹窗 -->
-    <el-dialog v-model="editDialogVisible" title="编辑模型" width="90%" style="max-width: 400px">
+    <el-dialog
+      v-model="editDialogVisible"
+      :title="t('app.editModel')"
+      width="90%"
+      style="max-width: 400px"
+    >
       <el-form label-position="top">
-        <el-form-item label="显示名称">
-          <el-input v-model="editingModel!.name" placeholder="如：DeepSeek V3（列表展示用）" />
+        <el-form-item :label="t('app.displayName')">
+          <el-input v-model="editingModel!.name" :placeholder="t('app.namePlaceholder')" />
         </el-form-item>
-        <el-form-item label="提供商">
+        <el-form-item :label="t('app.provider')">
           <el-select v-model="editingModel!.provider" style="width: 100%">
-            <el-option value="openai" label="OpenAI 兼容 API" />
-            <el-option value="gemini-nano" label="Gemini Nano（本地）" />
-            <el-option value="auto" label="自动" />
+            <el-option value="openai" :label="t('app.providerOpenai')" />
+            <el-option value="gemini-nano" :label="t('app.providerNano')" />
+            <el-option value="auto" :label="t('app.providerAuto')" />
           </el-select>
         </el-form-item>
         <template v-if="editingModel && editingModel.provider !== 'gemini-nano'">
           <el-form-item label="API Key">
             <el-input v-model="editingModel!.apiKey" type="password" show-password />
           </el-form-item>
-          <el-form-item label="API 端点">
+          <el-form-item :label="t('app.apiEndpoint')">
             <el-input v-model="editingModel!.apiEndpoint" />
           </el-form-item>
-          <el-form-item label="模型 ID">
-            <el-input
-              v-model="editingModel!.modelName"
-              placeholder="如：gpt-4o（API 调用的模型标识）"
-            />
+          <el-form-item :label="t('app.modelId')">
+            <el-input v-model="editingModel!.modelName" :placeholder="t('app.modelPlaceholder')" />
           </el-form-item>
         </template>
       </el-form>
       <template #footer>
-        <el-button @click="editDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleSaveEdit">保存</el-button>
+        <el-button @click="editDialogVisible = false">{{ t('app.cancel') }}</el-button>
+        <el-button type="primary" @click="handleSaveEdit">{{ t('app.save') }}</el-button>
       </template>
     </el-dialog>
 
@@ -220,6 +252,8 @@ import CommandInput from './components/CommandInput.vue'
 import ConfirmCard from './components/ConfirmCard.vue'
 import { useAIEngine } from './composables/useAIEngine'
 import { useSettings } from './composables/useSettings'
+import { LOCALES, type LocaleCode } from './locales'
+import { useI18n } from 'vue-i18n'
 import type { AIModel, AIProvider } from './types'
 
 type SettingsPage = 'home' | 'models' | 'about'
@@ -247,7 +281,20 @@ const {
   deleteMessage,
 } = useAIEngine()
 
-const { themeMode, setThemeMode } = useSettings()
+const { themeMode, setThemeMode, locale, setLocale } = useSettings()
+const { t } = useI18n()
+
+/**
+ * 处理设置面板中的语言切换
+ * @param code 下拉框选中的语言代码
+ */
+async function handleLocaleChange(code: LocaleCode) {
+  try {
+    await setLocale(code)
+  } catch (err) {
+    console.error('[settings] 语言切换失败:', err)
+  }
+}
 
 const commandInput = commandInputValue
 const commandInputRef = ref<InstanceType<typeof import('./components/CommandInput.vue').default>>()
@@ -311,9 +358,9 @@ async function handleSetDefault(modelId: string) {
 
 function getProviderLabel(provider: AIProvider): string {
   const labels: Record<AIProvider, string> = {
-    openai: 'OpenAI 兼容',
+    openai: t('app.providerOpenaiCompat'),
     'gemini-nano': 'Gemini Nano',
-    auto: '自动',
+    auto: t('app.providerAuto'),
   }
   return labels[provider] || provider
 }

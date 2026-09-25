@@ -1,17 +1,22 @@
 /**
  * 设置管理 Composable
- * 管理 AI 模型的加载、保存和多模型切换，以及主题设置
+ * 管理 AI 模型的加载、保存和多模型切换，以及主题、界面语言设置
  */
 
-import { ref, readonly } from 'vue'
+import { computed, ref, readonly } from 'vue'
 import type { AIModel } from '../types'
-import { createDefaultModel as createDefaultModelFromConstants } from '../shared/constants'
+import {
+  createDefaultModel as createDefaultModelFromConstants,
+  STORAGE_KEY_LOCALE,
+} from '../shared/constants'
+import { i18n, setLocale as applyLocale, isLocaleCode, type LocaleCode } from '../locales'
 
 const STORAGE_KEYS = {
   MODELS: 'ai_models',
   ACTIVE_MODEL_ID: 'active_model_id',
   THEME_MODE: 'theme_mode',
   ACCENT_COLOR: 'accent_color',
+  LOCALE: STORAGE_KEY_LOCALE,
 }
 
 // 单例状态
@@ -22,6 +27,16 @@ const accentColorState = ref('#3b82f6')
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2)
+}
+
+/**
+ * 罐头文案取词入口（非组件模块）：走 i18n 全局 composer，语言切换即时生效
+ * @param key 词条 key
+ * @param params 插值参数（可选）
+ * @returns 当前语言的文案；词条缺失时由 fallbackLocale（en）兜底
+ */
+function t(key: string, params?: Record<string, unknown>): string {
+  return params ? i18n.global.t(key, params) : i18n.global.t(key)
 }
 
 function createDefaultModel(): AIModel {
@@ -66,6 +81,36 @@ export function useSettings() {
     applyThemeToDOM(themeModeState.value, color)
   }
 
+  // ──── 界面语言 ────
+
+  /** 当前生效语言（只读镜像，真实来源是 i18n 实例） */
+  const locale = computed<LocaleCode>(() => i18n.global.locale.value as LocaleCode)
+
+  /**
+   * 切换界面语言并持久化
+   * @param code 目标语言代码（须为 LOCALES 注册值）
+   * @throws 语言包加载失败时向上抛出（设置面板负责提示），存储不写入
+   */
+  async function setLocale(code: LocaleCode): Promise<void> {
+    await applyLocale(code)
+    await chrome.storage.local.set({ [STORAGE_KEYS.LOCALE]: code })
+  }
+
+  /**
+   * 从存储装载用户的语言偏好（启动时调用；无偏好时保持系统语言解析结果）
+   * @throws 语言包加载失败时抛出，由调用方兜底
+   */
+  async function loadLocale(): Promise<void> {
+    const result = (await chrome.storage.local.get([STORAGE_KEYS.LOCALE])) as Record<
+      string,
+      string | undefined
+    >
+    const stored = result[STORAGE_KEYS.LOCALE]
+    if (isLocaleCode(stored) && stored !== i18n.global.locale.value) {
+      await applyLocale(stored)
+    }
+  }
+
   // ──── 模型 ────
 
   function getActiveModel(): AIModel | undefined {
@@ -100,8 +145,9 @@ export function useSettings() {
     modelsState.value = loadedModels
     activeModelIdState.value = loadedActiveId
 
-    // 加载主题
+    // 加载主题与界面语言
     await loadTheme()
+    await loadLocale()
 
     return { models: loadedModels, activeModelId: loadedActiveId }
   }
@@ -115,13 +161,13 @@ export function useSettings() {
     model: Omit<AIModel, 'id' | 'isDefault' | 'createdAt'>
   ): Promise<AIModel> {
     if (!model.apiKey?.trim()) {
-      throw new Error('请输入 API Key')
+      throw new Error(t('settings.errApiKey'))
     }
     if (!model.apiEndpoint?.trim()) {
-      throw new Error('请输入 API 端点')
+      throw new Error(t('settings.errApiEndpoint'))
     }
     if (!model.modelName?.trim()) {
-      throw new Error('请输入模型名称')
+      throw new Error(t('settings.errModelName'))
     }
     const newModel: AIModel = {
       ...model,
@@ -182,5 +228,8 @@ export function useSettings() {
     setThemeMode,
     setAccentColor,
     applyThemeToDOM,
+    // 界面语言
+    locale,
+    setLocale,
   }
 }

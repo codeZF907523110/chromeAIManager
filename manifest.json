@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "AI Browser Commander",
+  "name": "__MSG_extName__",
   "version": "0.2.0",
-  "description": "AI 驱动的浏览器自主操作扩展",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
   "permissions": [
     "tabs",
     "bookmarks",
@@ -53,7 +54,7 @@
         "default": "Ctrl+Shift+U",
         "mac": "Command+Shift+U"
       },
-      "description": "打开 AI 命令面板"
+      "description": "__MSG_extCommandOpen__"
     }
   },
   "web_accessible_resources": [

@@ -14,7 +14,15 @@
  * 这里用 `*Like` 后缀的最小接口自声明，经 unknown 收窄取构造器，不使用 any。
  */
 
-import { ref, computed, onUnmounted, type Ref, type ComputedRef } from 'vue'
+import {
+  ref,
+  computed,
+  onUnmounted,
+  toValue,
+  type MaybeRefOrGetter,
+  type Ref,
+  type ComputedRef,
+} from 'vue'
 
 /** 单个识别候选文本 */
 interface SpeechRecognitionAlternativeLike {
@@ -86,11 +94,20 @@ export interface UseSpeechRecognitionReturn {
 /**
  * 创建语音识别控制器。
  *
- * @param options.lang 识别语言，默认 'zh-CN'
+ * @param options.lang 识别语言，支持响应式（Ref/Getter，语言切换后下次 start() 生效），默认 'zh-CN'
  * @returns 语音识别状态与控制方法
  */
-export function useSpeechRecognition(options?: { lang?: string }): UseSpeechRecognitionReturn {
-  const lang = options?.lang ?? 'zh-CN'
+export function useSpeechRecognition(options?: {
+  lang?: MaybeRefOrGetter<string>
+}): UseSpeechRecognitionReturn {
+  /**
+   * 取当前识别语言：每次 start() 时求值，保证跟随界面语言切换。
+   * @returns BCP-47 语言标签；空值回退 'zh-CN'
+   */
+  function currentLang(): string {
+    const v = options?.lang ? toValue(options.lang) : ''
+    return v || 'zh-CN'
+  }
 
   /** 能力检测：Chrome 用 webkitSpeechRecognition 前缀，新版本两者都有 */
   const w = window as unknown as {
@@ -152,7 +169,7 @@ export function useSpeechRecognition(options?: { lang?: string }): UseSpeechReco
     if (recognition) return recognition
     if (!Ctor) return null
     const rec = new Ctor()
-    rec.lang = lang
+    rec.lang = currentLang()
     rec.continuous = true
     rec.interimResults = true
 
@@ -241,6 +258,8 @@ export function useSpeechRecognition(options?: { lang?: string }): UseSpeechReco
   async function start(): Promise<void> {
     const rec = ensureRecognition()
     if (!rec) return
+    // 识别器单例会缓存 lang：每次开始前重写，保证界面语言切换后立即生效
+    rec.lang = currentLang()
     // 预检失败时 ensureMicPermission 已写入分流后的 lastError，这里直接返回
     const allowed = await ensureMicPermission()
     if (!allowed) return

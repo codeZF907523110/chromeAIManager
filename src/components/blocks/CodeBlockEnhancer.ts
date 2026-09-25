@@ -11,6 +11,7 @@
  *   每个代码块都 createApp 开销过大，且 v-html 渲染出的 pre 不是响应式数据，
  *   没有 Vue 生命周期需求，纯 DOM 操作更轻。
  */
+import { i18n } from '../../locales'
 
 const COPIED_RESET_MS = 1500
 
@@ -37,7 +38,7 @@ function makeButton(svg: string): HTMLButtonElement {
   const btn = document.createElement('button')
   btn.type = 'button'
   btn.className = 'code-copy-btn'
-  btn.title = '复制代码'
+  btn.title = i18n.global.t('codeBlock.copy')
   btn.innerHTML = svg
   return btn
 }
@@ -96,15 +97,15 @@ function enhanceOne(pre: HTMLPreElement): void {
     if (ok) {
       btn.classList.add('copied')
       btn.innerHTML = CHECK_ICON_SVG
-      btn.title = '已复制'
+      btn.title = i18n.global.t('codeBlock.copied')
       if (resetTimer) clearTimeout(resetTimer)
       resetTimer = setTimeout(() => {
         btn.classList.remove('copied')
         btn.innerHTML = COPY_ICON_SVG
-        btn.title = '复制代码'
+        btn.title = i18n.global.t('codeBlock.copy')
       }, COPIED_RESET_MS)
     } else {
-      btn.title = '复制失败'
+      btn.title = i18n.global.t('codeBlock.copyFailed')
     }
   })
 

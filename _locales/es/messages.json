@@ -1,0 +1,11 @@
+{
+  "extName": {
+    "message": "Asistente de Navegación con IA"
+  },
+  "extDescription": {
+    "message": "Extensión de operaciones autónomas del navegador impulsada por IA"
+  },
+  "extCommandOpen": {
+    "message": "Abrir el panel de comandos de IA"
+  }
+}

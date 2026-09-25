@@ -29,6 +29,16 @@ export default [
     },
   },
   {
+    // Node 运维脚本（scripts/*.mjs）：补充 Node 全局，避免 no-undef 误报
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
+  {
     files: ['**/*.vue'],
     languageOptions: {
       parser: vueParser,

@@ -14,6 +14,9 @@
  *   - meta 折叠区（默认展开），过长用 tooltip
  *   - 空数据不渲染该行
  */
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface ButtonItem {
   text: string
@@ -53,17 +56,25 @@ function describeInput(it: InputItem): string {
 <template>
   <div class="page-stats">
     <div class="stats-row">
-      <span v-if="buttons.length > 0" class="stat-chip">按钮 {{ buttons.length }}</span>
-      <span v-if="inputs.length > 0" class="stat-chip">输入 {{ inputs.length }}</span>
-      <span v-if="formsCount > 0" class="stat-chip">表单 {{ formsCount }}</span>
-      <span v-if="headingsCount > 0" class="stat-chip">标题 {{ headingsCount }}</span>
+      <span v-if="buttons.length > 0" class="stat-chip">
+        {{ t('stats.buttons', { count: buttons.length }) }}
+      </span>
+      <span v-if="inputs.length > 0" class="stat-chip">
+        {{ t('stats.inputs', { count: inputs.length }) }}
+      </span>
+      <span v-if="formsCount > 0" class="stat-chip">
+        {{ t('stats.forms', { count: formsCount }) }}
+      </span>
+      <span v-if="headingsCount > 0" class="stat-chip">
+        {{ t('stats.headings', { count: headingsCount }) }}
+      </span>
       <span v-if="buttons.length === 0 && inputs.length === 0 && formsCount === 0" class="empty">
-        页面无可交互元素
+        {{ t('stats.noInteractive') }}
       </span>
     </div>
 
     <details v-if="inputs.length > 0" class="details-block" open>
-      <summary>输入控件</summary>
+      <summary>{{ t('stats.inputsSummary') }}</summary>
       <ul class="input-list">
         <li v-for="(it, i) in inputs" :key="i">{{ describeInput(it) }}</li>
       </ul>
@@ -73,7 +84,7 @@ function describeInput(it: InputItem): string {
       v-if="meta && (meta.description || meta.viewport || meta.charset)"
       class="details-block"
     >
-      <summary>页面 meta</summary>
+      <summary>{{ t('stats.metaSummary') }}</summary>
       <ul class="meta-list">
         <li v-if="meta.charset">
           <span>charset</span><b>{{ meta.charset }}</b>

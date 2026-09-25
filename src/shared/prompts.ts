@@ -78,6 +78,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     (context.activeTab?.url || '未知') +
     '\n\n' +
     '你是 AI 浏览器操作助手。你通过「观察 → 思考 → 执行 → 验证」的循环来完成用户任务。\n\n' +
+    '**语言规则**：始终用用户消息所用的语言回复；用户切换语言时跟随切换。工具调用与 JSON 结构不受影响。\n\n' +
     '## 工作流\n' +
     '1. 首先使用 browser_snapshot 观察当前页面，获取页面元素列表\n' +
     '2. 根据观察结果和用户需求，选择适当的工具执行操作\n' +

@@ -15,6 +15,17 @@
 
 import type { ExecutionResult } from '../types'
 import { MSG_RECORDING_START, MSG_RECORDING_STOP, MSG_RECORDING_RESULT } from '../shared/constants'
+import { i18n } from '../locales'
+
+/**
+ * 罐头文案取词入口（非组件模块）：走 i18n 全局 composer，语言切换即时生效
+ * @param key 词条 key
+ * @param params 插值参数（可选）
+ * @returns 当前语言的文案；词条缺失时由 fallbackLocale（en）兜底
+ */
+function t(key: string, params?: Record<string, unknown>): string {
+  return params ? i18n.global.t(key, params) : i18n.global.t(key)
+}
 
 // ──── 类型定义 ────
 
@@ -84,22 +95,21 @@ export function createRecordingExecutor(deps: RecordingExecutorDeps): RecordingE
     message?: string
   }) {
     if (!result.success) {
-      const msg = result.message || '录制失败'
+      const msg = result.message || t('rec.failed')
       deps.addErrorMessage(msg)
       stateRef.value = 'idle'
       return
     }
 
     if (result.empty) {
-      deps.addSystemMessage('录制内容为空')
+      deps.addSystemMessage(t('rec.empty'))
       stateRef.value = 'idle'
       return
     }
 
     if (result.dataUrl) {
       const sizeMB = result.size ? (result.size / 1024 / 1024).toFixed(1) : '?'
-      const kindLabel = '录屏'
-      deps.addAIChat(`${kindLabel}已停止 (${sizeMB}MB)`, {
+      deps.addAIChat(t('rec.stoppedSize', { size: sizeMB }), {
         url: result.dataUrl,
         name: result.fileName || 'recording.webm',
         size: result.size || 0,
@@ -115,7 +125,7 @@ export function createRecordingExecutor(deps: RecordingExecutorDeps): RecordingE
       return {
         success: false,
         code: 'RECORDING_BUSY',
-        message: `当前状态: ${stateRef.value}，请等待当前操作完成`,
+        message: t('rec.busy', { state: stateRef.value }),
       }
     }
 
@@ -133,7 +143,7 @@ export function createRecordingExecutor(deps: RecordingExecutorDeps): RecordingE
         return {
           success: false,
           code: 'RECORDING_SW_ERROR',
-          message: '录制服务无响应，请重新尝试',
+          message: t('rec.swNoResponse'),
         }
       }
 
@@ -143,18 +153,20 @@ export function createRecordingExecutor(deps: RecordingExecutorDeps): RecordingE
         return {
           success: false,
           code: result.code || 'RECORDING_FAILED',
-          message: result.message || '录制失败',
+          message: result.message || t('rec.failed'),
         }
       }
 
-      deps.addSystemMessage('已开始录屏，输入 /stop-recording 停止')
+      deps.addSystemMessage(t('rec.started'))
       return { success: true, recording: kind }
     } catch (e) {
       stateRef.value = 'idle'
       return {
         success: false,
         code: 'RECORDING_EXCEPTION',
-        message: `录制异常: ${e instanceof Error ? e.message : String(e)}`,
+        message: t('rec.exception', {
+          msg: e instanceof Error ? e.message : String(e),
+        }),
       }
     }
   }
@@ -165,7 +177,7 @@ export function createRecordingExecutor(deps: RecordingExecutorDeps): RecordingE
       return {
         success: false,
         code: 'NOT_RECORDING',
-        message: '当前没有正在进行的录制',
+        message: t('rec.notRecording'),
       }
     }
 
@@ -180,7 +192,7 @@ export function createRecordingExecutor(deps: RecordingExecutorDeps): RecordingE
         return {
           success: false,
           code: result?.code || 'STOP_FAILED',
-          message: result?.message || '停止录制失败',
+          message: result?.message || t('rec.stopFailed'),
         }
       }
       return { success: true, stopped: true }
@@ -188,7 +200,9 @@ export function createRecordingExecutor(deps: RecordingExecutorDeps): RecordingE
       return {
         success: false,
         code: 'RECORDING_SW_ERROR',
-        message: `停止录制异常: ${e instanceof Error ? e.message : String(e)}`,
+        message: t('rec.stopException', {
+          msg: e instanceof Error ? e.message : String(e),
+        }),
       }
     }
   }
