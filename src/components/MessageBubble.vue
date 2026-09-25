@@ -31,7 +31,7 @@
           <div class="expand-indicator" @click="toggleExpand">
             <ChevronDown v-if="!isExpanded" :size="12" />
             <ChevronUp v-else :size="12" />
-            <span>{{ isExpanded ? '收起' : '展开' }}</span>
+            <span>{{ isExpanded ? t('bubble.collapse') : t('bubble.expand') }}</span>
           </div>
         </template>
         <div v-else ref="contentEl" v-html="renderedHtml"></div>
@@ -50,7 +50,7 @@
             :download="msg.recordingFile.name"
             class="recording-download-btn"
           >
-            ⬇ 下载
+            ⬇ {{ t('bubble.download') }}
           </a>
         </div>
       </div>
@@ -60,7 +60,7 @@
         v-if="msg.type === 'user' || msg.type === 'ai-chat'"
         class="icon-btn"
         :size="16"
-        title="复制此条消息"
+        :title="t('bubble.copyTitle')"
         @click="handleCopy"
       >
         <CopyDocument />
@@ -69,7 +69,7 @@
         v-if="msg.type === 'user'"
         class="icon-btn"
         :size="16"
-        title="删除此条消息"
+        :title="t('bubble.deleteTitle')"
         @click="handleDelete"
       >
         <Delete />
@@ -80,6 +80,7 @@
 
 <script setup lang="ts">
 import { ref, watch, computed, onBeforeUnmount, nextTick, createApp, type App as VueApp } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElIcon, ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument } from '@element-plus/icons-vue'
 import { ChevronDown, ChevronUp } from 'lucide-vue-next'
@@ -88,6 +89,8 @@ import { renderMarkdown } from '../composables/useMarkdown'
 import { useAIEngine } from '../composables/useAIEngine'
 import { blockRegistry } from './blocks/registry'
 import { enhanceCodeBlocks } from './blocks/CodeBlockEnhancer'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   msg: MessageLog
@@ -133,9 +136,9 @@ function toggleExpand() {
 
 async function handleDelete() {
   try {
-    await ElMessageBox.confirm('确定删除这条会话吗？', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
+    await ElMessageBox.confirm(t('bubble.deleteConfirm'), t('bubble.notice'), {
+      confirmButtonText: t('bubble.ok'),
+      cancelButtonText: t('bubble.cancel'),
       type: 'warning',
     })
     emit('delete', props.index)
@@ -163,9 +166,9 @@ async function handleCopy(): Promise<void> {
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
-    ElMessage.success('已复制')
+    ElMessage.success(t('bubble.copied'))
   } catch (e) {
-    ElMessage.warning('复制失败，请手动复制')
+    ElMessage.warning(t('bubble.copyFailed'))
     console.warn('[MessageBubble] 复制消息失败:', e)
   }
 }
@@ -238,7 +241,7 @@ function mountEmbeddedComponents() {
  */
 function renderMissingBlock(host: HTMLElement, tag: string, id: string): void {
   // 用 innerHTML + escapeHtml 注入安全文本，绕过 v-html 上下文限制
-  const text = tag ? `⚠ 组件缺失：<${tag} data-id="${id}" />` : `⚠ 组件缺失：data-id="${id}"`
+  const text = tag ? t('bubble.missingTagged', { tag, id }) : t('bubble.missingUntagged', { id })
   host.innerHTML = `<span class="missing-block">${escapeHtml(text)}</span>`
   // 标记已处理，避免后续重试再次覆盖
   host.setAttribute('data-missing', '1')

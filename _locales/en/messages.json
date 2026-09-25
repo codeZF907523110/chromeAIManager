@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "AI Browser Commander",
+    "description": "Extension display name"
+  },
+  "extDescription": {
+    "message": "AI-powered autonomous browser assistant",
+    "description": "Extension description shown in the store and extension list"
+  },
+  "extCommandOpen": {
+    "message": "Open the AI command panel",
+    "description": "Description of the keyboard shortcut to open the side panel"
+  }
+}

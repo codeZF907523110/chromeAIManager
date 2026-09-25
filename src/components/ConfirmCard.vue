@@ -17,18 +17,24 @@
       </label>
     </div>
     <div v-if="selectableCount > 0" class="confirm-card-summary">
-      已选 {{ selectedCount }} / {{ selectableCount }}
-      <button class="btn-link" :disabled="loading" @click="toggleAll(false)">全不选</button>
-      <button class="btn-link" :disabled="loading" @click="toggleAll(true)">全选</button>
+      {{ t('confirm.selected', { selected: selectedCount, total: selectableCount }) }}
+      <button class="btn-link" :disabled="loading" @click="toggleAll(false)">
+        {{ t('confirm.none') }}
+      </button>
+      <button class="btn-link" :disabled="loading" @click="toggleAll(true)">
+        {{ t('confirm.all') }}
+      </button>
     </div>
     <div class="confirm-card-actions">
-      <button class="btn-cancel" :disabled="loading" @click="handleCancel">取消</button>
+      <button class="btn-cancel" :disabled="loading" @click="handleCancel">
+        {{ t('confirm.cancel') }}
+      </button>
       <button
         class="btn-confirm"
         :disabled="loading || (selectableCount > 0 && selectedCount === 0)"
         @click="handleConfirm"
       >
-        {{ loading ? '执行中...' : '确认执行' }}
+        {{ loading ? t('confirm.running') : t('confirm.confirm') }}
       </button>
     </div>
   </div>
@@ -36,6 +42,9 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface Item {
   primary: string

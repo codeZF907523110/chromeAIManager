@@ -66,6 +66,22 @@ function chromeExtensionPlugin() {
       // 复制 manifest.json
       copyFileSync(resolve(__dirname, 'manifest.json'), resolve(distDir, 'manifest.json'))
 
+      // 复制 _locales（chrome.i18n 的 manifest 多语言词条）
+      const localesSrc = resolve(__dirname, '_locales')
+      const localesDst = resolve(distDir, '_locales')
+      if (existsSync(localesSrc)) {
+        mkdirSync(localesDst, { recursive: true })
+        readdirSync(localesSrc).forEach((localeDir) => {
+          const src = resolve(localesSrc, localeDir)
+          if (!existsSync(src)) return
+          mkdirSync(resolve(localesDst, localeDir), { recursive: true })
+          copyFileSync(
+            resolve(src, 'messages.json'),
+            resolve(localesDst, localeDir, 'messages.json'),
+          )
+        })
+      }
+
       // 复制 icons 目录（只拷贝 manifest 用到的 .png，源图等设计稿不进 dist）
       const iconsSrc = resolve(__dirname, 'icons')
       const iconsDst = resolve(distDir, 'icons')
@@ -119,6 +135,11 @@ export default defineConfig({
   },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    // vue-i18n esm-bundler 构建特性开关（按官方文档配置，tree-shake 掉未用能力）
+    __VUE_I18N_FULL_INSTALL__: JSON.stringify(true),
+    __VUE_I18N_LEGACY_API__: JSON.stringify(false),
+    __INTLIFY_PROD_DEVTOOLS__: JSON.stringify(false),
+    __INTLIFY_JIT_COMPILATION__: JSON.stringify(true),
   },
   build: {
     outDir: distDir,

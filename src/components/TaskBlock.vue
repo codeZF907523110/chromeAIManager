@@ -9,8 +9,8 @@
   <div class="task-block" :data-expanded="expanded" :data-block-id="blockId">
     <header class="task-block__header" @click="emit('toggle')">
       <ChevronRight :size="14" class="task-block__chevron" />
-      <span class="task-block__title">本次任务</span>
-      <span class="task-block__count">{{ messages.length }} 条</span>
+      <span class="task-block__title">{{ t('task.title') }}</span>
+      <span class="task-block__count">{{ t('task.count', messages.length) }}</span>
       <span v-if="!expanded" class="task-block__preview">— {{ lastPreview }}</span>
     </header>
     <div v-show="expanded" class="task-block__body">
@@ -28,9 +28,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ChevronRight } from 'lucide-vue-next'
 import type { MessageLog } from '../types'
 import MessageBubble from './MessageBubble.vue'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   blockId: string

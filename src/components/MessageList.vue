@@ -33,7 +33,7 @@
       <button
         v-show="showJumpBtn"
         class="jump-to-user-btn"
-        title="回到本次提问"
+        :title="t('list.jumpToQuestion')"
         @click="scrollToCurrentUser"
       >
         <ArrowUp :size="14" />
@@ -44,11 +44,14 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, onBeforeUnmount, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ArrowUp } from 'lucide-vue-next'
 import type { MessageLog } from '../types'
 import MessageBubble from './MessageBubble.vue'
 import TaskBlock from './TaskBlock.vue'
 import { useTaskBlocks, type RenderItem } from '../composables/useTaskBlocks'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   messages: readonly MessageLog[]

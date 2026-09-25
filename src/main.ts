@@ -6,9 +6,11 @@ import 'element-plus/theme-chalk/dark/css-vars.css'
 import './styles/theme.css'
 import './styles/highlight.css'
 import App from './App.vue'
+import { i18n } from './locales'
 
 const app = createApp(App)
 app.use(ElementPlus)
+app.use(i18n)
 
 // 注册所有图标
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {

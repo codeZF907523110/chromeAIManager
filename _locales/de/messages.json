@@ -1,0 +1,11 @@
+{
+  "extName": {
+    "message": "AI-Browser-Assistent"
+  },
+  "extDescription": {
+    "message": "KI-gestützte Erweiterung für autonome Browser-Steuerung"
+  },
+  "extCommandOpen": {
+    "message": "KI-Befehlsfeld öffnen"
+  }
+}

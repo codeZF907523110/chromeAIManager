@@ -99,9 +99,16 @@ declare global {
         clear(): Promise<void>
       }
       onChanged: {
-        addListener(callback: (changes: object, area: string) => void): void
-        removeListener(callback: (changes: object, area: string) => void): void
+        addListener(
+          callback: (changes: Record<string, { newValue?: unknown; oldValue?: unknown }>, area: string) => void
+        ): void
+        removeListener(
+          callback: (changes: Record<string, { newValue?: unknown; oldValue?: unknown }>, area: string) => void
+        ): void
       }
+    }
+    i18n: {
+      getUILanguage(): string
     }
     permissions: {
       contains(permissions: any): Promise<boolean>

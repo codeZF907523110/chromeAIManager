@@ -1,18 +1,12 @@
 /**
  * Cat 人设 — 活泼热情的小猫 AI 助手
  * 负责包装 AI 回复，注入可爱语气和后缀互动
+ *
+ * 语气短语来自当前界面语言的词条（cat.followUps），随语言切换；
+ * 表情符号与语言无关，保留在本模块。
  */
 
-const FOLLOW_UPS = [
-  '还有什么可以帮你的吗喵？',
-  '还有其他需要帮忙的吗喵？',
-  '还要做别的事情吗喵？',
-  '还有什么想让我做的吗喵？',
-  '还需要我帮忙吗喵？',
-  '要不要再帮你做点什么喵？',
-  '还有什么想弄的吗喵？',
-  '还有什么我可以帮你的喵？',
-]
+import { i18n } from '../locales'
 
 const CLOSING_EMOJIS = ['🐾', '💕', '✨', '🐱', '💫', '🌟']
 
@@ -21,13 +15,28 @@ function pick<T>(arr: T[]): T {
 }
 
 /**
+ * 读取当前语言的猫娘追问短语列表
+ * @returns 当前语言的 followUps 数组；词条缺失或非数组时返回空数组（调用方按无后缀降级）
+ */
+function getFollowUps(): string[] {
+  const raw = i18n.global.tm('cat.followUps')
+  return Array.isArray(raw) ? (raw as string[]) : []
+}
+
+/**
  * 包装 AI 的 reply，注入 cat 人设
  * 只对非空文本且不以 "⚠" 开头的内容进行包装（错误消息不包装）
+ * @param text AI 回复原文
+ * @returns 追加语言化追问短语 + 表情后的文本；不可包装时原样返回
  */
 export function wrapCatReply(text: string): string {
   if (!text || text.startsWith('⚠')) return text
 
-  const followUp = pick(FOLLOW_UPS)
+  const followUps = getFollowUps()
+  // 当前语言词条缺失时降级为不追加追问，避免把裸 key 展示给用户
+  if (followUps.length === 0) return text
+
+  const followUp = pick(followUps)
   const emoji = pick(CLOSING_EMOJIS)
 
   return `${text} ${followUp} ${emoji}`

@@ -10,6 +10,10 @@
  *   - 单元素扁平列表，无嵌套折叠（大纲本身已是线性）
  *   - 空数据时显示提示文案
  */
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 defineProps<{
   headings: Array<{ level: 1 | 2 | 3 | 4 | 5 | 6; text: string }>
 }>()
@@ -28,7 +32,7 @@ defineProps<{
       <span class="text">{{ h.text }}</span>
     </li>
   </ul>
-  <div v-else class="empty">未识别到标题大纲</div>
+  <div v-else class="empty">{{ t('blocks.noOutline') }}</div>
 </template>
 
 <style scoped>

@@ -7,6 +7,9 @@
  *   - variant?: 'open-list' | 'closed-list' | 'sort-preview'  // 仅做语义标识
  *   - maxRows?: number  // 超过这个数折叠；默认 20
  */
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface TabItem {
   id?: number
@@ -52,9 +55,9 @@ function truncateUrl(u: string, max = 40): string {
       </a>
     </li>
     <li v-if="tabs.length > props.maxRows" class="more">
-      还有 {{ tabs.length - props.maxRows }} 个未显示…
+      {{ t('blocks.tabsMore', { count: tabs.length - props.maxRows }) }}
     </li>
-    <li v-if="tabs.length === 0" class="empty">暂无标签</li>
+    <li v-if="tabs.length === 0" class="empty">{{ t('blocks.noTabs') }}</li>
   </ul>
 </template>
 

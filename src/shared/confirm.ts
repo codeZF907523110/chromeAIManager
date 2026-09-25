@@ -4,6 +4,7 @@
  */
 
 import { findDuplicateGroups } from '../service-worker/utils/tab-matcher'
+import { i18n } from '../locales'
 import type { Context } from '../types'
 
 export interface ConfirmPreview {
@@ -17,6 +18,16 @@ export interface ConfirmPreview {
     /** 初始是否勾选（默认 true = 即将关闭） */
     selected?: boolean
   }>
+}
+
+/**
+ * 罐头文案取词入口（非组件模块）：走 i18n 全局 composer，语言切换即时生效
+ * @param key 词条 key
+ * @param params 插值参数（可选）
+ * @returns 当前语言的文案；词条缺失时由 fallbackLocale（en）兜底
+ */
+function t(key: string, params?: Record<string, unknown>): string {
+  return params ? i18n.global.t(key, params) : i18n.global.t(key)
 }
 
 /**
@@ -46,12 +57,12 @@ export async function generateConfirmPreview(
       if (dupTabs.length === 0) return null
 
       return {
-        title: `将关闭 ${dupTabs.length} 个重复标签页`,
-        description: `检测到 ${duplicateGroups.length} 组重复 URL（可勾选要关闭的标签）`,
-        items: dupTabs.map((t) => ({
-          primary: t.title || t.url,
-          secondary: t.url,
-          tabId: t.id,
+        title: t('preview.closeDupTitle', { count: dupTabs.length }),
+        description: t('preview.closeDupDesc', { groups: duplicateGroups.length }),
+        items: dupTabs.map((tab) => ({
+          primary: tab.title || tab.url,
+          secondary: tab.url,
+          tabId: tab.id,
           selected: true,
         })),
       }
@@ -63,43 +74,44 @@ export async function generateConfirmPreview(
       const q = ((slots.query as string) || '').toString().toLowerCase().trim()
       if (!q) return null
 
-      const matching = context.tabs.filter((t) => {
+      const matching = context.tabs.filter((tab) => {
         // pinned 标签与 SW 端语义保持一致：默认不列入"可关闭"清单。
-        if (!t.url || t.pinned) return false
-        const lowerUrl = t.url.toLowerCase()
-        const title = (t.title || '').toLowerCase()
+        if (!tab.url || tab.pinned) return false
+        const lowerUrl = tab.url.toLowerCase()
+        const title = (tab.title || '').toLowerCase()
         return lowerUrl.includes(q) || title.includes(q)
       })
       if (matching.length === 0) return null
 
       // 统计 pinned 被跳过的数量，提示给用户
-      const skippedPinned = context.tabs.filter((t) => {
-        if (!t.url || !t.pinned) return false
-        const lowerUrl = t.url.toLowerCase()
-        const title = (t.title || '').toLowerCase()
+      const skippedPinned = context.tabs.filter((tab) => {
+        if (!tab.url || !tab.pinned) return false
+        const lowerUrl = tab.url.toLowerCase()
+        const title = (tab.title || '').toLowerCase()
         return lowerUrl.includes(q) || title.includes(q)
       }).length
 
       const description =
-        skippedPinned > 0
-          ? `匹配关键词: ${q}（${skippedPinned} 个固定标签已跳过）`
-          : `匹配关键词: ${q}`
+        t('preview.matchKeyword', { keyword: q }) +
+        (skippedPinned > 0 ? t('preview.skippedPinned', { count: skippedPinned }) : '')
 
       return {
-        title: `将关闭 ${matching.length} 个标签页`,
+        title: t('preview.closeByTitle', { count: matching.length }),
         description,
-        items: matching.map((t) => ({
-          primary: t.title || t.url,
-          secondary: t.url,
-          tabId: t.id,
+        items: matching.map((tab) => ({
+          primary: tab.title || tab.url,
+          secondary: tab.url,
+          tabId: tab.id,
           selected: true,
         })),
       }
     }
 
     case 'ungroup_all': {
-      const groupedTabs = context.tabs.filter((t) => t.groupId !== undefined && t.groupId !== -1)
-      const groupIds = new Set(groupedTabs.map((t) => t.groupId))
+      const groupedTabs = context.tabs.filter(
+        (tab) => tab.groupId !== undefined && tab.groupId !== -1
+      )
+      const groupIds = new Set(groupedTabs.map((tab) => tab.groupId))
       if (groupIds.size === 0) {
         // 没有分组：返回 null 走"无分组"提示
         return null
@@ -118,11 +130,11 @@ export async function generateConfirmPreview(
       // 收集每个分组的信息（id、真实标题、tab 数）
       const groupInfos: Array<{ id: number; title: string; tabCount: number }> = []
       for (const id of groupIds) {
-        const inGroup = groupedTabs.filter((t) => t.groupId === id)
+        const inGroup = groupedTabs.filter((tab) => tab.groupId === id)
         const meta = groupMetaMap.get(id as number)
         groupInfos.push({
           id: id as number,
-          title: meta?.title || inGroup[0]?.title || `分组 ${id}`,
+          title: meta?.title || inGroup[0]?.title || t('preview.groupFallback', { id }),
           tabCount: inGroup.length,
         })
       }
@@ -130,11 +142,11 @@ export async function generateConfirmPreview(
       groupInfos.sort((a, b) => b.tabCount - a.tabCount)
 
       return {
-        title: `将取消 ${groupIds.size} 个标签分组`,
-        description: '所有标签本身保留，仅解除分组关系（可勾选要取消的分组）',
+        title: t('preview.ungroupTitle', { count: groupIds.size }),
+        description: t('preview.ungroupDesc'),
         items: groupInfos.map((g) => ({
           primary: g.title,
-          secondary: `${g.tabCount} 个标签`,
+          secondary: t('preview.tabCount', { count: g.tabCount }),
           tabId: g.id, // ← 复用 tabId 字段携带 groupId（确认卡 checkbox 机制）
           selected: true,
         })),
@@ -147,7 +159,7 @@ export async function generateConfirmPreview(
       // 书签详情不在 Context 里（只有 bookmarkFolders 路径），由调用方预取后经
       // matchedBookmarks 传入。每行带 tabId（书签 id 转 number）→ ConfirmCard 渲染 checkbox。
       const items = (matchedBookmarks ?? []).map((b) => ({
-        primary: b.title || b.url || '(无标题)',
+        primary: b.title || b.url || t('preview.untitled'),
         secondary: b.url || '',
         // 书签 id 是数字字符串（如 "1043"），转 number 给 ConfirmCard 的 checkbox 机制
         tabId: Number(b.id),
@@ -155,8 +167,8 @@ export async function generateConfirmPreview(
       }))
       if (items.length === 0) return null
       return {
-        title: `将删除 ${items.length} 个匹配书签`,
-        description: `关键词: ${query}（可勾选要删除的书签）`,
+        title: t('preview.removeBookmarkTitle', { count: items.length }),
+        description: t('preview.bookmarkKeywordDesc', { keyword: query }),
         items,
       }
     }
@@ -165,18 +177,19 @@ export async function generateConfirmPreview(
       const timeRange = slots.timeRange as string | undefined
       // timeRange 缺失表示 buildSlots 校验未通过（非法范围），不生成预览
       if (!timeRange) return null
-      const label: Record<string, string> = {
-        today: '今天',
-        yesterday: '昨天',
-        week: '最近一周',
-        month: '最近一个月',
-        all: '全部',
-      }
+      // 未知时间范围词条缺失时回退展示原始值
+      const rangeKey = `intent.historyRange.${timeRange}`
+      const label = i18n.global.te(rangeKey) ? i18n.global.t(rangeKey) : timeRange
       return {
-        title: `将删除${label[timeRange] || timeRange}的浏览历史`,
-        description: '此操作不可恢复',
+        title: t('preview.historyTitle', { range: label }),
+        description: t('preview.irreversible'),
         items: slots.query
-          ? [{ primary: `匹配关键词: ${slots.query}`, secondary: label[timeRange] || timeRange }]
+          ? [
+              {
+                primary: t('preview.matchKeyword', { keyword: String(slots.query) }),
+                secondary: label,
+              },
+            ]
           : [],
       }
     }
@@ -208,9 +221,9 @@ export async function generateConfirmPreview(
       return {
         title:
           items.length > 0
-            ? `将清除域名 "${domain}" 下的 ${items.length} 个 Cookie`
-            : `域名 "${domain}" 下没有 Cookie`,
-        description: '此操作不可撤销，可能导致需要重新登录（可勾选要清除的 Cookie）',
+            ? t('preview.cookiesClearTitle', { domain, count: items.length })
+            : t('preview.cookiesEmptyTitle', { domain }),
+        description: t('preview.cookiesClearDesc'),
         items,
       }
     }
@@ -219,8 +232,8 @@ export async function generateConfirmPreview(
       const query = slots.query
       if (!query) return null
       return {
-        title: `将卸载扩展 "${query}"`,
-        description: '此操作不可撤销，扩展的所有数据将被清除',
+        title: t('preview.uninstallExtTitle', { query: String(query) }),
+        description: t('preview.uninstallExtDesc'),
         items: [],
       }
     }
@@ -229,8 +242,8 @@ export async function generateConfirmPreview(
       const key = slots.key
       if (!key) return null
       return {
-        title: `将删除存储键 "${key}"`,
-        description: '此操作不可撤销',
+        title: t('preview.storageRemoveTitle', { key: String(key) }),
+        description: t('preview.irreversibleShort'),
         items: [],
       }
     }

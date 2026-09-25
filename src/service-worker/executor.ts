@@ -3,6 +3,7 @@
  */
 
 import { execPlan } from './task-planner'
+import { swT } from '../shared/sw-i18n'
 
 import type { ExecutionResult } from '../types/execution'
 
@@ -90,7 +91,7 @@ export async function executeCommand(
         return {
           success: false,
           code: 'NEEDS_CONFIRM',
-          message: (e as { message?: string }).message || '需要确认',
+          message: (e as { message?: string }).message || swT('sw.needConfirm'),
           detail: (e as { detail?: Record<string, unknown> }).detail,
         }
       }
@@ -266,7 +267,11 @@ export async function executeCommand(
     case 'browser_tab_close':
       return await removeTabs(payload)
     default:
-      return { success: false, code: 'UNKNOWN_INTENT', message: `未知命令: ${intent}` }
+      return {
+        success: false,
+        code: 'UNKNOWN_INTENT',
+        message: swT('sw.unknownIntent', { intent }),
+      }
   }
 }
 
@@ -281,7 +286,7 @@ async function checkDangerousConfirm(
   throw {
     success: false,
     code: 'NEEDS_CONFIRM',
-    message: `确认执行 "${intent}" 操作？此操作不可撤销。`,
+    message: swT('sw.confirmIntent', { intent }),
     // 填充 children 字段，让前端确认卡可以展示可勾选的子项列表。
     // 各 intent 的子项计算逻辑不同：
     //   - bookmarks_remove_node: 文件夹下的直接子节点（书签 + 子文件夹）
@@ -426,7 +431,8 @@ async function updateTab(payload: Record<string, unknown>): Promise<ExecutionRes
   if (!tabId) {
     const windowId = await getFallbackWindowId()
     const [active] = await chrome.tabs.query({ active: true, windowId })
-    if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+    if (!active?.id)
+      return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
     tabId = active.id
   }
   const updateProps: chrome.tabs.UpdateProperties = {}
@@ -456,8 +462,8 @@ async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResu
       return {
         success: false,
         code: 'NO_TABS_FOUND',
-        message: '未找到活动标签',
-        suggestion: '请先打开一个标签页',
+        message: swT('sw.noActiveTab'),
+        suggestion: swT('sw.openTabFirst'),
       }
     const tabs = await chrome.tabs.move([active.id], { index })
     return {
@@ -488,8 +494,8 @@ async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResu
     return {
       success: false,
       code: 'MOVE_FAILED',
-      message: e?.message || '移动标签失败',
-      suggestion: '请检查 tabIds 是否有效，标签页可能已被关闭',
+      message: e?.message || swT('sw.moveTabFailed'),
+      suggestion: swT('sw.checkTabIds'),
     }
   }
 }
@@ -515,7 +521,7 @@ async function reorderTabs(payload: Record<string, unknown>): Promise<ExecutionR
     return {
       success: false,
       code: 'MISSING_ORDER',
-      message: 'order 不能为空：请按期望顺序传入标签 ID 数组（来自 tabs_observe 的 id 字段）',
+      message: swT('sw.orderRequired'),
     }
   }
   // windowId 归一化：模型可能把数字输出成字符串（tabs_update 的描述里已证实这点），
@@ -532,8 +538,8 @@ async function reorderTabs(payload: Record<string, unknown>): Promise<ExecutionR
     return {
       success: false,
       code: 'INVALID_TAB_IDS',
-      message: `以下 tabId 不在该窗口中: ${invalid.join(', ')}`,
-      suggestion: '请先 tabs_observe 获取最新标签列表',
+      message: swT('sw.tabIdsNotInWindow', { ids: invalid.join(', ') }),
+      suggestion: swT('sw.observeFirst'),
     }
   }
 
@@ -559,8 +565,8 @@ async function reorderTabs(payload: Record<string, unknown>): Promise<ExecutionR
     return {
       success: false,
       code: 'REORDER_FAILED',
-      message: e?.message || '重排标签失败',
-      suggestion: '标签页可能已被关闭，请先 tabs_observe 获取最新列表后重试',
+      message: e?.message || swT('sw.reorderFailed'),
+      suggestion: swT('sw.reorderSuggestion'),
     }
   }
   const sorted = finalOrder.map((id) => byId.get(id)!).map((t) => ({ id: t.id, title: t.title }))
@@ -572,7 +578,8 @@ async function removeTabs(payload: Record<string, unknown>): Promise<ExecutionRe
   if (!tabIds?.length) {
     const windowId = await getFallbackWindowId()
     const [active] = await chrome.tabs.query({ active: true, windowId })
-    if (!active?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+    if (!active?.id)
+      return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
     await chrome.tabs.remove(active.id)
     return { success: true, removed: 1 }
   }
@@ -583,7 +590,7 @@ async function removeTabs(payload: Record<string, unknown>): Promise<ExecutionRe
 async function removeTabsByUrl(payload: Record<string, unknown>): Promise<ExecutionResult> {
   // 纯 url/title 子串模糊匹配。已删除 hostname 匹配，与前端 close_tabs_by_url 一致。
   const q = ((payload.query as string) || '').toLowerCase().trim()
-  if (!q) return { success: false, code: 'INVALID_PARAMS', message: '缺少匹配关键词' }
+  if (!q) return { success: false, code: 'INVALID_PARAMS', message: swT('sw.keywordRequired') }
 
   // 优先用前端勾选过的 tabIds；勾选列表为空再回退到自动匹配
   const explicitTabIds = Array.isArray(payload.tabIds) ? (payload.tabIds as number[]) : []
@@ -604,7 +611,7 @@ async function removeTabsByUrl(payload: Record<string, unknown>): Promise<Execut
   }
 
   if (!tabIds.length) {
-    return { success: true, removed: 0, message: '没有匹配该关键词的标签' }
+    return { success: true, removed: 0, message: swT('sw.noTabMatch') }
   }
   await chrome.tabs.remove(tabIds)
   return { success: true, removed: tabIds.length }
@@ -664,7 +671,7 @@ async function ungroupAllTabs(payload: Record<string, unknown>): Promise<Executi
   } else {
     const lastFocused = await chrome.windows.getLastFocused({ windowTypes: ['normal'] })
     if (!lastFocused?.id) {
-      return { success: false, code: 'NO_TABS_FOUND', message: '找不到当前窗口' }
+      return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noWindow') }
     }
     tabs = await chrome.tabs.query({ windowId: lastFocused.id })
   }
@@ -682,7 +689,7 @@ async function ungroupAllTabs(payload: Record<string, unknown>): Promise<Executi
     return {
       success: true,
       groupsCleared: 0,
-      message: '当前没有任何标签分组',
+      message: swT('sw.noGroups'),
     }
   }
 
@@ -708,8 +715,8 @@ async function ungroupAllTabs(payload: Record<string, unknown>): Promise<Executi
     return {
       success: false,
       code: 'GROUP_NOT_FOUND',
-      message: `未找到 id 为 ${filterIds.join(', ')} 的分组`,
-      suggestion: '请先调用 tabs_observe_groups 获取真实分组 id',
+      message: swT('sw.groupsNotFound', { ids: filterIds.join(', ') }),
+      suggestion: swT('sw.observeGroupsFirst'),
     }
   }
 
@@ -731,13 +738,13 @@ async function prepareGroupByDomain(payload: Record<string, unknown>): Promise<E
   } else {
     const lastFocused = await chrome.windows.getLastFocused({ windowTypes: ['normal'] })
     if (!lastFocused?.id) {
-      return { success: false, code: 'NO_TABS_FOUND', message: '找不到当前窗口' }
+      return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noWindow') }
     }
     tabs = await chrome.tabs.query({ windowId: lastFocused.id })
   }
 
   if (!tabs.length) {
-    return { success: false, code: 'NO_TABS_FOUND', message: '没有可分组的标签' }
+    return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noGroupableTabs') }
   }
 
   // 收集每个标签的 hostname
@@ -843,7 +850,7 @@ async function observeBookmarks(payload: Record<string, unknown>): Promise<Execu
         results.push(toBookmarkNode(node, titlePath))
       }
       // 无论是否命中过滤，只要有子树就继续递归（修复遍历 bug 的关键）
-      const curTitlePath = [...titlePath, node.title || '(根)']
+      const curTitlePath = [...titlePath, node.title || swT('sw.rootNode')]
       if (node.children) walk(node.children, depth + 1, curTitlePath)
     }
   }
@@ -867,8 +874,8 @@ function toBookmarkNode(
   // 书签必有 url、文件夹必无 url，这是 Chrome bookmarks API 的权威判定依据。
   const isFolder = !node.url
   const titlePath = parentTitlePath
-    ? [...parentTitlePath, node.title || '(根)']
-    : [node.title || '(根)']
+    ? [...parentTitlePath, node.title || swT('sw.rootNode')]
+    : [node.title || swT('sw.rootNode')]
   return {
     id: node.id,
     title: node.title || '',
@@ -893,8 +900,8 @@ async function moveBookmark(payload: Record<string, unknown>): Promise<Execution
     return {
       success: false,
       code: 'INVALID_PARAMS',
-      message: '缺少 nodeId 参数',
-      suggestion: '请先调用 bookmarks_observe_tree 获取书签列表，从返回结果中获取 nodeId',
+      message: swT('sw.nodeIdRequired'),
+      suggestion: swT('sw.observeBookmarksFirst'),
     }
   }
 
@@ -917,8 +924,8 @@ async function moveBookmark(payload: Record<string, unknown>): Promise<Execution
     return {
       success: false,
       code: 'BOOKMARK_MOVE_FAILED',
-      message: e?.message || '移动书签失败',
-      suggestion: '请检查 nodeId 是否正确，或尝试先获取书签列表确认节点存在',
+      message: e?.message || swT('sw.moveBookmarkFailed'),
+      suggestion: swT('sw.checkNodeId'),
     }
   }
 }
@@ -946,11 +953,11 @@ async function updateBookmark(payload: Record<string, unknown>): Promise<Executi
 
 async function openBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
   if (!payload.nodeId) {
-    return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId' }
+    return { success: false, code: 'INVALID_PARAMS', message: swT('sw.nodeIdRequired') }
   }
   const windowId = await getFallbackWindowId()
   const [tab] = await chrome.tabs.query({ active: true, windowId })
-  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
   const node = await chrome.bookmarks.get(payload.nodeId as string)
   if (node[0]?.url) {
     await chrome.tabs.update(tab.id, { url: node[0].url })
@@ -987,14 +994,14 @@ async function removeBookmark(payload: Record<string, unknown>): Promise<Executi
       return {
         success: false,
         code: 'INVALID_PARAMS',
-        message: '所选项目没有有效的 id',
+        message: swT('sw.noValidIds'),
       }
     }
     return { success: true, removed: idsToRemove.length }
   }
 
   if (!nodeId) {
-    return { success: false, code: 'INVALID_PARAMS', message: '缺少 nodeId' }
+    return { success: false, code: 'INVALID_PARAMS', message: swT('sw.nodeIdRequired') }
   }
   // 删除前先拿到节点信息，回传 removedNode 让前端能反馈"删了哪个书签"；
   // 如果是文件夹，统计子项数，让用户看到真实影响范围。
@@ -1029,12 +1036,12 @@ async function addCurrentPageBookmark(payload: Record<string, unknown>): Promise
       url.startsWith('chrome-extension://') ||
       url.startsWith('javascript:')
     ) {
-      return { success: false, code: 'PAGE_BLOCKED', message: '无法为特殊页面添加书签' }
+      return { success: false, code: 'PAGE_BLOCKED', message: swT('sw.bookmarkPageBlocked') }
     }
     try {
       new URL(url)
     } catch {
-      return { success: false, code: 'INVALID_PARAMS', message: 'URL 格式无效' }
+      return { success: false, code: 'INVALID_PARAMS', message: swT('sw.invalidUrl') }
     }
     targetUrl = url
     targetTitle = title || url
@@ -1043,7 +1050,7 @@ async function addCurrentPageBookmark(payload: Record<string, unknown>): Promise
     const windowId = await getFallbackWindowId()
     const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab?.url || tab.url.startsWith('chrome://')) {
-      return { success: false, code: 'PAGE_BLOCKED', message: '无法为特殊页面添加书签' }
+      return { success: false, code: 'PAGE_BLOCKED', message: swT('sw.bookmarkPageBlocked') }
     }
     targetUrl = tab.url
     targetTitle = title || tab.title || targetUrl
@@ -1108,7 +1115,7 @@ async function searchHistory(payload: Record<string, unknown>): Promise<Executio
     })),
     found: items.length,
     // 时间窗 meta：让前端知道这是当天的结果，反馈卡片标题可以直接用 "今天" 标记
-    timeRange: { start: startTime, end: endTime, label: '今天' },
+    timeRange: { start: startTime, end: endTime, label: swT('sw.today') },
   }
 }
 
@@ -1170,22 +1177,22 @@ async function removeHistory(payload: Record<string, unknown>): Promise<Executio
 
 async function navigateTo(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const url = payload.url as string
-  if (!url) return { success: false, code: 'INVALID_PARAMS', message: 'URL 为空' }
+  if (!url) return { success: false, code: 'INVALID_PARAMS', message: swT('sw.urlRequired') }
   if (
     url.startsWith('chrome://') ||
     url.startsWith('chrome-extension://') ||
     url.startsWith('javascript:')
   ) {
-    return { success: false, code: 'PAGE_BLOCKED', message: '无法导航到受保护页面' }
+    return { success: false, code: 'PAGE_BLOCKED', message: swT('sw.navBlocked') }
   }
   try {
     new URL(url)
   } catch {
-    return { success: false, code: 'INVALID_PARAMS', message: 'URL 格式无效' }
+    return { success: false, code: 'INVALID_PARAMS', message: swT('sw.invalidUrl') }
   }
   const windowId = await getFallbackWindowId()
   const [tab] = await chrome.tabs.query({ active: true, windowId })
-  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
   if (payload.newTab) {
     await chrome.tabs.create({ url })
   } else {
@@ -1226,12 +1233,12 @@ async function takeScreenshot(payload: Record<string, unknown>): Promise<Executi
     ;[targetTab] = await chrome.tabs.query({ active: true, windowId })
   }
   if (!targetTab?.windowId)
-    return { success: false, code: 'ELE_NOT_FOUND', message: '未找到活动标签' }
+    return { success: false, code: 'ELE_NOT_FOUND', message: swT('sw.noActiveTab') }
   try {
     const dataUrl = await chrome.tabs.captureVisibleTab(targetTab.windowId, { format: 'png' })
     return { success: true, screenshot: dataUrl, mode: 'visible' }
   } catch {
-    return { success: false, code: 'ACT_BLOCKED', message: '截图被拒绝' }
+    return { success: false, code: 'ACT_BLOCKED', message: swT('sw.shotRejected') }
   }
 }
 
@@ -1256,7 +1263,7 @@ async function forwardScreenshotToContent(
     targetTabId = tab?.id
   }
   if (!targetTabId) {
-    return { success: false, code: 'ELE_NOT_FOUND', message: '未找到活动标签' }
+    return { success: false, code: 'ELE_NOT_FOUND', message: swT('sw.noActiveTab') }
   }
 
   // 接收端不存在（扩展重载后已打开页面不会自动注入）时兜底注入并重试一次；
@@ -1273,9 +1280,7 @@ async function forwardScreenshotToContent(
     return {
       success: false,
       code: 'CONTENT_SCRIPT_ERROR',
-      message: isRestricted
-        ? '无法在此页面截图（如浏览器内部页面），请切换到普通网页后重试'
-        : 'Content Script 未响应，请刷新页面后重试',
+      message: isRestricted ? swT('sw.shotBlockedPage') : swT('sw.csNotResponding'),
       suggestion: 'RELOAD_PAGE',
     }
   }
@@ -1292,7 +1297,7 @@ async function forwardScreenshotToContent(
     return { success: true, screenshot: r.data, message: r.message, mode }
   }
   if (r.success) {
-    return { success: false, code: 'SCREENSHOT_EMPTY', message: '截图结果为空' }
+    return { success: false, code: 'SCREENSHOT_EMPTY', message: swT('sw.shotEmpty') }
   }
   return {
     success: false,
@@ -1354,7 +1359,7 @@ async function injectContentScript(tabId: number): Promise<boolean> {
 async function setZoom(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const windowId = await getFallbackWindowId()
   const [tab] = await chrome.tabs.query({ active: true, windowId })
-  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: '未找到活动标签' }
+  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
   const currentZoom = await chrome.tabs.getZoom(tab.id)
   const direction = payload.direction as string
   let zoomFactor = currentZoom
@@ -1400,7 +1405,7 @@ async function updateFontSize(payload: Record<string, unknown>): Promise<Executi
   const size = payload.size as string
   const pixelSize = sizeMap[size]
   if (pixelSize === undefined) {
-    return { success: false, code: 'INVALID_PARAMS', message: `未知的字号: ${size}` }
+    return { success: false, code: 'INVALID_PARAMS', message: swT('sw.unknownFontSize', { size }) }
   }
   await chrome.fontSettings.setFontSize({ pixelSize })
   return { success: true, fontSize: pixelSize, fontSizeLabel: size }
@@ -1416,7 +1421,7 @@ async function updateFontFamily(payload: Record<string, unknown>): Promise<Execu
   const generic = (payload.genericFamily as chrome.fontSettings.GenericFamily) || 'standard'
   const family = payload.family as string
   if (!family) {
-    return { success: false, code: 'INVALID_PARAMS', message: '字体族不能为空' }
+    return { success: false, code: 'INVALID_PARAMS', message: swT('sw.fontFamilyRequired') }
   }
   await chrome.fontSettings.setFontFamily({
     fontId: family,
@@ -1441,7 +1446,7 @@ async function observeCookies(payload: Record<string, unknown>): Promise<Executi
     const windowId = await getFallbackWindowId()
     const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab?.url) {
-      return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
+      return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
     }
     try {
       domain = new URL(tab.url).hostname
@@ -1449,7 +1454,7 @@ async function observeCookies(payload: Record<string, unknown>): Promise<Executi
       return {
         success: false,
         code: 'INVALID_PARAMS',
-        message: '当前页面不是合法 URL',
+        message: swT('sw.invalidPageUrl'),
       }
     }
   }
@@ -1471,7 +1476,7 @@ async function setCookie(payload: Record<string, unknown>): Promise<ExecutionRes
     return {
       success: false,
       code: 'INVALID_PARAMS',
-      message: '需要 domain、name、value 三个参数',
+      message: swT('sw.cookieSetParams'),
     }
   }
   const secure = payload.secure as boolean | undefined
@@ -1496,7 +1501,7 @@ async function setCookie(payload: Record<string, unknown>): Promise<ExecutionRes
       return {
         success: false,
         code: 'COOKIE_SET_FAILED',
-        message: 'Cookie 写入失败（可能域名无权限）',
+        message: swT('sw.cookieSetFailed'),
       }
     }
     return {
@@ -1542,7 +1547,7 @@ async function removeCookies(payload: Record<string, unknown>): Promise<Executio
     const windowId = await getFallbackWindowId()
     const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab?.url) {
-      return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
+      return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
     }
     try {
       domain = new URL(tab.url).hostname
@@ -1550,7 +1555,7 @@ async function removeCookies(payload: Record<string, unknown>): Promise<Executio
       return {
         success: false,
         code: 'INVALID_PARAMS',
-        message: '当前页面不是合法 URL',
+        message: swT('sw.invalidPageUrl'),
       }
     }
   }
@@ -1620,42 +1625,58 @@ async function observeExtensionPermissions(): Promise<ExecutionResult> {
  */
 const OBSERVABLE_PERMISSION_TYPES: Array<{
   key: string
-  label: string
+  /** 词条 key（sw.* 域）：label 随当前语言在消费点经 swT 取词，保证语言切换后生效 */
+  labelKey: string
   /** contentSettings API 中的 resourceId */
   resourceId: string
   /** chrome.contentSettings.set 接受的合法 setting 值 */
   legalSettings: readonly string[]
 }> = [
-  { key: 'cookies', label: 'Cookie', resourceId: 'cookies', legalSettings: ['allow', 'block'] },
+  {
+    key: 'cookies',
+    labelKey: 'sw.permCookie',
+    resourceId: 'cookies',
+    legalSettings: ['allow', 'block'],
+  },
   {
     key: 'javascript',
-    label: 'JavaScript',
+    labelKey: 'sw.permJavaScript',
     resourceId: 'javascript',
     legalSettings: ['allow', 'block'],
   },
-  { key: 'popups', label: '弹窗', resourceId: 'popups', legalSettings: ['allow', 'block'] },
+  {
+    key: 'popups',
+    labelKey: 'sw.permPopups',
+    resourceId: 'popups',
+    legalSettings: ['allow', 'block'],
+  },
   {
     key: 'notifications',
-    label: '通知',
+    labelKey: 'sw.permNotifications',
     resourceId: 'notifications',
     legalSettings: ['allow', 'block', 'ask'],
   },
-  { key: 'images', label: '图片', resourceId: 'images', legalSettings: ['allow', 'block'] },
+  {
+    key: 'images',
+    labelKey: 'sw.permImages',
+    resourceId: 'images',
+    legalSettings: ['allow', 'block'],
+  },
   {
     key: 'microphone',
-    label: '麦克风',
+    labelKey: 'sw.permMic',
     resourceId: 'microphone',
     legalSettings: ['allow', 'block', 'ask'],
   },
   {
     key: 'camera',
-    label: '摄像头',
+    labelKey: 'sw.permCamera',
     resourceId: 'camera',
     legalSettings: ['allow', 'block', 'ask'],
   },
   {
     key: 'location',
-    label: '位置',
+    labelKey: 'sw.permLocation',
     resourceId: 'location',
     legalSettings: ['allow', 'block', 'ask'],
   },
@@ -1682,12 +1703,12 @@ async function observePermissions(payload: Record<string, unknown>): Promise<Exe
     const windowId = await getFallbackWindowId()
     const [tab] = await chrome.tabs.query({ active: true, windowId })
     if (!tab?.url) {
-      return { success: false, code: 'NO_TABS_FOUND', message: '未找到当前标签' }
+      return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
     }
     try {
       domain = new URL(tab.url).hostname
     } catch {
-      return { success: false, code: 'INVALID_PARAMS', message: '当前页面不是合法 URL' }
+      return { success: false, code: 'INVALID_PARAMS', message: swT('sw.invalidPageUrl') }
     }
   }
 
@@ -1700,12 +1721,12 @@ async function observePermissions(payload: Record<string, unknown>): Promise<Exe
       })) as ContentSettingResult
       entries.push({
         key: t.key,
-        label: t.label,
+        label: swT(t.labelKey),
         value: result?.setting || 'default',
       })
     } catch {
       // 单个权限查询失败时跳过该行；其它权限仍可观察
-      entries.push({ key: t.key, label: t.label, value: 'default' })
+      entries.push({ key: t.key, label: swT(t.labelKey), value: 'default' })
     }
   }
 
@@ -1729,23 +1750,28 @@ async function updatePermissions(payload: Record<string, unknown>): Promise<Exec
   const value = payload.value as string | undefined
 
   if (!domain) {
-    return { success: false, code: 'INVALID_PARAMS', message: '缺少域名' }
+    return { success: false, code: 'INVALID_PARAMS', message: swT('sw.domainRequired') }
   }
   const type = OBSERVABLE_PERMISSION_TYPES.find((t) => t.resourceId === setting)
   if (!type) {
     return {
       success: false,
       code: 'INVALID_PARAMS',
-      message: `不支持的权限类型: ${setting}`,
-      suggestion: `支持的类型: ${OBSERVABLE_PERMISSION_TYPES.map((t) => t.key).join(', ')}`,
+      message: swT('sw.permUnsupported', { setting: setting || '' }),
+      suggestion: swT('sw.permSupportedTypes', {
+        types: OBSERVABLE_PERMISSION_TYPES.map((t) => t.key).join(', '),
+      }),
     }
   }
   if (!value || !type.legalSettings.includes(value)) {
     return {
       success: false,
       code: 'INVALID_PARAMS',
-      message: `${type.label} 的 value 必须是 ${type.legalSettings.join(' | ')}`,
-      suggestion: '不支持 "default"（如需重置，请传 allow 或 block）',
+      message: swT('sw.permIllegalValue', {
+        label: swT(type.labelKey),
+        values: type.legalSettings.join(' | '),
+      }),
+      suggestion: swT('sw.permNoDefault'),
     }
   }
 
@@ -1819,7 +1845,7 @@ async function removeStorage(payload: Record<string, unknown>): Promise<Executio
 async function downloadFile(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const url = (payload.url as string | undefined)?.trim()
   if (!url) {
-    return { success: false, code: 'INVALID_PARAMS', message: '需要 url 参数' }
+    return { success: false, code: 'INVALID_PARAMS', message: swT('sw.urlParamRequired') }
   }
   const options: ChromeDownloadOptions = { url }
   if (payload.filename) options.filename = payload.filename as string
@@ -1883,7 +1909,7 @@ async function restoreSession(payload: Record<string, unknown>): Promise<Executi
   const query = (payload.query as string)?.toLowerCase()
 
   if (!sessions.length)
-    return { success: false, code: 'NO_TABS_FOUND', message: '没有可恢复的标签' }
+    return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noTabToReopen') }
 
   if (query) {
     for (const s of sessions) {
@@ -1918,8 +1944,8 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
     return {
       success: false,
       code: 'UNKNOWN_TYPE',
-      message: 'batch calls 为空',
-      suggestion: '请检查 calls 数组是否为空',
+      message: swT('sw.batchEmpty'),
+      suggestion: swT('sw.checkCalls'),
     }
 
   const results: ExecutionResult[] = []
@@ -1944,10 +1970,10 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
       results.push({
         success: false,
         code: 'BATCH_STEP_ERROR',
-        message: e?.message || '步骤执行失败',
+        message: e?.message || swT('sw.stepFailed'),
         index: i,
         tool: calls[i]?.tool,
-        suggestion: '请检查工具名称和参数是否正确',
+        suggestion: swT('sw.checkTool'),
       })
       failed++
     }
@@ -1957,15 +1983,12 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
     return {
       success: false,
       code: 'BATCH_PARTIAL_FAILURE',
-      message: `${succeeded} 成功，${failed} 失败`,
+      message: swT('sw.batchSummary', { succeeded, failed }),
       results,
       total: calls.length,
       succeeded,
       failed,
-      suggestion:
-        failed === calls.length
-          ? '所有步骤都失败了，请检查参数或改用单步操作'
-          : `部分步骤成功，失败步骤的错误信息已返回`,
+      suggestion: failed === calls.length ? swT('sw.batchAllFailed') : swT('sw.batchPartial'),
     }
   }
 
@@ -2004,12 +2027,16 @@ async function executeBrowserTool(
 
   const message = BROWSER_TOOL_TO_MESSAGE[toolName]
   if (!message) {
-    return { success: false, code: 'UNKNOWN_TOOL', message: `未知工具: ${toolName}` }
+    return {
+      success: false,
+      code: 'UNKNOWN_TOOL',
+      message: swT('sw.unknownTool', { tool: toolName }),
+    }
   }
 
   const tabInfo = await getCurrentTab()
   if (!tabInfo) {
-    return { success: false, code: 'TAB_NOT_FOUND', message: '未找到活动标签页' }
+    return { success: false, code: 'TAB_NOT_FOUND', message: swT('sw.noActiveTab') }
   }
 
   try {
@@ -2030,9 +2057,7 @@ async function executeBrowserTool(
     return {
       success: false,
       code: 'CONTENT_SCRIPT_ERROR',
-      message: isRestricted
-        ? '当前页面无法注入扩展脚本（如浏览器内部页面），请切换到普通网页后重试'
-        : 'Content Script 未响应，请刷新页面后重试',
+      message: isRestricted ? swT('sw.injectBlockedPage') : swT('sw.csNotResponding'),
       suggestion: isRestricted ? 'SWITCH_TAB' : 'RELOAD_PAGE',
     }
   }
@@ -2040,7 +2065,7 @@ async function executeBrowserTool(
 
 function mapContentScriptResponse(response: unknown): ExecutionResult {
   if (!response || typeof response !== 'object') {
-    return { success: false, code: 'INVALID_RESPONSE', message: '无效响应' }
+    return { success: false, code: 'INVALID_RESPONSE', message: swT('sw.invalidResponse') }
   }
   const r = response as {
     success: boolean
