@@ -22,6 +22,8 @@
         :disable-fold="true"
         @delete="(idx) => emit('delete', idx)"
       />
+      <!-- 流式进行中的实时思考行：位于块尾，thought 正式落库后由父级清空该 prop 消失 -->
+      <div v-if="liveThought" class="task-block__live-thought">{{ liveThought }}</div>
     </div>
   </div>
 </template>
@@ -40,6 +42,8 @@ const props = defineProps<{
   messages: MessageLog[]
   indices: number[]
   expanded: boolean
+  /** 流式进行中的实时思考文本（仅当前活动块由父级传入；空串/缺省不渲染） */
+  liveThought?: string
 }>()
 
 const emit = defineEmits<{
@@ -112,5 +116,14 @@ const lastPreview = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* 流式实时思考行：复用 system 气泡的弱化日志视觉（小字号 + 次要色） */
+.task-block__live-thought {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

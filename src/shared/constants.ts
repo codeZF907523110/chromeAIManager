@@ -96,6 +96,15 @@ export type LegacyErrorCode = (typeof LEGACY_ERRORS)[keyof typeof LEGACY_ERRORS]
 export const MAX_ELEMENT_TEXT_LENGTH = 200
 export const MAX_AGENT_STEPS = 100
 export const STEP_TIMEOUT_MS = 10000
+/** 录屏启动步骤的专用超时：浏览器屏幕选择器需要用户手动选择（挑屏幕/窗口、是否含音频），
+ * 通用步超时（STEP_TIMEOUT_MS）会把这段等待误判为 ACT_TIMEOUT，导致 AI 重试再撞 RECORDING_BUSY */
+export const RECORDING_STEP_TIMEOUT_MS = 120000
+/** browser_wait_for 步骤的专用超时：该命令的 timeout 参数由 AI 传入（默认 5000ms），
+ * 可等待页面跳转/元素出现等条件，超过通用步超时会被误判 ACT_TIMEOUT */
+export const WAIT_STEP_TIMEOUT_MS = 30000
+/** batch 步骤的专用超时：SW 端 batchExecute 串行执行全部子调用且无内层超时，
+ * 子调用可含慢命令（如 browser_wait_for），整体时长随子调用数量与类型浮动 */
+export const BATCH_STEP_TIMEOUT_MS = 60000
 export const TOTAL_TASK_TIMEOUT_MS = 1000000
 export const MAX_CONSECUTIVE_FAILURES = 3
 /** 聊天记录默认容量上限（IndexedDB 写入时自动 trim） */

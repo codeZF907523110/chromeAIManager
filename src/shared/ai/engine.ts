@@ -5,7 +5,14 @@
 import { detectAICapability, AI_CAPABILITIES } from './api-detector'
 import { GeminiNanoAdapter } from './gemini-nano'
 import { OpenAIAdapter } from './openai-adapter'
-import type { AIAdapter, AIOptions, AIStatus, ChatMessage, AIModel } from '../../types'
+import type {
+  AIAdapter,
+  AIOptions,
+  AIStatus,
+  ChatMessage,
+  AIModel,
+  StreamDeltaHandler,
+} from '../../types'
 
 export class AIEngine {
   private backend: AIAdapter | null = null
@@ -79,6 +86,33 @@ export class AIEngine {
     const last = messages[messages.length - 1]
     const system = messages.find((m) => m.role === 'system')?.content || ''
     return backend.chat(system, last.content || '', options)
+  }
+
+  /**
+   * Agent Loop 专用流式变体：边生成边经 onDelta 回调原始文本增量，resolve 完整文本
+   *
+   * 后端不支持流式时（如 Gemini Nano，v1 未接入 promptStreaming）自动降级：
+   * 走非流式调用，结束时一次性回调全量——调用方无需感知差异。
+   *
+   * @param messages 完整消息数组（含历史）
+   * @param options 调用选项
+   * @param onDelta 原始文本增量回调（可缺省）
+   * @returns 完整回复文本（与非流式 chatWithHistory 返回一致）
+   * @throws 后端不存在/调用失败时抛出，与非流式语义一致
+   */
+  async chatWithHistoryStream(
+    messages: ChatMessage[],
+    options: AIOptions = {},
+    onDelta?: StreamDeltaHandler
+  ): Promise<string> {
+    const backend = await this.getBackend()
+    if (backend.chatWithMessagesStream) {
+      return backend.chatWithMessagesStream(messages, options, onDelta)
+    }
+    // 后端不支持流式：降级非流式，结束时一次性交付全量
+    const full = await this.chatWithHistory(messages, options)
+    onDelta?.(full)
+    return full
   }
 
   private async getBackend(): Promise<AIAdapter> {

@@ -66,6 +66,7 @@ export interface AIResponse {
     | 'scan'
     | 'chat'
     | 'exec_plan'
+    | 'task_plan'
     | 'askUserResponse'
   args?: Record<string, unknown> // 扁平格式参数（方案 B）
   plan?: string
@@ -158,7 +159,19 @@ export interface AIOptions {
 
 // ──── AI 适配器接口 ────
 
+/** 流式增量回调：每收到一段原始文本增量触发一次（delta 为本次新增片段，非全量） */
+export type StreamDeltaHandler = (delta: string) => void
+
 export interface AIAdapter {
   chat(systemPrompt: string, userMessage: string, options?: AIOptions): Promise<string>
   chatWithMessages?(messages: ChatMessage[], options?: AIOptions): Promise<string>
+  /**
+   * 流式变体：边生成边经 onDelta 回调原始文本增量，resolve 完整文本。
+   * 可选能力——后端不支持流式时缺失，由 AIEngine 门面自动降级为非流式（结束时一次性回调）。
+   */
+  chatWithMessagesStream?(
+    messages: ChatMessage[],
+    options?: AIOptions,
+    onDelta?: StreamDeltaHandler
+  ): Promise<string>
 }
