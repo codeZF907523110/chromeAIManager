@@ -7,7 +7,7 @@ export type { ChatMessage, MessageLog } from './ai'
 export type { AIResponse, ToolCall } from './ai'
 export type { AIProvider, AIConfig, AIModel } from './ai'
 export type { AIStatus, AIOptions } from './ai'
-export type { AIAdapter } from './ai'
+export type { AIAdapter, StreamDeltaHandler } from './ai'
 
 // 消息内容块
 export type { MessageBody, EmbeddedComponent } from './message-block'

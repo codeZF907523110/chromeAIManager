@@ -157,7 +157,8 @@ export function createRecordingExecutor(deps: RecordingExecutorDeps): RecordingE
         }
       }
 
-      deps.addSystemMessage(t('rec.started'))
+      // 成功提示不再由 executor 发 system 消息（agentLoop 场景会与 AI 总结重复、
+      // 夹在任务块中间），结果经返回值交给调用方按入口选择反馈通道（见方案文档 E 类）
       return { success: true, recording: kind }
     } catch (e) {
       stateRef.value = 'idle'

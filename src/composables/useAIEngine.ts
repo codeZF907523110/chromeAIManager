@@ -20,6 +20,9 @@ import {
   MSG_EXECUTE,
   MAX_AGENT_STEPS,
   STEP_TIMEOUT_MS,
+  RECORDING_STEP_TIMEOUT_MS,
+  WAIT_STEP_TIMEOUT_MS,
+  BATCH_STEP_TIMEOUT_MS,
   TOTAL_TASK_TIMEOUT_MS,
   MAX_CONSECUTIVE_FAILURES,
 } from '../shared/constants'
@@ -28,7 +31,12 @@ import { SLASH_COMMANDS, matchSlashCommand } from '../shared/slash-commands'
 import { generateConfirmPreview } from '../shared/confirm'
 import { messageStore } from '../shared/message-store'
 import { AIEngine } from '../shared/ai/engine'
-import { buildAgentSystemPrompt } from '../shared/prompts'
+import { createAgentStreamFormatter } from '../shared/agent-stream'
+import {
+  buildAgentSystemPrompt,
+  isAiCallableIntent,
+  AI_CALLABLE_INTENT_SOURCE,
+} from '../shared/prompts'
 import { repairJSON, isTruncated } from '../shared/json-repair'
 import { sanitizeThought } from '../shared/thought-summary'
 import { wrapCatReply } from '../shared/personality'
@@ -38,6 +46,28 @@ import { createRecordingExecutor } from '../recording/executor'
 import { i18n } from '../locales'
 
 const SESSION_KEY = 'ai_commander_session'
+
+/**
+ * 特殊命令的单步超时覆盖表（默认 STEP_TIMEOUT_MS）。
+ * 需要比通用值更长宽限的命令在此登记：
+ * - record_screen：浏览器屏幕选择器要等用户手动挑选（见 RECORDING_STEP_TIMEOUT_MS 注释）
+ * - browser_wait_for：AI 可传 timeout 参数等待页面条件（默认 5000ms，可传更大值）
+ * - batch：SW 端串行执行全部子调用且无内层超时，子调用可含慢命令，总时长不可预估
+ */
+const STEP_TIMEOUT_OVERRIDES: Record<string, number> = {
+  record_screen: RECORDING_STEP_TIMEOUT_MS,
+  browser_wait_for: WAIT_STEP_TIMEOUT_MS,
+  batch: BATCH_STEP_TIMEOUT_MS,
+}
+
+/**
+ * 工具调用判定正则：匹配 assistant 消息里的 `"action":"<命令名>"`。
+ * registry 部分（AI_CALLABLE_INTENT_SOURCE）从 COMMANDS 动态生成，新增命令自动纳入；
+ * legacy 部分为 registry 之外的历史 action 名，维持既有温度行为不变。
+ */
+const TOOL_ACTION_RE = new RegExp(
+  `"action"\\s*:\\s*"(${AI_CALLABLE_INTENT_SOURCE}|scan|exec_plan|askUserResponse|done|exec_tool|execute)"`
+)
 
 /**
  * 罐头文案取词入口（非组件模块）：走 i18n 全局 composer，语言切换即时生效
@@ -75,6 +105,8 @@ export function useAIEngine() {
   // ──── 子 Composable ────
   const settingsComposable = useSettings()
   const aiEngine = new AIEngine()
+  // 流式显示层 formatter：增量 → 节流 partial parse → live 状态（liveStream 供 UI 实时渲染）
+  const streamFormatter = createAgentStreamFormatter()
 
   // ──── 状态 ────
   const messageLog = ref<MessageLog[]>([])
@@ -235,7 +267,8 @@ export function useAIEngine() {
     context.pageStructure = (pageData ?? undefined) as unknown as typeof context.pageStructure
     context.recentLessons = lessons.value.slice(-3)
 
-    const systemPrompt = buildAgentSystemPrompt(context)
+    // 模型名注入身份段落：主人明确问"你是什么模型"时 AI 才如实说出（默认身份是塔比，不提模型）
+    const systemPrompt = buildAgentSystemPrompt(context, settingsComposable.getActiveModel()?.name)
     let messages: ChatMessage[]
 
     if (conversationMessages.value) {
@@ -277,24 +310,27 @@ export function useAIEngine() {
         try {
           // 根据最后一条 assistant 消息的 action 决定 temperature：工具调用用 0.1（严格），闲聊/首轮用 1.2（宽松）
           const lastAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant')
-          // 匹配所有工具调用 action：browser_* / tabs_* / bookmarks_* 等前缀，以及 task_plan / navigate / screenshot / batch / scan / exec_plan / askUserResponse / done / exec_tool / execute
-          const isToolCall =
-            lastAssistantMsg &&
-            /"action"\s*:\s*"(browser_|tabs_|bookmarks_|history_|windows_|storage_|cookies_|permissions_|extensions_|theme_|font_|downloads_|sessions_|top_sites_|task_plan|navigate|screenshot|batch|scan|exec_plan|askUserResponse|done|exec_tool|execute|zoom)"/.test(
-              lastAssistantMsg.content
-            )
-          console.log('[AI-debug] useAIEngine.chatWithHistory start', {
+          // registry 部分动态生成（见 TOOL_ACTION_RE 注释），新增命令自动纳入
+          const isToolCall = lastAssistantMsg && TOOL_ACTION_RE.test(lastAssistantMsg.content)
+          console.log('[AI-debug] useAIEngine.chatWithHistoryStream start', {
             step: stepCount + 1,
             isToolCall,
             messagesCount: messages.length,
             totalChars: messages.reduce((n, m) => n + m.content.length, 0),
           })
-          raw = await aiEngine.chatWithHistory(messages, {
-            temperature: isToolCall ? 0.1 : 1.2,
-            maxTokens: 4096,
-            signal: abortController?.signal,
-          })
-          console.log('[AI-debug] useAIEngine.chatWithHistory returned', {
+          // 流式显示层：每次调用前重置 live 状态，原始增量经 formatter 节流解析（仅显示用，
+          // 决策层仍消费下方返回的完整 raw，见 docs/streaming-output.md §4.1 安全边界）
+          streamFormatter.reset()
+          raw = await aiEngine.chatWithHistoryStream(
+            messages,
+            {
+              temperature: isToolCall ? 0.1 : 1.2,
+              maxTokens: 4096,
+              signal: abortController?.signal,
+            },
+            (delta) => streamFormatter.push(delta)
+          )
+          console.log('[AI-debug] useAIEngine.chatWithHistoryStream returned', {
             step: stepCount + 1,
             elapsedMs: Date.now() - chatStart,
             rawLen: raw?.length ?? 0,
@@ -308,7 +344,7 @@ export function useAIEngine() {
           console.log('[AI Commander] Raw response:', raw?.slice(0, 500))
           console.log('[AI Commander] Raw response type:', typeof raw, 'length:', raw?.length)
         } catch (e: unknown) {
-          console.log('[AI-debug] useAIEngine.chatWithHistory THREW', {
+          console.log('[AI-debug] useAIEngine.chatWithHistoryStream THREW', {
             step: stepCount + 1,
             elapsedMs: Date.now() - chatStart,
             errorType: e instanceof Error ? e.constructor.name : typeof e,
@@ -319,6 +355,8 @@ export function useAIEngine() {
             console.log('[AI Commander] Agent loop stopped during AI call (exception path)')
             return
           }
+          // 流中失败：把已显示的部分回复转正落库，避免用户已读文本凭空消失（方案 §4.4）
+          finalizePartialLive()
           const msg = e instanceof Error ? e.message : String(e)
           if (msg === 'NO_AI_BACKEND') {
             addMessage('system', t('engine.noBackend'))
@@ -368,6 +406,9 @@ export function useAIEngine() {
         if (cleanThought) {
           addMessage('system', t('engine.thought', { text: cleanThought }))
         }
+        // 思考已正式落库：清空任务块的实时思考行防重复；reply 气泡保留，
+        // 等待 emitAIChat 的正式消息或终止路径的 finalizePartialLive 转正
+        streamFormatter.clearThought()
 
         if (!json?.action) {
           jsonRetryCount++
@@ -375,6 +416,8 @@ export function useAIEngine() {
           // 否则 AI 以为只是格式问题会原样重发大输出 → 再次截断 → 永远失败。
           const truncated = isTruncated(raw)
           if (jsonRetryCount >= 2) {
+            // 解析终败：已显示的部分回复先转正，再发"没看懂"反馈
+            finalizePartialLive()
             addMessage('system', t('engine.notUnderstood'))
             reportUserFacingError(
               truncated ? t('engine.notUnderstoodTruncatedReply') : t('engine.notUnderstoodReply')
@@ -432,8 +475,10 @@ export function useAIEngine() {
           continue
         }
 
-        // 处理 exec_plan：任务规划执行器（analyze → scan → setPlan → executeStep循环 → finalReview）
-        if (json.action === 'exec_plan') {
+        // 处理 exec_plan：任务规划执行器（analyze → scan → setPlan → executeStep循环 → finalReview）。
+        // 提示词工具列表教的是 registry 名 task_plan（exec_plan 是历史分支名），两个名字都收，
+        // 否则 AI 的正常输出进不了五阶段逻辑，落入 dispatch 后执行段没有对应处理
+        if (json.action === 'exec_plan' || json.action === 'task_plan') {
           stepCount++
           addMessage('system', t('engine.running', { step: stepCount, total: MAX_AGENT_STEPS }))
 
@@ -498,6 +543,8 @@ export function useAIEngine() {
                 content: `[阶段①中断] ${planResult.error}\n请提供所需数据后重新发起任务`,
               })
               addMessage('system', t('engine.needMoreInfo'))
+              // 终止分支必须有 ai-chat 反馈对：只有 system 气泡时用户会以为"AI 没回复我"
+              reportUserFacingError(t('engine.needMoreInfoReply'))
               cleanup()
               return
             }
@@ -518,6 +565,8 @@ export function useAIEngine() {
               messages.push({ role: 'assistant', content: raw })
               messages.push({ role: 'user', content: `[阶段②失败] ${planResult.error}` })
               addMessage('system', t('engine.scanProblem'))
+              // 终止分支必须有 ai-chat 反馈对（同 needMoreInfo 分支惯例）
+              reportUserFacingError(t('engine.scanProblemReply'))
               cleanup()
               return
             }
@@ -600,7 +649,22 @@ export function useAIEngine() {
               'system',
               report?.taskComplete ? t('engine.planTaskDone') : t('engine.planTaskPartial')
             )
-            cleanup()
+            // 任务终局必须有 ai-chat 总结：完成统计此前只写进 AI 对话历史，
+            // 用户只看到 system 气泡，感知是"AI 干完了活却一言不发"
+            emitAIChat(
+              report?.taskComplete
+                ? t('engine.planDoneReply', {
+                    success: summary?.success || 0,
+                    skipped: summary?.skipped || 0,
+                    failed: summary?.failed || 0,
+                  })
+                : t('engine.planPartialReply', {
+                    success: summary?.success || 0,
+                    skipped: summary?.skipped || 0,
+                    failed: summary?.failed || 0,
+                  }),
+              true
+            )
             return
           }
 
@@ -651,28 +715,11 @@ export function useAIEngine() {
         let toolArgs: Record<string, unknown>
         const actionStr = json.action as string
 
-        if (
-          actionStr.startsWith('browser_') ||
-          actionStr.startsWith('tabs_') ||
-          actionStr.startsWith('bookmarks_') ||
-          actionStr.startsWith('history_') ||
-          actionStr.startsWith('windows_') ||
-          actionStr.startsWith('storage_') ||
-          actionStr.startsWith('cookies_') ||
-          actionStr.startsWith('permissions_') ||
-          actionStr.startsWith('extensions_') ||
-          actionStr.startsWith('theme_') ||
-          actionStr.startsWith('font_') ||
-          actionStr.startsWith('downloads_') ||
-          actionStr.startsWith('sessions_') ||
-          actionStr.startsWith('top_sites_') ||
-          actionStr === 'task_plan' ||
-          actionStr === 'navigate' ||
-          actionStr === 'screenshot' ||
-          actionStr === 'batch' ||
-          actionStr === 'zoom'
-        ) {
-          // 扁平格式：action 直接是工具名
+        // 扁平格式：action 即命令 intent，白名单以 COMMANDS registry 为单一来源
+        // （isAiCallableIntent，见 prompts.ts），新增命令登记 registry 即自动放行，
+        // 不会再出现"提示词里有但 dispatch 误杀"的漏配（录屏 bug 的根因）。
+        // 注意 navigate 在提示词里隐藏（AI_VISIBLE_COMMANDS）但此处放行。
+        if (isAiCallableIntent(actionStr)) {
           toolName = actionStr
           toolArgs = (json.args as Record<string, unknown>) || {}
         } else if (actionStr === 'exec_tool' || actionStr === 'done' || actionStr === 'ask') {
@@ -688,7 +735,10 @@ export function useAIEngine() {
           toolName = json.toolCall.name
           toolArgs = json.toolCall.args || {}
         } else {
+          // system 日志 + ai-chat 反馈对（对齐 noBackend/serviceUnavailable 分支惯例），
+          // 只有 system 气泡时用户会以为"AI 没回复我"
           addMessage('system', t('engine.unknownAction'))
+          reportUserFacingError(t('engine.unknownActionReply'))
           cleanup()
           return
         }
@@ -705,6 +755,9 @@ export function useAIEngine() {
         addMessage('system', t('engine.running', { step: stepCount, total: MAX_AGENT_STEPS }))
 
         let result: ExecutionResult
+        // 特殊命令按覆盖表放宽步超时（录屏选择器、browser_wait_for 长等待，见表注释）；
+        // 声明在 try 外：超时 catch 的 detail 需要引用实际阈值
+        const stepTimeout = STEP_TIMEOUT_OVERRIDES[toolName] ?? STEP_TIMEOUT_MS
         try {
           // AI agent loop 的危险命令视为已确认（force:true）：agent loop 每步都有
           // system 摘要可见、可随时点停止按钮中断，等价于"渐进式确认"。
@@ -713,7 +766,7 @@ export function useAIEngine() {
           result = await Promise.race([
             executeCommand(toolName, dangerous ? { ...toolArgs, force: true } : toolArgs),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('ACT_TIMEOUT')), STEP_TIMEOUT_MS)
+              setTimeout(() => reject(new Error('ACT_TIMEOUT')), stepTimeout)
             ),
           ])
         } catch {
@@ -721,7 +774,7 @@ export function useAIEngine() {
             success: false,
             code: 'ACT_TIMEOUT',
             message: t('engine.stepTimeout'),
-            detail: { reason: '单步操作超过 ' + STEP_TIMEOUT_MS / 1000 + ' 秒' },
+            detail: { reason: '单步操作超过 ' + stepTimeout / 1000 + ' 秒' },
           }
         }
 
@@ -808,10 +861,14 @@ export function useAIEngine() {
                 if (confirmResult.success !== false) {
                   renderExecutionResult(toolName, confirmResult)
                 } else {
+                  // 失败/异常分支补 ai-chat 反馈对（对齐 onCancel 的 canceled 惯例）：
+                  // 只有 system 气泡时用户会以为"AI 没回复我"
                   addMessage('system', t('engine.confirmRetryFailed'))
+                  reportUserFacingError(t('engine.confirmRetryFailedReply'))
                 }
               } catch {
                 addMessage('system', t('engine.confirmError'))
+                reportUserFacingError(t('engine.confirmErrorReply'))
               }
               cleanup()
             },
@@ -1174,7 +1231,19 @@ export function useAIEngine() {
         },
       }
     } else {
-      await dispatchToSW(resolvedIntent, slotsAny)
+      const slashResult = await dispatchToSW(resolvedIntent, slotsAny)
+      // 录屏启动没有其它反馈通道（executor 不再发 system，避免 agentLoop 场景与 AI 总结重复），
+      // 斜杠场景按结果用 ai-chat 回馈：成功走猫语气提示，失败沿用 opFailed 包裹精确原因
+      if (resolvedIntent === 'record_screen' && slashResult) {
+        addMessage(
+          'ai-chat',
+          wrapCatReply(
+            slashResult.success
+              ? t('rec.startedReply')
+              : t('engine.opFailed', { message: slashResult.message || t('step.failedFallback') })
+          )
+        )
+      }
     }
   }
 
@@ -1843,6 +1912,7 @@ export function useAIEngine() {
     lastScreenshot.value = null
     lastScreenshotMode.value = null
     pendingConfirm.value = null // 取消挂起的确认对话框
+    streamFormatter.reset() // 循环终态：清空流式显示残留（转正/正式消息已在各收敛点处理）
     // 立即中断当前 AI 请求（用户点停止按钮时调用）
     if (abortController) {
       try {
@@ -1872,6 +1942,8 @@ export function useAIEngine() {
    */
   function stopAgentLoop(): void {
     if (!activeLoopId.value) return
+    // 流式中止：已显示的部分回复先转正落库（原样、不加猫式包装），再发停止反馈
+    finalizePartialLive()
     addMessage('system', t('engine.stopped'))
     addMessage('ai-chat', {
       markdown: wrapCatReply(t('engine.stoppedReply')),
@@ -2512,6 +2584,26 @@ export function useAIEngine() {
   }
 
   /**
+   * 流式终止收敛（stop / 错误 / 解析失败路径）：把已流式显示的部分回复原样落库转正。
+   *
+   * 为什么需要：流式气泡（LiveBubble）只是临时显示，若终止时直接清掉 live 状态，
+   * 用户已读到的部分回复会凭空消失。转正时不加猫式包装/追问——因为转正后必然紧跟
+   * 停止或错误反馈（stopAgentLoop 恒定追加，错误路径必经 reportUserFacingError）。
+   *
+   * @returns void；live 无回复内容时仅清空状态（无转正消息）
+   */
+  function finalizePartialLive(): void {
+    // 先冲刷节流中未解析的增量：失败/停止可能发生在最后一个 delta 后 100ms 内，
+    // 不冲刷会漏掉尾部文本，转正消息比用户刚看到的短
+    streamFormatter.flushNow()
+    const live = streamFormatter.live.value
+    if (live.replyActive && live.replyText) {
+      addMessage('ai-chat', { markdown: live.replyText })
+    }
+    streamFormatter.reset()
+  }
+
+  /**
    * 发送 AI 对话消息（chat / done / ask 等收尾 action）。
    *
    * 不再附带截图气泡：截图气泡由 screenshot 工具步骤显式触发（见 agent loop 中的
@@ -2526,6 +2618,8 @@ export function useAIEngine() {
     lastScreenshotMode.value = null
     const body: MessageBody = typeof text === 'string' ? { markdown: wrapCatReply(text) } : text
     addMessage('ai-chat', body)
+    // 正式消息已取代流式气泡：清空 live 状态（同一同步块内先后发生，视觉上无缝衔接）
+    streamFormatter.reset()
     if (doCleanup) cleanup()
   }
 
@@ -2594,6 +2688,10 @@ export function useAIEngine() {
       },
       get isInitialized() {
         return isInitialized.value
+      },
+      /** 流式实时状态（LiveBubble / 任务块思考行渲染用，docs/streaming-output.md §4.4） */
+      get liveStream() {
+        return streamFormatter.live.value
       },
     },
 

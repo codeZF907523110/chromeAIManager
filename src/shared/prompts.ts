@@ -7,20 +7,45 @@ import { COMMANDS } from './commands'
 import { getCatSystemIntro } from './personality'
 import { aiUsableBlockManifest } from '../components/blocks/registry'
 
-// 过滤 AI 可用的命令
-const AI_VISIBLE_COMMANDS = COMMANDS.filter(
+/**
+ * AI 可调用的命令全集：registry（COMMANDS）中非 aiHidden、非对话类意图的全部命令。
+ * 这是 AI 命令分发的单一来源 —— 提示词工具列表、useAIEngine 的 dispatch 白名单、
+ * 工具温度判定正则都由它派生，新增命令只需登记 registry，无需再改其它文件。
+ */
+const AI_CALLABLE_COMMANDS = COMMANDS.filter(
   (c: Command) =>
-    c.intent !== 'unknown' &&
-    c.intent !== 'show_help' &&
-    c.intent !== 'chat' &&
-    c.intent !== 'navigate' &&
-    !c.aiHidden
+    c.intent !== 'unknown' && c.intent !== 'show_help' && c.intent !== 'chat' && !c.aiHidden
+)
+
+// 提示词工具列表：在全集上额外隐藏 navigate（提示词引导 AI 用更具体的导航命令，
+// 但 dispatch 仍放行 navigate，见 isAiCallableIntent）
+const AI_VISIBLE_COMMANDS = AI_CALLABLE_COMMANDS.filter((c: Command) => c.intent !== 'navigate')
+
+/**
+ * 判断某个 action 是否为 registry 中 AI 可调用的命令（dispatch 白名单判定）
+ *
+ * @param intent AI 输出的 action 名（即命令的 intent）
+ * @returns true 表示放行执行；false 落入 unknownAction 终止并提示用户
+ */
+export function isAiCallableIntent(intent: string): boolean {
+  return AI_CALLABLE_COMMANDS.some((c: Command) => c.intent === intent)
+}
+
+/**
+ * 全部 AI 可调用 intent 的正则片段（`a|b|c` 形式，intent 均为 [a-z_] 无需转义）。
+ * 供 useAIEngine 动态构建"工具温度判定"正则，避免第三份手工副本。
+ */
+export const AI_CALLABLE_INTENT_SOURCE = AI_CALLABLE_COMMANDS.map((c: Command) => c.intent).join(
+  '|'
 )
 
 /**
  * 构建 Agent 系统提示词
+ *
+ * @param context 浏览器上下文（标签页概览、页面结构等）
+ * @param modelName 当前底层模型名称（可选），透传给身份段落：仅当主人明确询问模型时 AI 才说出
  */
-export function buildAgentSystemPrompt(context: Context): string {
+export function buildAgentSystemPrompt(context: Context, modelName?: string): string {
   const tools = AI_VISIBLE_COMMANDS.map((c: Command) => {
     const slotNames = Object.keys(c.slots).join(', ') || '无'
     return '- ' + c.intent + ' | 参数: ' + slotNames + ' | ' + c.description
@@ -67,7 +92,7 @@ export function buildAgentSystemPrompt(context: Context): string {
     : ''
 
   return (
-    getCatSystemIntro() +
+    getCatSystemIntro(modelName) +
     '\n\n' +
     blockBlock +
     '## 当前环境信息\n' +

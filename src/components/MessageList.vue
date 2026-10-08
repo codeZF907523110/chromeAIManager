@@ -22,10 +22,13 @@
           :messages="item.messages"
           :indices="item.indices"
           :expanded="item.expanded"
+          :live-thought="item.blockId === lastBlockId ? liveThought : ''"
           @toggle="toggleExpanded(item.blockId)"
           @delete="(idx) => emit('delete', idx)"
         />
       </template>
+      <!-- 流式实时回复气泡：位于消息流末尾，正式消息落库后由 useAIEngine 清空 live 状态使其消失 -->
+      <LiveBubble v-if="liveReplyActive" :text="liveReplyText" />
     </div>
 
     <!-- 回到本次提问：目标 user 气泡在视口上方时显示，点击平滑滚回当前对话的提问位置 -->
@@ -47,8 +50,10 @@ import { ref, watch, nextTick, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ArrowUp } from 'lucide-vue-next'
 import type { MessageLog } from '../types'
+import type { LiveStreamState } from '../shared/agent-stream'
 import MessageBubble from './MessageBubble.vue'
 import TaskBlock from './TaskBlock.vue'
+import LiveBubble from './LiveBubble.vue'
 import { useTaskBlocks, type RenderItem } from '../composables/useTaskBlocks'
 
 const { t } = useI18n()
@@ -60,6 +65,11 @@ const props = defineProps<{
    * 由 App.vue 从 useAIEngine().state.activeLoopId 透传。
    */
   activeLoopId?: string | null
+  /**
+   * 流式实时显示状态（reply / thought 的已显示前缀）。
+   * 由 App.vue 从 useAIEngine().state.liveStream 透传；缺省时隐藏 LiveBubble 与实时思考行。
+   */
+  liveStream?: LiveStreamState
 }>()
 
 const emit = defineEmits<{
@@ -81,6 +91,26 @@ const { renderItems, toggleExpanded } = useTaskBlocks(messagesRef, loopRef)
 function renderKey(item: RenderItem): string | number {
   return item.kind === 'bubble' ? `b-${item.index}` : item.blockId
 }
+
+// ──── 流式实时显示（docs/streaming-output.md §4.4）────
+
+/** 实时回复气泡是否显示：live 状态里已有可显示的回复前缀 */
+const liveReplyActive = computed(() => props.liveStream?.replyActive ?? false)
+
+/** 实时回复文本（partial JSON 提取出的单调增长前缀） */
+const liveReplyText = computed(() => props.liveStream?.replyText ?? '')
+
+/** 实时思考文本（仅传入最后一个任务块，经 sanitizeThought 清洗） */
+const liveThought = computed(() => props.liveStream?.thoughtText ?? '')
+
+/** 最后一个任务块的 blockId：实时思考行只属于"当前进行中"的块 */
+const lastBlockId = computed(() => {
+  for (let i = renderItems.value.length - 1; i >= 0; i--) {
+    const item = renderItems.value[i]
+    if (item.kind === 'block') return item.blockId
+  }
+  return null
+})
 
 function scrollToBottom(smooth = true) {
   if (!containerRef.value) return
@@ -186,6 +216,18 @@ watch(
     scheduleScroll(!isInitializing)
     // DOM 渲染完成后刷新按钮显隐（新消息可能把 user 气泡顶出可视区）
     nextTick(() => updateJumpBtn())
+  }
+)
+
+// 流式内容增长不改变 messages.length：仅当用户已接近底部时跟随滚动，
+// 上翻阅读历史时不被流式输出不断拉回底部
+watch(
+  () => `${props.liveStream?.replyText ?? ''} ${props.liveStream?.thoughtText ?? ''}`,
+  () => {
+    const container = containerRef.value
+    if (!container) return
+    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    if (distanceToBottom < 80) scheduleScroll(true)
   }
 )
 

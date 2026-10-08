@@ -28,6 +28,7 @@
     <MessageList
       :messages="state.messageLog"
       :active-loop-id="state.activeLoopId"
+      :live-stream="state.liveStream"
       @delete="deleteMessage"
     />
 
