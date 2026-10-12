@@ -306,7 +306,9 @@ onBeforeUnmount(() => {
 
 .jump-to-user-btn:hover {
   color: var(--app-text-primary);
-  background: var(--app-picker-item-hover);
+  /* 用实色 secondary 而非 picker-item-hover（6% 半透明叠加）：本按钮有实底背景，
+     换成半透明色会让背景"消失"、下层消息透出来 */
+  background: var(--app-bg-secondary);
 }
 
 /* 按钮显隐淡入淡出 */

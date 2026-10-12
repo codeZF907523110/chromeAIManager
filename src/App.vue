@@ -15,8 +15,10 @@
           @click="toggleTheme"
           :title="themeMode === 'dark' ? t('app.toLight') : t('app.toDark')"
         >
-          <Moon v-if="themeMode === 'dark'" :size="16" />
-          <Sun v-else :size="16" />
+          <!-- 图标表示点击后的目标模式（业界惯例，与 title 语义一致）：
+               暗色时显示太阳（点我变亮），亮色时显示月亮（点我变暗） -->
+          <Sun v-if="themeMode === 'dark'" :size="16" />
+          <Moon v-else :size="16" />
         </el-button>
         <el-button text @click="toggleSettings">
           <Settings :size="16" />
