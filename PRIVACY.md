@@ -76,4 +76,4 @@ Updates will be posted on this page with a revised date. Significant changes wil
 For privacy questions, contact us via:
 
 - GitHub Issues: https://github.com/codeZF907523110/chromeAIManager/issues
-- 邮箱 / Email: <!-- TODO: 替换为你的邮箱 / replace with your email -->
+- 邮箱 / Email: zhangfeng991106@gmail.com
