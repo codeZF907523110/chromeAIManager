@@ -25,6 +25,7 @@
     "providerNano": "Gemini Nano（本地）",
     "providerAuto": "自动",
     "providerOpenaiCompat": "OpenAI 兼容",
+    "providerAnthropic": "Anthropic 兼容",
     "apiEndpoint": "API 端点",
     "endpointPlaceholder": "如：https://api.openai.com",
     "modelId": "模型 ID",

@@ -170,6 +170,7 @@
             style="width: 100%"
           >
             <el-option value="openai" :label="t('app.providerOpenai')" />
+            <el-option value="anthropic" :label="t('app.providerAnthropic')" />
             <el-option value="gemini-nano" :label="t('app.providerNano')" />
             <el-option value="auto" :label="t('app.providerAuto')" />
           </el-select>
@@ -211,6 +212,7 @@
         <el-form-item :label="t('app.provider')">
           <el-select v-model="editingModel!.provider" style="width: 100%">
             <el-option value="openai" :label="t('app.providerOpenai')" />
+            <el-option value="anthropic" :label="t('app.providerAnthropic')" />
             <el-option value="gemini-nano" :label="t('app.providerNano')" />
             <el-option value="auto" :label="t('app.providerAuto')" />
           </el-select>
@@ -362,6 +364,7 @@ async function handleSetDefault(modelId: string) {
 function getProviderLabel(provider: AIProvider): string {
   const labels: Record<AIProvider, string> = {
     openai: t('app.providerOpenaiCompat'),
+    anthropic: t('app.providerAnthropic'),
     'gemini-nano': 'Gemini Nano',
     auto: t('app.providerAuto'),
   }

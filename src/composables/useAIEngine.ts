@@ -137,11 +137,17 @@ export function useAIEngine() {
     await recoverContext()
     isInitialized.value = true
 
-    // 监听模型变化，自动同步到 aiEngine（解决删除当前模型后的引用问题）
+    // 监听激活模型的配置指纹，任一字段变化即同步到 aiEngine：
+    // - 切换模型（id 变化）或删除当前模型后的引用问题（原逻辑）
+    // - 编辑当前模型的 apiKey/apiEndpoint/modelName/provider 时也立即重建适配器，
+    //   否则 backend 缓存仍指向旧配置，用户改完配置不生效（需重启侧边栏才恢复）
     watch(
-      () => settingsComposable.activeModelId.value,
-      (newId) => {
-        const model = settingsComposable.models.value.find((m) => m.id === newId)
+      () => {
+        const m = settingsComposable.getActiveModel()
+        return m ? [m.id, m.provider, m.apiKey, m.apiEndpoint, m.modelName].join('\u0000') : ''
+      },
+      () => {
+        const model = settingsComposable.getActiveModel()
         if (model) aiEngine.setModel(model)
       }
     )
@@ -308,7 +314,8 @@ export function useAIEngine() {
         // （定义在 try 块内时 catch 里不可见，会报 TS2304）
         const chatStart = Date.now()
         try {
-          // 根据最后一条 assistant 消息的 action 决定 temperature：工具调用用 0.1（严格），闲聊/首轮用 1.2（宽松）
+          // 根据最后一条 assistant 消息的 action 决定 temperature：工具调用用 0.1（严格），闲聊/首轮用 1.0（宽松；
+          // 上限 1.0——智谱等端点限制 [0,1]，传 1.2 会被 1210 错误直接拒绝）
           const lastAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant')
           // registry 部分动态生成（见 TOOL_ACTION_RE 注释），新增命令自动纳入
           const isToolCall = lastAssistantMsg && TOOL_ACTION_RE.test(lastAssistantMsg.content)
@@ -324,7 +331,7 @@ export function useAIEngine() {
           raw = await aiEngine.chatWithHistoryStream(
             messages,
             {
-              temperature: isToolCall ? 0.1 : 1.2,
+              temperature: isToolCall ? 0.1 : 1.0,
               maxTokens: 4096,
               signal: abortController?.signal,
             },

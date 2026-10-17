@@ -35,8 +35,8 @@ export class GeminiNanoAdapter implements AIAdapter {
   }
 
   private async createSession(systemPrompt: string, options: AIOptions): Promise<AISession> {
-    // 根据 mode 决定默认 temperature：任务执行严格（0.1），纯聊天宽松（1.2）
-    const defaultTemp = options.mode === 'chat' ? 1.2 : 0.1
+    // 根据 mode 决定默认 temperature：任务执行严格（0.1），纯聊天宽松（1.0；与 openai 链路一致的上限）
+    const defaultTemp = options.mode === 'chat' ? 1.0 : 0.1
     const opts = {
       systemPrompt,
       temperature: options.temperature ?? defaultTemp,

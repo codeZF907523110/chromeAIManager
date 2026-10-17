@@ -113,7 +113,7 @@ export interface AIResponse {
 
 // ──── AI 提供商类型 ────
 
-export type AIProvider = 'auto' | 'gemini-nano' | 'openai'
+export type AIProvider = 'auto' | 'gemini-nano' | 'openai' | 'anthropic'
 
 // ──── AI 模型类型 ────
 
@@ -141,7 +141,7 @@ export interface AIConfig {
 
 export interface AIStatus {
   available: boolean
-  backend?: 'gemini-nano' | 'openai'
+  backend?: 'gemini-nano' | 'openai' | 'anthropic'
   offline?: boolean
   reason?: string
 }

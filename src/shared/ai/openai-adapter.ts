@@ -4,6 +4,7 @@
  */
 
 import type { AIAdapter, AIOptions, ChatMessage, StreamDeltaHandler } from '../../types'
+import { ensureEndpointPermission } from './permission'
 
 export interface OpenAIAdapterConfig {
   apiKey: string
@@ -27,6 +28,30 @@ class StreamProtocolError extends Error {
 
 /** 视为「端点不支持 stream 参数」的协议类状态码（重试流式必然同样失败，应直接降级） */
 const PROTOCOL_STATUS = new Set([400, 404, 415, 422])
+
+/**
+ * 检测「HTTP 200 + 错误体」的端点响应并抛出真实错误
+ *
+ * 部分兼容端点（实测智谱）对不存在的路径返回 HTTP 200 包错误 JSON
+ * （如 {"code":500,"msg":"404 NOT_FOUND"}），若不检测会被解析成空 choices
+ * 静默返回，用户只能看到「没有返回任何内容」。
+ *
+ * @param data 已解析的响应 JSON（可能含 error/message 错误字段）
+ * @throws 响应体携带错误信息时抛出 Error，消息取服务端返回的描述
+ */
+function throwIfBodyError(data: {
+  choices?: unknown
+  error?: { message?: string; msg?: string }
+  message?: string
+  msg?: string
+}): void {
+  // 正常响应带 choices 时，顶层 message/msg 可能是普通字段，不作错误处理
+  const msg =
+    data.error?.message ||
+    data.error?.msg ||
+    (data.choices ? undefined : (data.msg ?? data.message))
+  if (msg) throw new Error(`API 返回错误: ${msg}`)
+}
 
 export class OpenAIAdapter implements AIAdapter {
   private apiKey: string
@@ -70,7 +95,7 @@ export class OpenAIAdapter implements AIAdapter {
     options: AIOptions = {},
     onDelta?: StreamDeltaHandler
   ): Promise<string> {
-    await this.ensurePermission()
+    await ensureEndpointPermission(this.endpoint)
 
     // 端点已确认不支持流式：直接非流式，结束时一次性交付全量
     if (this.streamUnsupported) {
@@ -159,7 +184,14 @@ export class OpenAIAdapter implements AIAdapter {
     // 端点忽略 stream:true 返回普通 JSON：按非流式等效处理，不报错不重试
     const contentType = resp.headers.get('content-type') ?? ''
     if (contentType.includes('application/json')) {
-      const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> }
+      const data = (await resp.json()) as {
+        choices?: Array<{ message?: { content?: string } }>
+        error?: { message?: string; msg?: string }
+        message?: string
+      }
+      // 部分/兼容端点会以 HTTP 200 包错误体（如实测智谱返回 200 + {"code":500,"msg":"404 NOT_FOUND"}），
+      // 若不检测会被静默解析成空串，用户只看到「没有返回任何内容」而无诊断信息
+      throwIfBodyError(data)
       const full = data.choices?.[0]?.message?.content || ''
       if (full) onDelta?.(full)
       return full
@@ -231,7 +263,9 @@ export class OpenAIAdapter implements AIAdapter {
     options: AIOptions,
     stream: boolean
   ): Record<string, unknown> {
-    const defaultTemp = options.mode === 'chat' ? 1.2 : 0.1
+    // 温度上限取 1.0：智谱等端点限制 [0,1]（OpenAI/DeepSeek 允许到 2，1.0 均合法）；
+    // 闲聊的活泼度由提示词保障，不依赖高温
+    const defaultTemp = options.mode === 'chat' ? 1.0 : 0.1
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
@@ -283,7 +317,7 @@ export class OpenAIAdapter implements AIAdapter {
     // 权限检查只在首次调用时执行（后续调用不再重复弹窗）
     const permStart = Date.now()
     try {
-      await this.ensurePermission()
+      await ensureEndpointPermission(this.endpoint)
       console.log('[AI-debug] ensurePermission ok', { elapsedMs: Date.now() - permStart })
     } catch (e) {
       console.log('[AI-debug] ensurePermission FAILED', {
@@ -336,7 +370,11 @@ export class OpenAIAdapter implements AIAdapter {
 
         const data = (await resp.json()) as {
           choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
+          error?: { message?: string; msg?: string }
+          message?: string
         }
+        // 同 streamCall：检测「HTTP 200 + 错误体」的端点怪癖，抛真实错误而非静默空串
+        throwIfBodyError(data)
         const choice = data.choices?.[0]
         // 截断检测：finish_reason=length 表示输出超 max_tokens 被截断，
         // 返回的 content 大概率是不完整 JSON。打日志便于排查，上层 repairJSON 会尝试截断恢复。
@@ -389,27 +427,5 @@ export class OpenAIAdapter implements AIAdapter {
     }
 
     throw lastError || new Error('API 调用失败')
-  }
-
-  private async ensurePermission(): Promise<void> {
-    const origin = new URL(this.endpoint).origin
-    const containsStart = Date.now()
-    const ok = await chrome.permissions.contains({ origins: [`${origin}/*`] })
-    console.log('[AI-debug] permissions.contains', {
-      origin,
-      granted: ok,
-      elapsedMs: Date.now() - containsStart,
-    })
-    if (!ok) {
-      const requestStart = Date.now()
-      console.log('[AI-debug] permissions.request ABOUT TO SHOW DIALOG', { origin })
-      const granted = await chrome.permissions.request({ origins: [`${origin}/*`] })
-      console.log('[AI-debug] permissions.request RESULT', {
-        origin,
-        granted,
-        elapsedMs: Date.now() - requestStart,
-      })
-      if (!granted) throw new Error(`需要 ${origin} 的访问权限`)
-    }
   }
 }

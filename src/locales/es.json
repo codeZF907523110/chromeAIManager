@@ -25,6 +25,7 @@
     "providerNano": "Gemini Nano (local)",
     "providerAuto": "Automático",
     "providerOpenaiCompat": "Compatible con OpenAI",
+    "providerAnthropic": "Compatible con Anthropic",
     "apiEndpoint": "Endpoint de la API",
     "endpointPlaceholder": "p. ej. https://api.openai.com",
     "modelId": "ID del modelo",

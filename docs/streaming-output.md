@@ -158,6 +158,7 @@
 |------|------|
 | `src/shared/agent-stream.ts`（新增） | 流式显示层：`createAgentStreamFormatter` → `LiveStreamState{replyActive,replyText,thoughtText}` shallowRef；100ms 尾沿节流 partial parse；单调守卫；`push`/`flushNow`/`reset`/`clearThought` |
 | `src/shared/ai/openai-adapter.ts` | `chatWithMessagesStream`（重试/降级编排）+ `streamCall`（首块/空闲双超时、content-type 识别、SSE 手动解析、`finish_reason=length` 可观测）；`buildBody`/`readError` 抽取共用；`StreamProtocolError` + `PROTOCOL_STATUS` 会话级 `streamUnsupported` 降级 |
+| `src/shared/ai/anthropic-adapter.ts` | Anthropic Messages 协议适配器：与 openai-adapter 同一调用契约（重试/降级/双超时），SSE 解析取 `text_delta`（thinking 块忽略），system 提取为顶层字段，连续同角色消息防御性合并 |
 | `src/shared/ai/engine.ts` | `chatWithHistoryStream` 门面：后端无流式能力（Gemini Nano）自动降级非流式、结束一次性回调全量 |
 | `src/types/ai.ts`、`src/types/index.ts` | `StreamDeltaHandler` 类型 + `AIAdapter.chatWithMessagesStream?` 可选接口 |
 | `src/composables/useAIEngine.ts` | agentLoop 唯一 AI 调用点接入（决策链路不动）；finalize 收敛：`finalizePartialLive`（stop/catch/解析终败三路径转正）、`emitAIChat` 成功收敛、思考落库点 `clearThought`、`cleanup` 兜底 reset；`state.liveStream` getter 供 UI |

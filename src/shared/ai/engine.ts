@@ -5,6 +5,7 @@
 import { detectAICapability, AI_CAPABILITIES } from './api-detector'
 import { GeminiNanoAdapter } from './gemini-nano'
 import { OpenAIAdapter } from './openai-adapter'
+import { AnthropicAdapter } from './anthropic-adapter'
 import type {
   AIAdapter,
   AIOptions,
@@ -51,6 +52,8 @@ export class AIEngine {
       this._checked = { available: true, backend: 'gemini-nano', offline: true }
     } else if (config.apiKey && (config.provider === 'auto' || config.provider === 'openai')) {
       this._checked = { available: true, backend: 'openai', offline: false }
+    } else if (config.apiKey && config.provider === 'anthropic') {
+      this._checked = { available: true, backend: 'anthropic', offline: false }
     } else {
       this._checked = {
         available: false,
@@ -127,11 +130,19 @@ export class AIEngine {
       this.backend = new GeminiNanoAdapter(cap)
     } else {
       if (!this.currentModel) throw new Error('NO_MODEL_CONFIGURED')
-      this.backend = new OpenAIAdapter({
-        apiKey: this.currentModel.apiKey,
-        endpoint: this.currentModel.apiEndpoint,
-        model: this.currentModel.modelName,
-      })
+      if (this.currentModel.provider === 'anthropic') {
+        this.backend = new AnthropicAdapter({
+          apiKey: this.currentModel.apiKey,
+          endpoint: this.currentModel.apiEndpoint,
+          model: this.currentModel.modelName,
+        })
+      } else {
+        this.backend = new OpenAIAdapter({
+          apiKey: this.currentModel.apiKey,
+          endpoint: this.currentModel.apiEndpoint,
+          model: this.currentModel.modelName,
+        })
+      }
     }
     return this.backend
   }

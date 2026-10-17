@@ -3,7 +3,7 @@
 ## 「思考中」在干什么
 
 `agentLoop` 每一轮 = **一次非流式 LLM API 调用**（`OpenAIAdapter.call` → POST
-`/v1/chat/completions`），期间没有任何本地计算。"思考中..." 的停留时间就是：
+`/v1/chat/completions`；Anthropic 协议模型走 `AnthropicAdapter.call` → POST `/v1/messages`），期间没有任何本地计算。"思考中..." 的停留时间就是：
 网络发出 → 服务端 prefill（读完整个 prompt）→ 生成完整 JSON → 返回 的总时长。
 
 ## 为什么会卡很久
