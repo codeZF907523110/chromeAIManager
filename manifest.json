@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "__MSG_extDescription__",
   "default_locale": "en",
   "permissions": [
@@ -62,7 +62,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["offscreen/*", "lib/*", "sidepanel.html", "sidepanel.js", "sidepanel.css", "style.js", "style.css", "constants.js"],
+      "resources": ["offscreen/*", "sidepanel.html", "sidepanel.js", "sidepanel.css", "style.js", "style.css", "constants.js"],
       "matches": ["<all_urls>"]
     }
   ]

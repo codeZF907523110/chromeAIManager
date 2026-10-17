@@ -109,18 +109,6 @@ function chromeExtensionPlugin() {
         })
       }
 
-      // 复制 lib
-      const libDir = resolve(__dirname, 'src/lib')
-      const libDst = resolve(distDir, 'lib')
-      mkdirSync(libDst, { recursive: true })
-      if (existsSync(libDir)) {
-        readdirSync(libDir).forEach((file) => {
-          if (file.endsWith('.js') || file.endsWith('.min.js')) {
-            copyFileSync(resolve(libDir, file), resolve(libDst, file))
-          }
-        })
-      }
-
       console.log('[chrome-extension] 构建完成！扩展位于 dist/ 目录')
     },
   }
