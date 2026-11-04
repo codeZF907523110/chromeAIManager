@@ -257,14 +257,8 @@
     },
     "cookiesCleared": "{count} Cookies für {domain} gelöscht",
     "cookiesClearedAll": "{count} Cookies gelöscht",
-    "themeColorSet": "Designfarbe gesetzt: {color}",
-    "themeModeSet": "Designmodus gesetzt: {mode}",
-    "themeSet": "Design gesetzt",
-    "themeMode": {
-      "light": "hell",
-      "dark": "dunkel",
-      "device": "Geräteeinstellung folgen"
-    }
+    "pageThemeDark": "Die Seite ist jetzt im Dunkelmodus. Sende /light, um sie wiederherzustellen",
+    "pageThemeRestored": "Seite in ihren Originalfarben wiederhergestellt"
   },
   "step": {
     "failedFallback": "Aktion fehlgeschlagen",
@@ -308,7 +302,6 @@
     "screenshotCaptured": "Screenshot aufgenommen",
     "zoomed": "Zoom auf {percent}%",
     "downloadsOpened": "Downloads-Seite geöffnet",
-    "themeSet": "Design: {mode}",
     "fontSize": "Schriftgröße: {label}",
     "fontSet": "Schrift: {font}",
     "cookiesObserved": "{count} Cookies angesehen ({domain})",
@@ -479,6 +472,12 @@
     },
     "stop_recording": {
       "desc": "Aufnahme stoppen und Video speichern"
+    },
+    "page_theme_dark": {
+      "desc": "Aktuelle Webseite in den Dunkelmodus schalten (CSS-Filter-Invertierung)"
+    },
+    "page_theme_light": {
+      "desc": "Aktuelle Webseite in ihren Originalfarben wiederherstellen"
     },
     "show_help": {
       "desc": "Alle verfügbaren Befehle anzeigen (Markdown-Tabelle)"
@@ -664,6 +663,7 @@
     "batchPartial": "Einige Schritte waren erfolgreich; die Fehler der fehlgeschlagenen Schritte wurden zurückgegeben",
     "unknownTool": "Unbekanntes Tool: {tool}",
     "injectBlockedPage": "Das Erweiterungsskript kann auf dieser Seite nicht injiziert werden (z. B. interne Browserseiten) — wechsle zu einer normalen Webseite und versuche es erneut",
-    "invalidResponse": "Ungültige Antwort"
+    "invalidResponse": "Ungültige Antwort",
+    "pageThemeBlocked": "Dunkelmodus kann auf dieser Seite nicht umgeschaltet werden (z. B. interne Browserseite). Wechsle zu einer normalen Webseite und versuche es erneut"
   }
 }

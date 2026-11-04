@@ -14,11 +14,15 @@ import {
 } from '../shared/constants'
 import { collectContext } from './context-collector'
 import { executeCommand } from './executor'
+import { registerPageThemeAutoApply } from './page-theme'
 import { initSwLocale } from '../shared/sw-i18n'
 const OFFSCREEN_URL = 'offscreen/recorder.html'
 
 // 装载用户语言偏好并监听变化（供 SW 报错文案使用，失败不影响消息处理）
 void initSwLocale()
+
+// 已记忆深色域名的页面加载时自动暗化（监听器须顶层同步注册，MV3 事件唤醒规则）
+registerPageThemeAutoApply()
 
 // ──── 消息路由 ────
 

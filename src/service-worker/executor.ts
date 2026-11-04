@@ -4,6 +4,7 @@
 
 import { execPlan } from './task-planner'
 import { swT } from '../shared/sw-i18n'
+import { applyDarkCss, removeDarkCss, rememberSite, getTabHostname } from './page-theme'
 
 import type { ExecutionResult } from '../types/execution'
 
@@ -168,11 +169,9 @@ export async function executeCommand(
       return await searchDownloads(payload)
     case 'downloads_open':
       return await openDownloadsPage()
-    // ──── THEME ────
-    case 'theme_observe':
-      return await observeTheme()
-    case 'theme_update':
-      return await updateTheme(payload)
+    // ──── PAGE THEME ────
+    case 'page_theme_set':
+      return await setPageTheme(payload)
     // ──── FONT ────
     case 'font_size_observe':
       return await observeFontSize()
@@ -1372,19 +1371,44 @@ async function setZoom(payload: Record<string, unknown>): Promise<ExecutionResul
   return { success: true, zoomFactor }
 }
 
-// ──── THEME 实现 ────
+// ──── PAGE THEME 实现 ────
 
-async function observeTheme(): Promise<ExecutionResult> {
-  try {
-    const pref = await chrome.settings.private.get('theme.color_extension')
-    return { success: true, themeMode: 'dark', themeColor: pref?.value }
-  } catch {
-    return { success: true, themeMode: 'dark', themeColor: undefined }
+/**
+ * 切换当前网页的深色/浅色模式（insertCSS 直达，方案见 docs/page-theme.md）。
+ * dark 注入暗化 CSS 并记住域名（后续该站页面由 SW 自动暗化），light 移除并删除记忆。
+ * @param payload - { mode?: 'dark' | 'light' }，mode 缺省视为 dark；始终作用于当前活动标签
+ * @returns ExecutionResult：{ success, mode, domain }
+ */
+async function setPageTheme(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const mode = payload.mode === 'light' ? 'light' : 'dark'
+  const windowId = await getFallbackWindowId()
+  const [tab] = await chrome.tabs.query({ active: true, windowId })
+  const targetTabId = tab?.id
+  if (!targetTabId) {
+    return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
   }
-}
 
-async function updateTheme(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  return { success: true, themeMode: payload.mode || 'device' }
+  if (mode === 'dark') {
+    try {
+      await applyDarkCss(targetTabId)
+    } catch {
+      // chrome:// 等受限页面 insertCSS 直接抛错
+      return { success: false, code: 'CANNOT_INJECT', message: swT('sw.pageThemeBlocked') }
+    }
+  } else {
+    try {
+      await removeDarkCss(targetTabId)
+    } catch {
+      // 受限页不可能有本扩展注入的 CSS（insertCSS 进不去），「恢复原样」天然已达成
+      return { success: true, mode, domain: '' }
+    }
+  }
+
+  const domain = await getTabHostname(targetTabId)
+  if (domain) {
+    await rememberSite(domain, mode === 'dark')
+  }
+  return { success: true, mode, domain }
 }
 
 // ──── FONT 实现 ────

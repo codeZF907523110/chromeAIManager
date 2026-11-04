@@ -257,14 +257,8 @@
     },
     "cookiesCleared": "已清除 {domain} 的 {count} 个 Cookie",
     "cookiesClearedAll": "已清除 {count} 个 Cookie",
-    "themeColorSet": "已设置主题颜色：{color}",
-    "themeModeSet": "已设置主题模式：{mode}",
-    "themeSet": "已设置主题",
-    "themeMode": {
-      "light": "浅色",
-      "dark": "深色",
-      "device": "跟随设备"
-    }
+    "pageThemeDark": "已把当前页面切换为深色模式，再发 /light 可以恢复原样",
+    "pageThemeRestored": "已恢复页面的原始颜色"
   },
   "step": {
     "failedFallback": "操作失败",
@@ -308,7 +302,6 @@
     "screenshotCaptured": "截图已捕获",
     "zoomed": "缩放至 {percent}%",
     "downloadsOpened": "打开下载页面",
-    "themeSet": "主题: {mode}",
     "fontSize": "字号: {label}",
     "fontSet": "字体: {font}",
     "cookiesObserved": "查看 {count} 个 Cookie ({domain})",
@@ -479,6 +472,12 @@
     },
     "stop_recording": {
       "desc": "停止录制并保存视频"
+    },
+    "page_theme_dark": {
+      "desc": "把当前网页切换为深色模式（滤镜反色）"
+    },
+    "page_theme_light": {
+      "desc": "恢复当前网页的原始颜色"
     },
     "show_help": {
       "desc": "显示所有可用命令（markdown 表格）"
@@ -664,6 +663,7 @@
     "batchPartial": "部分步骤成功，失败步骤的错误信息已返回",
     "unknownTool": "未知工具: {tool}",
     "injectBlockedPage": "当前页面无法注入扩展脚本（如浏览器内部页面），请切换到普通网页后重试",
-    "invalidResponse": "无效响应"
+    "invalidResponse": "无效响应",
+    "pageThemeBlocked": "无法在当前页面切换深色模式（如浏览器内部页面），请切换到普通网页后重试"
   }
 }

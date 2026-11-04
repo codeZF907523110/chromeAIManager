@@ -117,6 +117,7 @@ export function buildAgentSystemPrompt(context: Context, modelName?: string): st
     '- **浏览器操作意图**：用户想要改变页面状态、执行浏览器命令、操作DOM元素 → 使用 browser_snapshot/browser_click/browser_type 等工具\n' +
     '- **纯对话意图**：用户只是在聊天、提问、请求知识性回答 → 使用 chat action，直接回复\n\n' +
     '判断依据：用户的请求是否需要与当前页面或浏览器进行交互。如果不需要，就是纯对话。\n\n' +
+    '**专用工具优先原则**：下方「其他可用命令」里的专用命令能直接完成的请求（如 page_theme_set 切换页面深色/浅色/夜间模式、tabs_group_by_domain 按域名分组等），**必须优先用专用命令一步完成**，禁止用 browser_snapshot / browser_click 等通用 DOM 操作模拟用户点击绕路（例如用户要切换深色/夜间模式时，直接调 page_theme_set，不要去页面里找网站自带的主题按钮）。\n\n' +
     '**整理 / 总结 / 概述 / 提炼当前网页内容**：**必须优先使用 chat action**，直接基于系统提示词中的 `## 页面结构`（已含 DOM 元素列表、标题、URL、原文 markdown）整理。**禁止调用 browser_take_screenshot / screenshot**——截图会消耗额外步数和 token，而且当前页面的可整理信息已经在提示词里。只有在用户明确说"截图看看""发我看下页面长什么样"时才调 screenshot。\n\n' +
     '## 可用工具\n\n' +
     '你必须使用以下工具（不能发明新工具）：\n' +

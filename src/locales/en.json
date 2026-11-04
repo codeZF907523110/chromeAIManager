@@ -257,14 +257,8 @@
     },
     "cookiesCleared": "Cleared {count} cookies for {domain}",
     "cookiesClearedAll": "Cleared {count} cookies",
-    "themeColorSet": "Theme color set: {color}",
-    "themeModeSet": "Theme mode set: {mode}",
-    "themeSet": "Theme set",
-    "themeMode": {
-      "light": "light",
-      "dark": "dark",
-      "device": "follow device"
-    }
+    "pageThemeDark": "This page is now in dark mode. Send /light to restore it",
+    "pageThemeRestored": "Page restored to its original colors"
   },
   "step": {
     "failedFallback": "operation failed",
@@ -308,7 +302,6 @@
     "screenshotCaptured": "Screenshot captured",
     "zoomed": "Zoomed to {percent}%",
     "downloadsOpened": "Opened downloads page",
-    "themeSet": "Theme: {mode}",
     "fontSize": "Font size: {label}",
     "fontSet": "Font: {font}",
     "cookiesObserved": "Viewed {count} cookies ({domain})",
@@ -479,6 +472,12 @@
     },
     "stop_recording": {
       "desc": "Stop recording and save the video"
+    },
+    "page_theme_dark": {
+      "desc": "Switch the current web page to dark mode (CSS filter inversion)"
+    },
+    "page_theme_light": {
+      "desc": "Restore the current web page to its original colors"
     },
     "show_help": {
       "desc": "Show all available commands (markdown table)"
@@ -664,6 +663,7 @@
     "batchPartial": "Some steps succeeded; errors for the failed steps were returned",
     "unknownTool": "Unknown tool: {tool}",
     "injectBlockedPage": "Cannot inject the extension script into this page (e.g. browser internal pages) — switch to a normal web page and retry",
-    "invalidResponse": "Invalid response"
+    "invalidResponse": "Invalid response",
+    "pageThemeBlocked": "Can't toggle dark mode on this page (e.g. a browser internal page). Switch to a normal web page and try again"
   }
 }

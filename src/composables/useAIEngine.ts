@@ -1684,8 +1684,6 @@ export function useAIEngine() {
     if (r.zoomFactor !== undefined)
       return t('step.zoomed', { percent: Math.round((r.zoomFactor as number) * 100) })
     if (r.opened) return t('step.downloadsOpened')
-    // Theme
-    if (r.themeMode !== undefined) return t('step.themeSet', { mode: r.themeMode })
     // Font
     if (r.fontSize !== undefined)
       return t('step.fontSize', { label: r.fontSizeLabel || `${r.fontSize}px` })
@@ -2434,22 +2432,18 @@ export function useAIEngine() {
       })
       return
     }
-    if (intent === 'set_theme') {
-      const tr = r as Record<string, unknown>
-      const mode = tr.themeMode as string | undefined
-      const color = tr.themeColor as string | undefined
-      if (color) {
-        addMessage('ai-chat', { markdown: wrapCatReply(t('intent.themeColorSet', { color })) })
-      } else if (mode) {
-        const modeKey = `intent.themeMode.${mode}`
-        // 未知主题模式词条缺失时回退展示原始值
-        const label = i18n.global.te(modeKey) ? t(modeKey) : mode
-        addMessage('ai-chat', {
-          markdown: wrapCatReply(t('intent.themeModeSet', { mode: label })),
-        })
-      } else {
-        addMessage('ai-chat', { markdown: wrapCatReply(t('intent.themeSet')) })
-      }
+    if (
+      intent === 'page_theme_set' ||
+      intent === 'page_theme_dark' ||
+      intent === 'page_theme_light'
+    ) {
+      // 结果的 mode 由 SW 回传（page_theme_set）；/dark、/light 斜杠映射也汇入本分支
+      const mode = r.mode as string | undefined
+      addMessage('ai-chat', {
+        markdown: wrapCatReply(
+          t(mode === 'light' ? 'intent.pageThemeRestored' : 'intent.pageThemeDark')
+        ),
+      })
       return
     }
 

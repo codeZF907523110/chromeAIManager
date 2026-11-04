@@ -453,31 +453,38 @@ export const COMMANDS: Command[] = [
     swIntent: 'downloads_open',
   },
 
-  // ==================== THEME (2) ====================
+  // ==================== PAGE THEME (3) ====================
+  // 当前网页的深色/浅色（Filter 滤镜反色法，docs/page-theme.md）。
+  // page_theme_dark / page_theme_light 是 /dark、/light 斜杠命令的映射条目，对 AI 隐藏
   {
-    intent: 'theme_observe',
-    description: '查看当前 Chrome 主题设置',
-    dangerous: false,
-    slots: {},
-    swIntent: 'theme_observe',
-  },
-  {
-    intent: 'theme_update',
-    description: '设置主题模式(light/dark/device)或颜色',
+    intent: 'page_theme_set',
+    description:
+      '切换当前网页的深色/浅色模式（扩展滤镜实现，对所有网页生效）。用户提到"深色/浅色/夜间模式/护眼/太亮/太暗/页面颜色"等需求时，必须直接用本工具（mode: dark 或 light）一步完成，不要用 browser_snapshot/browser_click 去找页面自带的主题切换按钮绕路',
     dangerous: false,
     slots: {
-      mode: {
-        type: 'string',
-        optional: true,
-        description: 'light | dark | device',
-      },
-      color: {
-        type: 'string',
-        optional: true,
-        description: '颜色名或 #RRGGBB',
-      },
+      mode: { type: 'string', description: 'dark | light，缺省 dark' },
     },
-    swIntent: 'theme_update',
+    swIntent: 'page_theme_set',
+  },
+  {
+    intent: 'page_theme_dark',
+    description: '把当前网页切换为深色模式',
+    dangerous: false,
+    aiHidden: true,
+    slots: {
+      mode: { type: 'string', description: 'dark' },
+    },
+    swIntent: 'page_theme_set',
+  },
+  {
+    intent: 'page_theme_light',
+    description: '恢复当前网页的原始颜色',
+    dangerous: false,
+    aiHidden: true,
+    slots: {
+      mode: { type: 'string', description: 'light' },
+    },
+    swIntent: 'page_theme_set',
   },
 
   // ==================== FONT (4) ====================

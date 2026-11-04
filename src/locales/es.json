@@ -257,14 +257,8 @@
     },
     "cookiesCleared": "Se borraron {count} cookies de {domain}",
     "cookiesClearedAll": "Se borraron {count} cookies",
-    "themeColorSet": "Color del tema establecido: {color}",
-    "themeModeSet": "Modo del tema establecido: {mode}",
-    "themeSet": "Tema establecido",
-    "themeMode": {
-      "light": "claro",
-      "dark": "oscuro",
-      "device": "según el dispositivo"
-    }
+    "pageThemeDark": "Esta página ya está en modo oscuro. Envía /light para restaurarla",
+    "pageThemeRestored": "Página restaurada a sus colores originales"
   },
   "step": {
     "failedFallback": "operación fallida",
@@ -308,7 +302,6 @@
     "screenshotCaptured": "Captura de pantalla tomada",
     "zoomed": "Zoom al {percent}%",
     "downloadsOpened": "Página de descargas abierta",
-    "themeSet": "Tema: {mode}",
     "fontSize": "Tamaño de fuente: {label}",
     "fontSet": "Fuente: {font}",
     "cookiesObserved": "Se vieron {count} cookies ({domain})",
@@ -479,6 +472,12 @@
     },
     "stop_recording": {
       "desc": "Detiene la grabación y guarda el vídeo"
+    },
+    "page_theme_dark": {
+      "desc": "Cambiar la página web actual a modo oscuro (inversión por filtro CSS)"
+    },
+    "page_theme_light": {
+      "desc": "Restaurar la página web actual a sus colores originales"
     },
     "show_help": {
       "desc": "Muestra todos los comandos disponibles (tabla markdown)"
@@ -664,6 +663,7 @@
     "batchPartial": "Algunos pasos tuvieron éxito; se devolvieron los errores de los pasos fallidos",
     "unknownTool": "Herramienta desconocida: {tool}",
     "injectBlockedPage": "No se puede inyectar el script de la extensión en esta página (p. ej. páginas internas del navegador): cambia a una página web normal y reintenta",
-    "invalidResponse": "Respuesta no válida"
+    "invalidResponse": "Respuesta no válida",
+    "pageThemeBlocked": "No se puede activar el modo oscuro en esta página (p. ej., página interna del navegador). Cambia a una página web normal e inténtalo de nuevo"
   }
 }

@@ -20,7 +20,7 @@ const LOCALE_FILES = ['zh-CN.json', 'en.json', 'de.json', 'es.json']
 const BASE_LOCALE = 'en'
 
 /** 动态 key 的模板字面量前缀（如 `step.event.${ev}`），这些 key 无法静态扫描，按前缀放行死键检查 */
-const DYNAMIC_KEY_PREFIXES = ['step.event.', 'intent.historyRange.', 'intent.themeMode.']
+const DYNAMIC_KEY_PREFIXES = ['step.event.', 'intent.historyRange.']
 
 /**
  * 递归展开词条对象为「扁平 key → 叶子值」映射

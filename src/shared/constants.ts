@@ -7,6 +7,9 @@ import type { AIModel } from '../types'
 // chrome.storage.local 键名（Side Panel 与 Service Worker 共用）
 export const STORAGE_KEY_LOCALE = 'locale'
 
+/** 网页深色模式的站点记忆：{ [hostname]: 'dark' }，SW 写入并在 tabs.onUpdated 时读取自动应用 */
+export const STORAGE_KEY_PAGE_THEME_SITES = 'page_theme_sites'
+
 // Side Panel → Service Worker
 export const MSG_GET_CONTEXT = 'GET_CONTEXT'
 export const MSG_GET_BOOKMARKS = 'GET_BOOKMARKS'

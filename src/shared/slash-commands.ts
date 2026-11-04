@@ -184,6 +184,16 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     aliases: ['sr', '停录'],
   },
   {
+    slash: 'dark',
+    intent: 'page_theme_dark',
+    aliases: ['暗黑', '夜间模式'],
+  },
+  {
+    slash: 'light',
+    intent: 'page_theme_light',
+    aliases: ['恢复页面', '还原页面'],
+  },
+  {
     slash: 'help',
     intent: 'show_help',
     aliases: ['h', '?', '帮助'],
@@ -249,6 +259,10 @@ export function matchSlashCommand(input: string): SlashMatchResult | SlashError 
   // 不应阻断参数写入。search_history / sort_tabs 这类"参数可选"命令就是这种用法。
   if (args.trim()) {
     buildSlots(cmd.intent, args, slots)
+  } else if (cmd.intent === 'page_theme_dark' || cmd.intent === 'page_theme_light') {
+    // 无参固定模式命令：/dark、/light 的 mode 由 intent 决定（buildSlots 内写死，不读 args），
+    // 无参时也必须写入，否则 SW 端 mode 缺省会一律按 dark 处理
+    buildSlots(cmd.intent, '', slots)
   }
 
   return { intent: cmd.intent, slots, cmd }
@@ -338,6 +352,14 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
     }
     case 'sort_tabs':
       ;(slots as Record<string, string>).order = args
+      break
+    case 'page_theme_dark':
+      // /dark 固定映射 dark 模式（无参命令，mode 由 intent 决定、不读 args；
+      // matchSlashCommand 对这两个 intent 无参时也会调用本函数）
+      ;(slots as Record<string, string>).mode = 'dark'
+      break
+    case 'page_theme_light':
+      ;(slots as Record<string, string>).mode = 'light'
       break
     case 'screenshot': {
       // /screenshot [full|area|visible] 或中文 整页/选区/可视，无参数默认可视区域

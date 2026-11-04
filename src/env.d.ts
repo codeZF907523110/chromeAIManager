@@ -61,6 +61,18 @@ declare global {
       captureVisibleTab(windowId: number, options?: any): Promise<string>
       getZoom(tabId: number): Promise<number>
       setZoom(tabId: number, zoomFactor: number): Promise<void>
+      onUpdated: {
+        addListener(
+          callback: (
+            tabId: number,
+            changeInfo: { status?: string; url?: string },
+            tab: { url?: string } | undefined
+          ) => void
+        ): void
+      }
+      onRemoved: {
+        addListener(callback: (tabId: number, removeInfo: unknown) => void): void
+      }
     }
     windows: {
       getCurrent(options?: any): Promise<any>
@@ -122,6 +134,8 @@ declare global {
     }
     scripting: {
       executeScript(options: { target: { tabId: number }; files: string[] }): Promise<any[]>
+      insertCSS(options: { target: { tabId: number }; css: string }): Promise<void>
+      removeCSS(options: { target: { tabId: number }; css: string }): Promise<void>
     }
     management: {
       getAll(): Promise<any[]>
