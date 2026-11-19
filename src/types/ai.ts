@@ -65,9 +65,6 @@ export interface AIResponse {
     | 'ask'
     | 'scan'
     | 'chat'
-    | 'exec_plan'
-    | 'task_plan'
-    | 'askUserResponse'
   args?: Record<string, unknown> // 扁平格式参数（方案 B）
   plan?: string
   predict?: string
@@ -85,30 +82,6 @@ export interface AIResponse {
   /** 老兼容字段：纯文本时也常被模型填到 content；统一在调用点收敛 */
   content?: string
   step?: number // 步骤序号
-  // exec_plan 相关字段
-  intent?: {
-    goal: string
-    type: string
-    requiredData: string[]
-    dataStatus: Record<string, string>
-    precondition: string
-    status: string
-    missingDataKeys?: string[]
-  }
-  steps?: Array<{
-    id: number
-    goal: string
-    action: { name: string; args: Record<string, unknown> }
-    type: 'EXECUTE' | 'ASK_USER'
-    expectState: string
-    fallback?: { description: string; code: string; verify: string }
-    userDataKey?: string
-    userDataPrompt?: string
-  }>
-  planStatus?: 'READY' | 'PARTIAL'
-  // askUserResponse 相关字段
-  userDataKey?: string
-  userDataValue?: unknown
 }
 
 // ──── AI 提供商类型 ────
@@ -143,6 +116,11 @@ export interface AIStatus {
   available: boolean
   backend?: 'gemini-nano' | 'openai' | 'anthropic'
   offline?: boolean
+  /**
+   * 不可用原因码（引擎层不产出文案）：
+   * 'no-model' | 'nano-not-downloaded' | 'nano-unsupported' | 'nano-no-api' | 'no-api-key' | 'generic'
+   * 多语言结构化文案由 UI 层按码取 engine.reason* 词条（见 useAIEngine 的 AI_REASON_KEYS）
+   */
   reason?: string
 }
 

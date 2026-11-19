@@ -87,12 +87,12 @@ const NAV_PREVIEW_LIMIT = 5
       </div>
       <div v-if="props.landmarks.main.exists" class="kv-list">
         <div>
-          <span>{{ t('landmark.childElements') }}</span
-          ><b>{{ props.landmarks.main.childCount }}</b>
+          <span>{{ t('landmark.childElements') }}</span><b>{{ props.landmarks.main.childCount }}</b>
         </div>
         <div>
-          <span>{{ t('landmark.headingCount') }}</span
-          ><b>{{ props.landmarks.main.headingCount }}</b>
+          <span>{{ t('landmark.headingCount') }}</span><b>{{
+            props.landmarks.main.headingCount
+          }}</b>
         </div>
       </div>
       <div v-else class="empty">{{ t('landmark.noMain') }}</div>

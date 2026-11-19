@@ -160,14 +160,17 @@ export function useSettings() {
   async function addModel(
     model: Omit<AIModel, 'id' | 'isDefault' | 'createdAt'>
   ): Promise<AIModel> {
-    if (!model.apiKey?.trim()) {
-      throw new Error(t('settings.errApiKey'))
-    }
-    if (!model.apiEndpoint?.trim()) {
-      throw new Error(t('settings.errApiEndpoint'))
-    }
-    if (!model.modelName?.trim()) {
-      throw new Error(t('settings.errModelName'))
+    // gemini-nano 走浏览器内置 AI，无需 Key/端点/模型ID（表单也隐藏了这三项），跳过校验
+    if (model.provider !== 'gemini-nano') {
+      if (!model.apiKey?.trim()) {
+        throw new Error(t('settings.errApiKey'))
+      }
+      if (!model.apiEndpoint?.trim()) {
+        throw new Error(t('settings.errApiEndpoint'))
+      }
+      if (!model.modelName?.trim()) {
+        throw new Error(t('settings.errModelName'))
+      }
     }
     const newModel: AIModel = {
       ...model,

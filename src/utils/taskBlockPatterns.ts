@@ -2,7 +2,7 @@
  * 任务块识别前缀集合。
  *
  * 只列出 useAIEngine.ts 里 agentLoop 内部 addMessage('system', ...) 使用的字符串前缀。
- * 块外独立 system 气泡（slash 命令错误、IndexedDB 警告、录制回调、recoverContext 恢复
+ * 块外独立 system 气泡（slash 命令错误、IndexedDB 警告、录制回调
  * 等）使用的字符串不在此集合内，会自然落到普通气泡渲染分支。
  *
  * 维护说明：如新增 agentLoop 内的 system 文案，要同步追加到本集合，否则会被当成

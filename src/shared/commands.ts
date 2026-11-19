@@ -67,11 +67,20 @@ export const COMMANDS: Command[] = [
   {
     intent: 'tabs_move',
     description:
-      '移动标签页位置，仅适用于小范围位置调整。tabIds 为空移动当前标签，index 为目标位置(0-based)。返回结果包含 id、index 字段用于验证',
+      '移动标签页：窗口内调整位置，或跨窗口移动（传 windowId）。tabIds 为空移动当前标签；index 为目标位置(0-based)，-1或缺省=追加到末尾。跨窗口移动时按 tabIds 输入顺序追加到目标窗口末尾',
     dangerous: false,
     slots: {
       tabIds: { type: 'array', optional: true, description: '标签 ID 数组，元素为数字' },
-      index: { type: 'number', description: '目标位置 (0-based)' },
+      index: {
+        type: 'number',
+        optional: true,
+        description: '目标位置 (0-based)；-1 或缺省=末尾',
+      },
+      windowId: {
+        type: 'number',
+        optional: true,
+        description: '目标窗口 ID（跨窗口移动时传，来自 windows_observe）',
+      },
     },
     swIntent: 'tabs_move',
   },
@@ -114,6 +123,26 @@ export const COMMANDS: Command[] = [
       },
     },
     swIntent: 'tabs_observe_groups',
+  },
+  {
+    intent: 'tabs_group_move',
+    description:
+      '把整个标签分组移动到另一个窗口（或窗口内其他位置），分组和组内标签顺序保持不变。groupId 从 tabs_observe_groups 获取，windowId 从 windows_observe 获取。移动分组必须用这个命令，禁止用 tabs_move 逐个移动分组内的标签（会把分组拆散）',
+    dangerous: false,
+    slots: {
+      groupId: { type: 'number', description: '分组 id（来自 tabs_observe_groups）' },
+      windowId: {
+        type: 'number',
+        optional: true,
+        description: '目标窗口 id（来自 windows_observe）；不传=窗口内移动',
+      },
+      index: {
+        type: 'number',
+        optional: true,
+        description: '目标位置；-1 或缺省=末尾',
+      },
+    },
+    swIntent: 'tabs_group_move',
   },
   {
     intent: 'tabs_group_by_domain',
@@ -198,36 +227,30 @@ export const COMMANDS: Command[] = [
         optional: true,
         description: '目标位置 (0-based)',
       },
-      beforeId: {
-        type: 'string',
-        optional: true,
-        description: '插入到哪个节点前面 (字符串)',
-      },
     },
     swIntent: 'bookmarks_move_node',
   },
   {
     intent: 'bookmarks_create_node',
-    description: '创建书签或文件夹。nodeType=folder|bookmark, parentId 指定父节点',
+    description: '创建书签或文件夹（带 url 创建书签，不带 url 创建文件夹）。parentId 指定父节点',
     dangerous: false,
     slots: {
-      nodeType: { type: 'string', description: 'folder | bookmark' },
+      nodeType: {
+        type: 'string',
+        optional: true,
+        description: 'folder | bookmark，仅做一致性校验（bookmark 必须带 url）',
+      },
       title: { type: 'string', description: '节点标题' },
       parentId: { type: 'string', description: '父节点 id' },
       url: {
         type: 'string',
         optional: true,
-        description: '仅 nodeType=bookmark 时需要',
+        description: '创建书签时必传；不传则创建文件夹',
       },
       index: {
         type: 'number',
         optional: true,
         description: '可选位置 (0-based)',
-      },
-      allowDuplicate: {
-        type: 'boolean',
-        optional: true,
-        description: '是否允许在同一父级下创建同名节点，默认 false',
       },
     },
     swIntent: 'bookmarks_create_node',
@@ -279,7 +302,8 @@ export const COMMANDS: Command[] = [
   // ==================== WINDOWS (3) ====================
   {
     intent: 'windows_observe',
-    description: '获取窗口列表或当前窗口信息',
+    description:
+      '获取窗口列表。每个窗口含 id、index（第几个窗口，1-based）、tabCount（标签数）、focused、state 等；跨窗口移动标签/分组时从返回结果取目标窗口的 id',
     dangerous: false,
     slots: {
       includeTabs: {
@@ -319,14 +343,26 @@ export const COMMANDS: Command[] = [
   // ==================== HISTORY (2) ====================
   {
     intent: 'history_search',
-    description: '搜索浏览历史',
+    description:
+      '搜索浏览历史，可按关键词 + 时间范围/具体日期过滤（timeRange 不传默认只搜今天；具体日期用 startDate/endDate）',
     dangerous: false,
     slots: {
       query: { type: 'string', description: '搜索关键词' },
       timeRange: {
         type: 'string',
         optional: true,
-        description: 'today | yesterday | week | month | all',
+        description:
+          'today | yesterday | week | month | all，不传默认 today；具体日期请用 startDate/endDate',
+      },
+      startDate: {
+        type: 'string',
+        optional: true,
+        description: '起始日期 YYYY-MM-DD（本地时区）。查某一天时与 endDate 传同一天',
+      },
+      endDate: {
+        type: 'string',
+        optional: true,
+        description: '结束日期 YYYY-MM-DD（含当天）。可与 startDate 组合，也可单独使用',
       },
       maxResults: {
         type: 'number',
@@ -764,6 +800,25 @@ export const COMMANDS: Command[] = [
     swIntent: 'batch',
   },
 
+  // ==================== CHROME API 兜底 (1) ====================
+  // 专用命令参数表达不了的需求（如任意毫秒时间窗查历史、最近关闭列表）由它兜底
+  // 直调 Chrome 扩展 API；SW 侧只放行只读白名单（见 executor CHROME_API_ALLOWLIST）
+  {
+    intent: 'chrome_api',
+    description:
+      '兜底直调 Chrome 扩展 API（只读白名单：history.search | sessions.getRecentlyClosed）。仅当专用命令的参数表达不了需求时使用，优先用专用命令',
+    dangerous: false,
+    slots: {
+      api: { type: 'string', description: 'API 全名：history.search | sessions.getRecentlyClosed' },
+      args: {
+        type: 'object',
+        optional: true,
+        description: 'API 原生参数对象，时间参数为毫秒时间戳',
+      },
+    },
+    swIntent: 'chrome_api',
+  },
+
   // ==================== 向后兼容：斜杠命令（对 AI 隐藏） ====================
   {
     intent: 'find_tab',
@@ -877,7 +932,8 @@ export const COMMANDS: Command[] = [
       timeRange: {
         type: 'string',
         optional: true,
-        description: 'today | week | month',
+        description:
+          'today | yesterday | week | month | all，不传默认 today；不支持具体日期，枚举外的值会被直接拒绝',
       },
     },
     swIntent: 'history_search',
@@ -890,7 +946,8 @@ export const COMMANDS: Command[] = [
     slots: {
       timeRange: {
         type: 'string',
-        description: 'today | yesterday | week | month | all',
+        description:
+          'today | yesterday | week | month | all；必填，枚举外的值（如具体日期）会被直接拒绝',
       },
       query: {
         type: 'string',
@@ -1039,57 +1096,6 @@ export const COMMANDS: Command[] = [
       query: { type: 'string', description: '书签关键词' },
     },
     swIntent: 'bookmarks_remove_node',
-  },
-
-  // ==================== TASK_PLAN (1) ====================
-  {
-    intent: 'task_plan',
-    description:
-      '任务规划执行器。五阶段流程：①分析意图（识别任务类型和必需数据）→ ②扫描DOM（获取页面结构）→ ③规划流程（AI 拆解步骤）→ ④执行+审查（每步验证，失败重试）→ ⑤最终审查（确认任务完成）。action 指定当前阶段操作',
-    dangerous: false,
-    slots: {
-      action: {
-        type: 'string',
-        description:
-          '阶段操作：analyze（分析意图）| scan（扫描DOM）| setPlan（设置步骤序列）| executeStep（执行下一步）| provideData（填入用户数据）| finalReview（最终审查）| abort（中断任务）| getState（查询状态）',
-      },
-      userText: {
-        type: 'string',
-        optional: true,
-        description: '用户目标描述，用于 analyze 阶段',
-      },
-      providedData: {
-        type: 'object',
-        optional: true,
-        description: '用户已提供的数据键值对，用于 analyze 阶段',
-      },
-      steps: {
-        type: 'array',
-        optional: true,
-        description: '操作步骤序列，用于 setPlan 阶段',
-      },
-      planStatus: {
-        type: 'string',
-        optional: true,
-        description: 'READY | PARTIAL',
-      },
-      userDataKey: {
-        type: 'string',
-        optional: true,
-        description: '用户数据键名，用于 provideData 阶段',
-      },
-      userDataValue: {
-        type: 'string',
-        optional: true,
-        description: '用户数据值，用于 provideData 阶段',
-      },
-      reason: {
-        type: 'string',
-        optional: true,
-        description: '中断原因，用于 abort 阶段',
-      },
-    },
-    swIntent: 'task_plan',
   },
 
   // ==================== BROWSER DOM 操作（Playwright MCP 兼容）====================
@@ -1282,6 +1288,17 @@ export const COMMANDS: Command[] = [
  * 命令映射表（只读）
  */
 export const COMMAND_MAP: ReadonlyMap<string, Command> = new Map(COMMANDS.map((c) => [c.intent, c]))
+
+/**
+ * agent loop 中仍需人工确认的危险命令（不可逆且影响面大：删浏览历史、删书签文件夹）。
+ * 两个消费方保持一致，防止 batch 绕过：
+ * - useAIEngine：命中时不注入 force，SW 返回 NEEDS_CONFIRM 走确认卡
+ * - executor.batchExecute：batch 子调用命中时拒绝执行（batch 整体注入 force 会绕过确认）
+ */
+export const AGENT_CONFIRM_REQUIRED: ReadonlySet<string> = new Set([
+  'history_remove',
+  'bookmarks_remove_node',
+])
 
 /**
  * 根据 intent 获取命令定义

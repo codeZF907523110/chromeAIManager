@@ -15,7 +15,7 @@ import {
 import { collectContext } from './context-collector'
 import { executeCommand } from './executor'
 import { registerPageThemeAutoApply } from './page-theme'
-import { initSwLocale } from '../shared/sw-i18n'
+import { initSwLocale, swT } from '../shared/sw-i18n'
 const OFFSCREEN_URL = 'offscreen/recorder.html'
 
 // 装载用户语言偏好并监听变化（供 SW 报错文案使用，失败不影响消息处理）
@@ -50,7 +50,21 @@ async function handleMessage(message: {
 
   if (type === MSG_EXECUTE) {
     const { intent, payload } = message.command!
-    return await executeCommand(intent, payload as Record<string, unknown>)
+    // chrome.* 原生抛错的统一兜底：不 catch 会落到顶层 .catch 变成 {error}，
+    // 面板只能显示笼统的「操作失败」，模型也拿不到真实原因、无法改参重试。
+    // 就地转成结构化结果，把 intent + 真实错误文案带回给调用方。
+    try {
+      return await executeCommand(intent, payload as Record<string, unknown>)
+    } catch (e: unknown) {
+      return {
+        success: false,
+        code: 'EXEC_ERROR',
+        message: swT('sw.execFailed', {
+          intent,
+          msg: e instanceof Error ? e.message : String(e),
+        }),
+      }
+    }
   }
 
   // ──── 录制协调 ────

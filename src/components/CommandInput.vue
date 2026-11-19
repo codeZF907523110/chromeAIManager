@@ -11,7 +11,7 @@
           @keydown="handleKeydown"
           @input="handleInput"
           @compositionstart="isComposing = true"
-          @compositionend="isComposing = false"
+          @compositionend="onCompositionEnd"
         ></textarea>
 
         <!-- 斜杠命令提示 -->
@@ -273,14 +273,37 @@ const showSlashPicker = ref(false)
 const selectedSlashIndex = ref(0)
 const slashQuery = ref('')
 
+/**
+ * 单个命令与查询词的匹配强度打分（仅用于选择器候选排序，数值越大越靠前）：
+ * 命令名/别名命中权重高于描述命中；同类命中内精确 > 前缀 > 包含。
+ * 同分候选按注册顺序稳定排序（Array.sort 为稳定排序）。
+ * @param c - 斜杠命令
+ * @param q - 小写化的查询词
+ * @returns 匹配权重；0 表示不匹配（该候选被过滤掉）
+ */
+function slashMatchWeight(c: SlashCommand, q: string): number {
+  const name = c.slash.toLowerCase()
+  if (name === q) return 100
+  if ((c.aliases || []).some((a) => a.toLowerCase() === q)) return 90
+  if (name.startsWith(q)) return 80
+  if ((c.aliases || []).some((a) => a.toLowerCase().startsWith(q))) return 70
+  if (name.includes(q)) return 60
+  if ((c.aliases || []).some((a) => a.toLowerCase().includes(q))) return 50
+  // 按本地化描述模糊匹配：输入中文功能词（如「排序」）也能搜到命令，权重最低
+  const desc = t(`slash.${c.intent}.desc`).toLowerCase()
+  if (desc.startsWith(q)) return 40
+  if (desc.includes(q)) return 30
+  return 0
+}
+
 const filteredCommands = computed(() => {
   if (!slashQuery.value) return SLASH_COMMANDS
   const q = slashQuery.value.toLowerCase()
-  return SLASH_COMMANDS.filter(
-    (c) =>
-      c.slash.toLowerCase().includes(q) ||
-      (c.aliases || []).some((a) => a.toLowerCase().includes(q))
-  )
+  // 打分 → 过滤掉不匹配 → 按权重降序；高亮索引固定为 0（handleInput 里已重置）
+  return SLASH_COMMANDS.map((c) => ({ cmd: c, weight: slashMatchWeight(c, q) }))
+    .filter((x) => x.weight > 0)
+    .sort((a, b) => b.weight - a.weight)
+    .map((x) => x.cmd)
 })
 
 // 外部点击关闭斜杠面板（点击 picker 外任意位置关闭）
@@ -301,20 +324,29 @@ onUnmounted(() => {
 })
 
 function handleInput() {
-  const val = inputValue.value
-  // 取最后一个空格后的 token 作为"当前正在输入的命令片段"。
-  // 规则：该 token 以 / 开头且自身无空格 → 显示 picker；否则关闭。
-  // 这样 /close-url（命令名阶段）弹窗，输入空格开始输参数时关闭，
-  // 但空格后再输入 / 又会重新弹窗（在参数位置补全下一个命令名）。
-  const lastSpaceIdx = val.lastIndexOf(' ')
-  const token = lastSpaceIdx >= 0 ? val.slice(lastSpaceIdx + 1) : val
-  if (token.startsWith('/') && !token.includes(' ')) {
-    slashQuery.value = token.slice(1)
+  // 从 DOM 取实时值而非 v-model 的 ref：v-model 在中文 IME 组合输入期间不同步模型
+  //（compositionend 上屏时才写入 ref，且时序晚于本 handler），读 ref 会拿到组合前
+  // 的旧值，导致选择器列表不随中文输入刷新
+  const val = textareaRef.value?.value ?? inputValue.value
+  // 仅当整行（首个 token）以 / 开头且还没有空格时显示选择器——正在输入命令名。
+  // 句中出现的 /path 等 token 不弹窗、不劫持 Enter，避免干扰自然语言输入；
+  // 输入空格进入参数阶段后也关闭（参数不需要补全命令名）。
+  if (!val.includes(' ') && val.startsWith('/')) {
+    slashQuery.value = val.slice(1)
     showSlashPicker.value = true
     selectedSlashIndex.value = 0
   } else {
     showSlashPicker.value = false
   }
+}
+
+/**
+ * IME 组合输入结束（中文候选词上屏）：v-model 在此刻才把最终文本同步进模型，
+ * 之后大概率不再有 input 事件 → 显式刷新一次选择器，保证命令候选随最终输入更新
+ */
+function onCompositionEnd() {
+  isComposing.value = false
+  handleInput()
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -335,11 +367,13 @@ function handleKeydown(e: KeyboardEvent) {
       e.preventDefault()
       selectedSlashIndex.value = Math.max(selectedSlashIndex.value - 1, 0)
     } else if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
       if (filteredCommands.value.length > 0) {
-        e.preventDefault()
         selectSlashCommand(filteredCommands.value[selectedSlashIndex.value])
         return
       }
+      // 候选为空（如拼错的命令）：按普通发送处理；
+      // preventDefault 必须先做，否则 handleSend 清空输入后浏览器默认行为会补一个换行残留
       handleSend()
     } else if (e.key === 'Escape') {
       showSlashPicker.value = false
@@ -399,6 +433,7 @@ function handleSend() {
   // 聆听中先停止语音识别，避免发送后仍在转写
   if (isListening.value) stopSpeech()
   resetHistoryNav()
+  showSlashPicker.value = false // 发送后关闭命令选择器，避免残留
   emit('submit')
   inputValue.value = ''
 }

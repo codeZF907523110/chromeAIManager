@@ -213,9 +213,6 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
 interface SlashMatchResult {
   intent: string
   slots: Record<string, unknown>
-  cmd: SlashCommand
-  error?: string
-  hint?: string
 }
 
 interface SlashError {
@@ -223,10 +220,13 @@ interface SlashError {
   raw: string
 }
 
+/** 历史时间范围合法枚举（/history 与 /clear-history 共用） */
+const VALID_HISTORY_RANGES = ['today', 'yesterday', 'week', 'month', 'all'] as const
+
 /**
  * 解析斜杠命令输入
  * @param input - 用户输入
- * @returns 匹配结果或错误信息
+ * @returns 匹配结果；无法识别时返回 UNKNOWN_SLASH 错误（调用方回落自然语言，不拦截对话）
  */
 export function matchSlashCommand(input: string): SlashMatchResult | SlashError | null {
   const trimmed = input.trim()
@@ -236,36 +236,46 @@ export function matchSlashCommand(input: string): SlashMatchResult | SlashError 
   const cmdName = parts[0].toLowerCase()
   const args = parts.slice(1).join(' ')
 
-  // 1. 精确匹配
+  // 1. 精确匹配命令名
   let cmd: SlashCommand | undefined = SLASH_COMMANDS.find((c) => c.slash === cmdName)
-  // 2. 别名匹配
-  if (!cmd) cmd = SLASH_COMMANDS.find((c) => c.aliases?.includes(cmdName))
-  // 3. 前缀模糊匹配
-  if (!cmd)
+  // 2. 别名匹配（两侧统一小写比较，避免 'Cookie' 这类含大写的别名永远失配）
+  if (!cmd) cmd = SLASH_COMMANDS.find((c) => c.aliases?.some((a) => a.toLowerCase() === cmdName))
+  // 3. 前缀模糊匹配：仅限单 token 输入（无参数）。
+  //    带参数的输入必须精确命中，否则 "/sort 是什么意思" 这类以 / 开头的自然语言
+  //    会被模糊匹配劫持成真实命令执行
+  if (!cmd && parts.length === 1)
     cmd = SLASH_COMMANDS.find(
-      (c) => c.slash.startsWith(cmdName) || c.aliases?.some((a) => a.startsWith(cmdName))
+      (c) =>
+        c.slash.startsWith(cmdName) || c.aliases?.some((a) => a.toLowerCase().startsWith(cmdName))
     )
 
   if (!cmd) return { error: 'UNKNOWN_SLASH', raw: trimmed }
 
   // help 命令特殊处理：直接返回所有命令列表
   if (cmd.intent === 'show_help') {
-    return { intent: 'show_help', slots: { commands: SLASH_COMMANDS }, cmd }
+    return { intent: 'show_help', slots: { commands: SLASH_COMMANDS } }
   }
 
   // 构建参数 slots
   const slots: Record<string, unknown> = {}
-  // 不论 hasArg 与否，args 非空就解析 slots；hasArg 仅控制"MISSING_ARG"提示，
+  // 不论 hasArg 与否，args 非空就解析 slots；hasArg 仅用于选择器补全提示，
   // 不应阻断参数写入。search_history / sort_tabs 这类"参数可选"命令就是这种用法。
   if (args.trim()) {
     buildSlots(cmd.intent, args, slots)
+    // 精确命中命令名但参数解析不出任何 slot：说明参数不是该命令能消费的内容
+    // （如 "/sort 是什么意思"、"/clear-history 昨天"、"/screenshot 怎么用"）。
+    // 按未知命令回落自然语言让 AI 回答，而不是带着垃圾参数执行——
+    // 斜杠命令不得拦截自然语言对话
+    if (Object.keys(slots).length === 0) {
+      return { error: 'UNKNOWN_SLASH', raw: trimmed }
+    }
   } else if (cmd.intent === 'page_theme_dark' || cmd.intent === 'page_theme_light') {
     // 无参固定模式命令：/dark、/light 的 mode 由 intent 决定（buildSlots 内写死，不读 args），
     // 无参时也必须写入，否则 SW 端 mode 缺省会一律按 dark 处理
     buildSlots(cmd.intent, '', slots)
   }
 
-  return { intent: cmd.intent, slots, cmd }
+  return { intent: cmd.intent, slots }
 }
 
 function buildSlots(intent: string, args: string, slots: Record<string, unknown>): void {
@@ -305,14 +315,25 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       break
     }
     case 'find_tab':
-    case 'search_history':
-      // /find /history 参数可选：不传走默认（find=全部 / history=今天），传值按关键词过滤
-      if (args.trim()) (slots as Record<string, string>).query = args
-      break
     case 'close_tabs_by_url':
-      // /close-url 必须带关键词；透传到 query，供预览/SW 端做 title+url 模糊匹配
+      // /find /close-url 参数可选：不传走默认（find=全部），传值按关键词过滤
       if (args.trim()) (slots as Record<string, string>).query = args
       break
+    case 'search_history': {
+      // /history [时间范围] [关键词]：首 token 命中时间范围枚举时作为 timeRange
+      // （与 AI 侧 search_history 能力对齐），剩余部分作为关键词；
+      // 否则整体当关键词（不传范围默认今天）
+      const trimmedArgs = args.trim()
+      if (!trimmedArgs) break
+      const [first, ...rest] = trimmedArgs.split(/\s+/)
+      if ((VALID_HISTORY_RANGES as readonly string[]).includes(first)) {
+        ;(slots as Record<string, string>).timeRange = first
+        if (rest.length > 0) (slots as Record<string, string>).query = rest.join(' ')
+      } else {
+        ;(slots as Record<string, string>).query = trimmedArgs
+      }
+      break
+    }
     case 'reopen_closed_tab':
     case 'remove_bookmark':
     case 'enable_extension':
@@ -342,17 +363,26 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       // 校验 timeRange 合法性——非法值不填 slot，避免 SW 端 range 匹配失败导致 startTime=0 误删全部历史
       const parts = args.trim().split(/\s+/)
       const timeRange = parts[0]
-      const validRanges = ['today', 'yesterday', 'week', 'month', 'all']
-      if (!validRanges.includes(timeRange)) return
+      if (!(VALID_HISTORY_RANGES as readonly string[]).includes(timeRange)) return
       ;(slots as Record<string, string>).timeRange = timeRange
       if (parts.length > 1) {
         ;(slots as Record<string, string>).query = parts.slice(1).join(' ')
       }
       break
     }
-    case 'sort_tabs':
-      ;(slots as Record<string, string>).order = args
+    case 'sort_tabs': {
+      // /sort [domain|title|域名|标题]：只接受可识别的排序键；
+      // 无法识别的参数不写 slot（matchSlashCommand 按"参数不可解析"回落自然语言）
+      const orderMap: Record<string, string> = {
+        domain: 'domain',
+        域名: 'domain',
+        title: 'title',
+        标题: 'title',
+      }
+      const order = orderMap[args.trim().toLowerCase()]
+      if (order) (slots as Record<string, string>).order = order
       break
+    }
     case 'page_theme_dark':
       // /dark 固定映射 dark 模式（无参命令，mode 由 intent 决定、不读 args；
       // matchSlashCommand 对这两个 intent 无参时也会调用本函数）
@@ -381,19 +411,19 @@ function buildSlots(intent: string, args: string, slots: Record<string, unknown>
       break
     }
     case 'new_window':
-      if (args) {
-        const url = args.trim()
-        if (!url.startsWith('http://') && !url.startsWith('https://')) return
-        if (url.startsWith('chrome://')) return
-        ;(slots as Record<string, string>).url = url
+      // 只接受 http(s) 链接（非法输入静默忽略 → 退化为无参新窗口）
+      if (args && /^https?:\/\//i.test(args.trim())) {
+        ;(slots as Record<string, string>).url = args.trim()
       }
       break
     case 'set_site_permission': {
-      // 域名 权限类型 allow|block|default
+      // 域名 权限类型 [allow|block|default]：至少要有 域名+权限类型 两个 token，
+      // 缺权限类型时不写 slot（回落自然语言，让 AI 追问缺的是哪项权限）
       if (!args.trim()) return
       const permParts = args.split(/\s+/)
-      ;(slots as Record<string, string>).domain = permParts[0] || ''
-      ;(slots as Record<string, string>).setting = permParts[1] || ''
+      if (permParts.length < 2) return
+      ;(slots as Record<string, string>).domain = permParts[0]
+      ;(slots as Record<string, string>).setting = permParts[1]
       ;(slots as Record<string, string>).value = permParts[2] || 'allow'
       break
     }

@@ -78,6 +78,7 @@ declare global {
       getCurrent(options?: any): Promise<any>
       getLastFocused(options?: any): Promise<any>
       getAll(options?: any): Promise<any[]>
+      get(windowId: number): Promise<any>
       create(createProps?: any): Promise<any>
       update(windowId: number, updateInfo: any): Promise<any>
     }
@@ -112,10 +113,16 @@ declare global {
       }
       onChanged: {
         addListener(
-          callback: (changes: Record<string, { newValue?: unknown; oldValue?: unknown }>, area: string) => void
+          callback: (
+            changes: Record<string, { newValue?: unknown; oldValue?: unknown }>,
+            area: string
+          ) => void
         ): void
         removeListener(
-          callback: (changes: Record<string, { newValue?: unknown; oldValue?: unknown }>, area: string) => void
+          callback: (
+            changes: Record<string, { newValue?: unknown; oldValue?: unknown }>,
+            area: string
+          ) => void
         ): void
       }
     }
@@ -133,7 +140,12 @@ declare global {
       setOptions(options: any): Promise<void>
     }
     scripting: {
-      executeScript(options: { target: { tabId: number }; files: string[] }): Promise<any[]>
+      executeScript(options: {
+        target: { tabId: number }
+        files?: string[]
+        func?: (...args: any[]) => void
+        args?: any[]
+      }): Promise<any[]>
       insertCSS(options: { target: { tabId: number }; css: string }): Promise<void>
       removeCSS(options: { target: { tabId: number }; css: string }): Promise<void>
     }
@@ -210,6 +222,7 @@ declare global {
       get(groupId: number): Promise<any>
       update(groupId: number, updateProperties: any): Promise<any>
       query(queryOptions?: any): Promise<any[]>
+      move(groupId: number, moveProperties: chrome.tabGroups.MoveProperties): Promise<any>
     }
     sessions: {
       getRecentlyClosed(options?: any): Promise<any[]>
@@ -285,6 +298,29 @@ declare global {
       }
       interface MoveOptions {
         index: number
+      }
+      interface MoveProperties {
+        index: number
+        windowId?: number
+      }
+    }
+
+    namespace tabGroups {
+      interface MoveProperties {
+        index: number
+        windowId?: number
+      }
+    }
+
+    namespace windows {
+      interface Window {
+        id?: number
+        type?: string
+        focused?: boolean
+        state?: string
+        incognito?: boolean
+        tabs?: chrome.tabs.Tab[]
+        [key: string]: any
       }
     }
 

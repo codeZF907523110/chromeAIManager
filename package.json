@@ -12,6 +12,9 @@
     "format": "prettier --write src/**/*.{vue,ts,css}",
     "preview": "vite preview"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
     "@lucide/vue": "^1.28.0",
@@ -24,7 +27,6 @@
     "vue-i18n": "^11"
   },
   "devDependencies": {
-    "@types/chrome": "^0.2.5",
     "@types/dompurify": "^3.2.0",
     "@types/node": "^26.1.2",
     "@typescript-eslint/eslint-plugin": "^8.18.0",

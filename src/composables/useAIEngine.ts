@@ -25,8 +25,10 @@ import {
   BATCH_STEP_TIMEOUT_MS,
   TOTAL_TASK_TIMEOUT_MS,
   MAX_CONSECUTIVE_FAILURES,
+  HISTORY_MAX_MESSAGES,
+  HISTORY_MAX_CHARS,
 } from '../shared/constants'
-import { getCommand } from '../shared/commands'
+import { getCommand, AGENT_CONFIRM_REQUIRED } from '../shared/commands'
 import { SLASH_COMMANDS, matchSlashCommand } from '../shared/slash-commands'
 import { generateConfirmPreview } from '../shared/confirm'
 import { messageStore } from '../shared/message-store'
@@ -45,8 +47,6 @@ import { useSettings } from './useSettings'
 import { createRecordingExecutor } from '../recording/executor'
 import { i18n } from '../locales'
 
-const SESSION_KEY = 'ai_commander_session'
-
 /**
  * 特殊命令的单步超时覆盖表（默认 STEP_TIMEOUT_MS）。
  * 需要比通用值更长宽限的命令在此登记：
@@ -61,12 +61,26 @@ const STEP_TIMEOUT_OVERRIDES: Record<string, number> = {
 }
 
 /**
+ * AI 不可用原因码 → i18n 词条 key 映射。
+ * 引擎层（AIEngine.checkAvailability）只返回稳定原因码，多语言与 markdown
+ * 结构化文案由 UI 层经 engine.reason* 词条生成；未知码兜底 reasonGeneric。
+ */
+const AI_REASON_KEYS: Record<string, string> = {
+  'no-model': 'engine.reasonNoModel',
+  'nano-not-downloaded': 'engine.reasonNanoNotDownloaded',
+  'nano-unsupported': 'engine.reasonNanoUnsupported',
+  'nano-no-api': 'engine.reasonNanoNoApi',
+  'no-api-key': 'engine.reasonNoApiKey',
+  generic: 'engine.reasonGeneric',
+}
+
+/**
  * 工具调用判定正则：匹配 assistant 消息里的 `"action":"<命令名>"`。
  * registry 部分（AI_CALLABLE_INTENT_SOURCE）从 COMMANDS 动态生成，新增命令自动纳入；
  * legacy 部分为 registry 之外的历史 action 名，维持既有温度行为不变。
  */
 const TOOL_ACTION_RE = new RegExp(
-  `"action"\\s*:\\s*"(${AI_CALLABLE_INTENT_SOURCE}|scan|exec_plan|askUserResponse|done|exec_tool|execute)"`
+  `"action"\\s*:\\s*"(${AI_CALLABLE_INTENT_SOURCE}|scan|done|exec_tool|execute)"`
 )
 
 /**
@@ -133,8 +147,6 @@ export function useAIEngine() {
     }
     // 加载持久化的消息
     await loadPersistedMessages()
-    // 尝试恢复未完成的会话
-    await recoverContext()
     isInitialized.value = true
 
     // 监听激活模型的配置指纹，任一字段变化即同步到 aiEngine：
@@ -151,53 +163,6 @@ export function useAIEngine() {
         if (model) aiEngine.setModel(model)
       }
     )
-  }
-
-  /**
-   * 恢复上次未完成的任务（5分钟过期）
-   */
-  async function recoverContext() {
-    try {
-      const raw = sessionStorage.getItem(SESSION_KEY)
-      if (!raw) return
-      const data = JSON.parse(raw)
-      // 5 分钟过期
-      if (Date.now() - data.timestamp > 5 * 60 * 1000) {
-        sessionStorage.removeItem(SESSION_KEY)
-        return
-      }
-      if (data.planTracker) {
-        const savedPlan = data.planTracker
-        const savedLessons = data.lessons || []
-        pendingConfirm.value = {
-          title: t('engine.restoreTitle'),
-          description: t('engine.restoreDesc'),
-          items: [
-            {
-              primary: savedPlan.goal || t('engine.restoreGoalFallback'),
-              secondary: t('engine.restoreMinutes', {
-                min: Math.round((Date.now() - data.timestamp) / 1000 / 60),
-              }),
-            },
-          ],
-          onConfirm: async (_selectedTabIds: number[]) => {
-            planTracker.value = savedPlan
-            lessons.value = savedLessons
-            // 恢复对话上下文（agentLoop 中检查 conversationMessages 非空则复用）
-            if (data.conversationMessages) {
-              conversationMessages.value = data.conversationMessages as ChatMessage[]
-            }
-            addMessage('system', t('engine.restoreDone'))
-          },
-          onCancel: () => {
-            sessionStorage.removeItem(SESSION_KEY)
-            addMessage('system', t('engine.restoreDiscard'))
-          },
-        }
-      }
-    } catch {
-      // ignore
-    }
   }
 
   /**
@@ -261,6 +226,68 @@ export function useAIEngine() {
     }
   }
 
+  /**
+   * 从持久化消息日志重建跨轮次对话历史（docs/conversation-context-continuity.md）。
+   *
+   * 背景：旧实现只有在上一轮以 chat/ask 结束时才保留上下文（conversationMessages），
+   * 以 done 结束的正常任务轮次下一轮从零开始，用户连续提问时 AI 完全失忆。
+   * 业界通行做法是每轮请求都带历史、从持久化存储重建。
+   *
+   * 规则：
+   * - 只取 type 为 user / ai-chat 的消息（system 步骤日志、error 不进历史）
+   * - 排除最后一条 user 消息：handleSubmit 先把本轮指令写入 log 再进 agentLoop，
+   *   不排除会与本轮【用户指令】重复
+   * - 从最新往旧收集，超过 HISTORY_MAX_MESSAGES 条或累计 HISTORY_MAX_CHARS 字符即停
+   * - 相邻同角色消息合并为一条（斜杠命令等场景会产生连续同角色消息，合并后兼容性更好）
+   *
+   * @returns 按时间正序的 ChatMessage[]（不含 system——system 由 agentLoop 每轮重建置顶）
+   */
+  function buildHistoryFromLog(): ChatMessage[] {
+    const relevant = messageLog.value.filter(
+      (m) => (m.type === 'user' || m.type === 'ai-chat') && m.text
+    )
+    // 找最后一条 user（即本轮指令）的索引，只取它之前的历史
+    let lastUserIdx = -1
+    for (let i = relevant.length - 1; i >= 0; i--) {
+      if (relevant[i].type === 'user') {
+        lastUserIdx = i
+        break
+      }
+    }
+    const source = lastUserIdx >= 0 ? relevant.slice(0, lastUserIdx) : relevant
+
+    // 从最新往旧收集，命中任一上限即停；最新一条始终保留（picked 为空时不检查上限，
+    // 否则单条超长消息会让历史整体为空）
+    const picked: ChatMessage[] = []
+    let totalChars = 0
+    for (let i = source.length - 1; i >= 0; i--) {
+      const m = source[i]
+      const role = m.type === 'user' ? 'user' : 'assistant'
+      // text 兼容 string 与 MessageBody 两种形态（持久化层统一为 MessageBody）
+      const content = typeof m.text === 'string' ? m.text : ((m.text as MessageBody).markdown ?? '')
+      if (!content) continue
+      if (
+        picked.length > 0 &&
+        (picked.length >= HISTORY_MAX_MESSAGES || totalChars + content.length > HISTORY_MAX_CHARS)
+      )
+        break
+      picked.push({ role, content })
+      totalChars += content.length
+    }
+
+    // 反转为时间正序，并合并相邻同角色消息
+    const merged: ChatMessage[] = []
+    for (const msg of picked.reverse()) {
+      const prev = merged[merged.length - 1]
+      if (prev && prev.role === msg.role) {
+        prev.content += '\n' + msg.content
+      } else {
+        merged.push({ ...msg })
+      }
+    }
+    return merged
+  }
+
   async function agentLoop(userText: string) {
     const loopId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
     activeLoopId.value = loopId
@@ -286,6 +313,8 @@ export function useAIEngine() {
       lessons.value = []
       messages = [
         { role: 'system', content: systemPrompt },
+        // 跨轮次历史：从持久化消息日志重建，让 AI 记得之前轮次做了什么/聊了什么
+        ...buildHistoryFromLog(),
         { role: 'user', content: '【用户指令】\n' + userText },
       ]
     }
@@ -465,7 +494,6 @@ export function useAIEngine() {
           messages.push({ role: 'assistant', content: raw })
           conversationMessages.value = [...messages]
           activeLoopId.value = null
-          persistPlanTracker()
           emitAIChat(resolveAIReply(json, t('engine.needMoreInfo')), false)
           return
         }
@@ -482,233 +510,11 @@ export function useAIEngine() {
           continue
         }
 
-        // 处理 exec_plan：任务规划执行器（analyze → scan → setPlan → executeStep循环 → finalReview）。
-        // 提示词工具列表教的是 registry 名 task_plan（exec_plan 是历史分支名），两个名字都收，
-        // 否则 AI 的正常输出进不了五阶段逻辑，落入 dispatch 后执行段没有对应处理
-        if (json.action === 'exec_plan' || json.action === 'task_plan') {
-          stepCount++
-          addMessage('system', t('engine.running', { step: stepCount, total: MAX_AGENT_STEPS }))
-
-          const args =
-            ((json as unknown as Record<string, unknown>).args as Record<string, unknown>) || {}
-          const planAction = (args.action || json.toolCall?.args?.action) as string
-          const planArgs = {
-            action: planAction,
-            userText: args.userText ?? json.toolCall?.args?.userText,
-            providedData: args.providedData ?? json.toolCall?.args?.providedData,
-            steps: args.steps ?? json.toolCall?.args?.steps,
-            planStatus: args.planStatus ?? json.toolCall?.args?.planStatus,
-            userDataKey: args.userDataKey ?? json.toolCall?.args?.userDataKey,
-            userDataValue: args.userDataValue ?? json.toolCall?.args?.userDataValue,
-            reason: args.reason ?? json.toolCall?.args?.reason,
-          }
-
-          let planResult: Record<string, unknown>
-          try {
-            planResult = (await Promise.race([
-              executeCommand('task_plan', planArgs),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('PLAN_TIMEOUT')), 30000)
-              ),
-            ])) as Record<string, unknown>
-          } catch {
-            planResult = { success: false, error: '任务规划执行超时（30秒）' }
-          }
-
-          const phase = planResult.phase as string
-
-          // ASK_USER：暂停执行，向用户展示提示
-          if (planResult.askUserPrompt) {
-            const prompt = planResult.askUserPrompt as string
-            messages.push({ role: 'assistant', content: raw })
-            messages.push({
-              role: 'user',
-              content: `[步骤暂停] ${prompt}`,
-            })
-            addMessage('system', t('engine.needUserData', { prompt }))
-            conversationMessages.value = [...messages]
-            activeLoopId.value = null
-            persistPlanTracker()
-            return
-          }
-
-          // 分析意图结果
-          if (planAction === 'analyze') {
-            if (planResult.success) {
-              messages.push({ role: 'assistant', content: raw })
-              messages.push({
-                role: 'user',
-                content: `[阶段①完成] 意图分析结果:\n目标: ${(planResult.intent as Record<string, unknown>)?.goal}\n类型: ${(planResult.intent as Record<string, unknown>)?.type}\n状态: ${planResult.phase}\n请继续执行下一阶段：scan`,
-              })
-              addMessage('system', t('engine.planAnalyzeDone'))
-              continue
-            } else {
-              // 需要用户数据，中断
-              messages.push({ role: 'assistant', content: raw })
-              messages.push({
-                role: 'user',
-                content: `[阶段①中断] ${planResult.error}\n请提供所需数据后重新发起任务`,
-              })
-              addMessage('system', t('engine.needMoreInfo'))
-              // 终止分支必须有 ai-chat 反馈对：只有 system 气泡时用户会以为"AI 没回复我"
-              reportUserFacingError(t('engine.needMoreInfoReply'))
-              cleanup()
-              return
-            }
-          }
-
-          // 扫描结果
-          if (planAction === 'scan') {
-            if (planResult.success) {
-              const scan = planResult.scan as Record<string, unknown> | undefined
-              messages.push({ role: 'assistant', content: raw })
-              messages.push({
-                role: 'user',
-                content: `[阶段②完成] DOM 扫描结果:\n页面: ${scan?.url}\n标题: ${scan?.title}\n可交互元素: ${(scan?.elements as unknown[])?.length || 0}个\n${scan?.regions ? JSON.stringify(scan.regions) : ''}\n请继续执行阶段③：setPlan，提供步骤序列`,
-              })
-              addMessage('system', t('engine.planScanDone'))
-              continue
-            } else {
-              messages.push({ role: 'assistant', content: raw })
-              messages.push({ role: 'user', content: `[阶段②失败] ${planResult.error}` })
-              addMessage('system', t('engine.scanProblem'))
-              // 终止分支必须有 ai-chat 反馈对（同 needMoreInfo 分支惯例）
-              reportUserFacingError(t('engine.scanProblemReply'))
-              cleanup()
-              return
-            }
-          }
-
-          // 步骤序列设置
-          if (planAction === 'setPlan') {
-            messages.push({ role: 'assistant', content: raw })
-            messages.push({
-              role: 'user',
-              content: `[阶段③完成] 计划已就绪，共 ${planResult.totalSteps} 个步骤:\n${((planResult.steps as Array<Record<string, unknown>>) || []).map((s, i) => `${i + 1}. ${s.goal}`).join('\n')}\n请继续执行阶段④：executeStep`,
-            })
-            addMessage('system', t('engine.planReady', { count: planResult.totalSteps }))
-            continue
-          }
-
-          // 执行步骤结果
-          if (planAction === 'executeStep') {
-            const stepResults = planResult.stepResults as Array<Record<string, unknown>> | undefined
-            const lastResult = stepResults?.[stepResults.length - 1]
-            const status = lastResult?.status as string
-            const stepIndex = planResult.currentStep as number
-            const total = planResult.totalSteps as number
-
-            let statusIcon = '⏳'
-            let statusText = t('step.statusRunning', { index: stepIndex, total })
-
-            if (status === 'SUCCESS') {
-              statusIcon = '✓'
-              statusText = t('step.statusDone', { index: stepIndex, total })
-            } else if (status === 'SKIP') {
-              statusIcon = '⊘'
-              statusText = t('step.statusSkipped', { index: stepIndex, total })
-            } else if (status === 'FAIL') {
-              statusIcon = '✗'
-              statusText = t('step.statusFailed', { index: stepIndex, total })
-            }
-
-            let detail = `${statusIcon} ${lastResult?.goal || '步骤'} - ${statusText}`
-            if (lastResult?.failureAnalysis) {
-              detail += `\n原因: ${lastResult.failureAnalysis}`
-            }
-            if (lastResult?.verification) {
-              detail += `\n验证: ${JSON.stringify(lastResult.verification)}`
-            }
-
-            if (phase === 'FINAL_REVIEW' || stepIndex >= total) {
-              // 全部步骤执行完毕，执行最终审查
-              messages.push({ role: 'assistant', content: raw })
-              messages.push({
-                role: 'user',
-                content: `[阶段④完成] ${detail}\n请执行阶段⑤：finalReview`,
-              })
-              addMessage('system', t('engine.planAllDone'))
-              continue
-            }
-
-            messages.push({ role: 'assistant', content: raw })
-            messages.push({
-              role: 'user',
-              content: `[阶段④进行中] ${detail}\n请继续调用 executeStep 执行下一步`,
-            })
-            addMessage('system', statusText)
-            continue
-          }
-
-          // 最终审查结果
-          if (planAction === 'finalReview') {
-            const report = planResult.finalReport as Record<string, unknown> | undefined
-            messages.push({ role: 'assistant', content: raw })
-            const completionText = report?.taskComplete
-              ? `✓ 任务完成！${report.completionSign}`
-              : `✗ 任务未完全完成。${report?.completionSign}`
-            const summary = report?.stepsSummary as Record<string, number> | undefined
-            messages.push({
-              role: 'user',
-              content: `[阶段⑤完成] ${completionText}\n步骤统计: 成功 ${summary?.success || 0}，跳过 ${summary?.skipped || 0}，失败 ${summary?.failed || 0}\n${report?.userCanDo}`,
-            })
-            addMessage(
-              'system',
-              report?.taskComplete ? t('engine.planTaskDone') : t('engine.planTaskPartial')
-            )
-            // 任务终局必须有 ai-chat 总结：完成统计此前只写进 AI 对话历史，
-            // 用户只看到 system 气泡，感知是"AI 干完了活却一言不发"
-            emitAIChat(
-              report?.taskComplete
-                ? t('engine.planDoneReply', {
-                    success: summary?.success || 0,
-                    skipped: summary?.skipped || 0,
-                    failed: summary?.failed || 0,
-                  })
-                : t('engine.planPartialReply', {
-                    success: summary?.success || 0,
-                    skipped: summary?.skipped || 0,
-                    failed: summary?.failed || 0,
-                  }),
-              true
-            )
-            return
-          }
-
-          // getState / abort 等，直接返回结果
-          messages.push({ role: 'assistant', content: raw })
-          messages.push({
-            role: 'user',
-            content: `[task_plan ${planAction}] ${JSON.stringify(planResult)}`,
-          })
-          continue
-        }
-
-        // askUserResponse：用户填入数据后继续执行
-        if (json.action === 'askUserResponse') {
-          const dataKey = (json as unknown as Record<string, unknown>).userDataKey as
-            string | undefined
-          const dataValue = (json as unknown as Record<string, unknown>).userDataValue as unknown
-          if (dataKey) {
-            messages.push({
-              role: 'user',
-              content: `[用户提供数据] ${dataKey}: ${String(dataValue)}`,
-            })
-            messages.push({
-              role: 'user',
-              content: `已收到用户提供的数据，请继续调用 executeStep 继续执行任务`,
-            })
-            addMessage('system', t('engine.receivedUserData', { key: dataKey }))
-          }
-          continue
-        }
-
         if (json.action === 'chat') {
           emitAIChat(resolveAIReply(json, ''), false)
           messages.push({ role: 'assistant', content: raw })
           conversationMessages.value = [...messages]
           activeLoopId.value = null
-          persistPlanTracker()
           return
         }
 
@@ -766,10 +572,13 @@ export function useAIEngine() {
         // 声明在 try 外：超时 catch 的 detail 需要引用实际阈值
         const stepTimeout = STEP_TIMEOUT_OVERRIDES[toolName] ?? STEP_TIMEOUT_MS
         try {
-          // AI agent loop 的危险命令视为已确认（force:true）：agent loop 每步都有
+          // AI agent loop 的危险命令默认视为已确认（force:true）：agent loop 每步都有
           // system 摘要可见、可随时点停止按钮中断，等价于"渐进式确认"。
           // 否则每个危险命令都返回 NEEDS_CONFIRM 会终止循环，多步任务（如删多个空文件夹）无法连续执行。
-          const dangerous = !!getCommand(toolName)?.dangerous
+          // 例外（AGENT_CONFIRM_REQUIRED）：不可逆且影响面大的命令（删历史记录、删书签文件夹）
+          // 即使在 agent loop 也必须走人工确认——见下方 NEEDS_CONFIRM 分支的确认卡。
+          const dangerous =
+            !!getCommand(toolName)?.dangerous && !AGENT_CONFIRM_REQUIRED.has(toolName)
           result = await Promise.race([
             executeCommand(toolName, dangerous ? { ...toolArgs, force: true } : toolArgs),
             new Promise<never>((_, reject) =>
@@ -792,9 +601,9 @@ export function useAIEngine() {
           result = await executeClientExec(result)
         }
 
-        // 防御性兜底：agent loop 对 dangerous 命令已注入 force:true（见上方 executeCommand 调用），
-        // 正常不会走到这里。保留此分支以兼容未来非 force 的危险路径——若 SW 仍返回 NEEDS_CONFIRM，
-        // 则弹确认卡让用户逐项勾选（确认后执行单步，agent loop 不再恢复，故多步任务应避免走到此分支）。
+        // NEEDS_CONFIRM 处理：AGENT_CONFIRM_REQUIRED 命中的命令（删历史/删书签文件夹）
+        // 不注入 force，SW 返回 NEEDS_CONFIRM，弹确认卡让用户逐项勾选——
+        // 确认后执行单步，agent loop 不再恢复（本轮结束）。
         if (result.success === false && result.code === 'NEEDS_CONFIRM') {
           const detail = (result.detail || {}) as Record<string, unknown>
           const confirmItems =
@@ -931,17 +740,23 @@ export function useAIEngine() {
         // 维持"历史中至多一份整页 dump"不变式，防止请求体随步数线性膨胀
         foldStaleSnapshots(messages)
 
-        if (result.result === undefined) {
-          messages.push({
-            role: 'system',
-            content:
-              '脚本返回 undefined，通常表示脚本里没有写 return。请补上明确的 return 后重试。',
-          })
-        } else if (result.result === null) {
-          messages.push({
-            role: 'system',
-            content: '脚本返回 null，通常表示选择器未命中目标元素，或脚本主动返回了空值。',
-          })
+        // 「脚本无返回值」提示只对 content script 工具（browser_*，结果带 .result）有意义：
+        // SW 侧命令（tabs_observe/history_search/chrome_api 等）的结果本就没有 .result 字段，
+        // 不加守卫会让每一步都被塞一条"请补上 return 后重试"的幽灵提示——模型误以为上一步
+        // 执行失败转而去重试（自然语言查历史反复重试的诱因之一）
+        if (toolName.startsWith('browser_')) {
+          if (result.result === undefined) {
+            messages.push({
+              role: 'system',
+              content:
+                '脚本返回 undefined，通常表示脚本里没有写 return。请补上明确的 return 后重试。',
+            })
+          } else if (result.result === null) {
+            messages.push({
+              role: 'system',
+              content: '脚本返回 null，通常表示选择器未命中目标元素，或脚本主动返回了空值。',
+            })
+          }
         }
 
         // 操作成功的针对性验证。注意：条件不能用 result.triggered/result.result 门控书签分支——
@@ -1069,9 +884,10 @@ export function useAIEngine() {
       return
     }
     if ('error' in result) {
-      // 错误回执：必须用 ai-chat 通道，让用户感觉 AI 在主动回应；
-      // system 通道虽然语义更准，但会让用户觉得"AI 没说话"
-      addMessage('ai-chat', wrapCatReply(t('engine.unknownSlash')))
+      // 不是合法斜杠命令：回落自然语言，让 AI 回答（斜杠指令不得拦截自然语言输入，
+      // 如 "/etc/hosts 是什么"）。AI 不可用时 handleNaturalLanguage 自带可用性
+      // 提示（含 /help 引导），信息不丢失
+      await handleNaturalLanguage(text)
       return
     }
 
@@ -1257,13 +1073,13 @@ export function useAIEngine() {
   async function handleNaturalLanguage(text: string) {
     const ai = await aiEngine.checkAvailability()
     if (!ai.available) {
-      addMessage(
-        'system',
-        t('engine.aiUnavailable', {
-          reason: ai.reason || t('engine.notConfigured'),
-          commands: formatSlashCommands(),
-        })
-      )
+      // 走 ai-chat 猫式气泡（对齐 reportUserFacingError 惯例）：给原因与 /help 引导，
+      // 不再 dump 全量命令清单（/help 本身就是干这个的）。
+      // 原因文案按引擎原因码取结构化词条（含手动下载步骤等多行 markdown）
+      const reasonText = ai.reason
+        ? t(AI_REASON_KEYS[ai.reason] || 'engine.reasonGeneric')
+        : t('engine.notConfigured')
+      addMessage('ai-chat', wrapCatReply(t('engine.aiUnavailable', { reason: reasonText })))
       return
     }
 
@@ -1638,13 +1454,30 @@ export function useAIEngine() {
       return r.active
         ? t('step.tabSwitched', { name: (r.tab as { title?: string }).title || '' })
         : t('step.tabUpdated', { name: (r.tab as { title?: string }).title || '' })
+    // updateTab 刷新分支返回 {tab, reloaded}，与创建结果同形（都带 tab）——必须先判
+    // reloaded，否则「刷新标签」会被下面同形的创建分支渲染成「创建了标签」
+    if (r.reloaded) return t('step.tabReloaded')
     if (r.tab)
       return t('step.tabCreated', {
         name: (r.tab as { title?: string }).title || (r.tab as { url?: string }).url || '',
       })
-    if (r.moved !== undefined) return t('step.tabsMoved', { count: r.moved })
-    // removed 字段被 tabs_remove（关闭标签）和 bookmarks_remove_node（删除书签/文件夹）共用，
-    // 按 intent 区分；无 intent 时默认按"关闭标签"处理（向后兼容）
+    if (r.moved !== undefined) {
+      // 跨窗口移动（结果带 windowId）在摘要里点明目标窗口
+      if (typeof r.windowId === 'number')
+        return t('step.tabsMovedToWindow', { count: r.moved, windowId: r.windowId })
+      return t('step.tabsMoved', { count: r.moved })
+    }
+    // tabs_group_move（clientExec 执行后）的分组整组移动摘要
+    if (r.groupMoved)
+      return t('step.groupMoved', {
+        title: (r.groupMoved as { title?: string }).title || '',
+      })
+    // removed 字段被三类命令共用：cookies_remove（清除 Cookie，{removed, domain}）、
+    // tabs_remove（关闭标签）、bookmarks_remove_node（删除书签/文件夹）。先按 domain
+    // 识别 Cookie 清除，再按 intent 区分书签/标签；无 intent 时默认按"关闭标签"
+    // 处理（向后兼容）。顺序不能倒：Cookie 结果没有 domain 判别会掉进"关闭标签"
+    if (r.domain && r.removed !== undefined)
+      return t('step.cookiesCleared', { domain: r.domain, count: r.removed })
     if (r.removed !== undefined) {
       if (intent === 'bookmarks_remove_node')
         return t('step.bookmarksRemoved', { count: r.removed })
@@ -1663,13 +1496,14 @@ export function useAIEngine() {
       )
     if (r.groupsCleared !== undefined) return (r.message as string) || t('step.noGroupsPlain')
     if (r.groups) return t('step.groupsListed', { count: (r.groups as unknown[]).length })
-    if (r.reloaded) return t('step.tabReloaded')
     if (r.pinned !== undefined) return r.pinned ? t('step.tabPinned') : t('step.tabUnpinned')
     if (r.discarded !== undefined) return t('step.tabsDiscarded', { count: r.discarded })
     if (r.duplicated !== undefined) return t('step.tabDuplicated')
     // Windows
     if (r.windows) return t('step.windowsListed', { count: (r.windows as unknown[]).length })
-    if (r.window) return t('step.windowCreated')
+    // windows_create 与 windows_update 都返回 {window}：按 intent 区分创建/更新
+    if (r.window)
+      return intent === 'windows_update' ? t('step.windowUpdated') : t('step.windowCreated')
     // History
     if (r.items) return t('step.historyFound', { count: r.found })
     if (r.deleted !== undefined && r.timeRange)
@@ -1695,8 +1529,6 @@ export function useAIEngine() {
       return t('step.cookiesObserved', { count: r.found || 0, domain: where })
     }
     if (r.cookie) return t('step.cookieSet', { name: (r.cookie as { name?: string }).name || '' })
-    if (r.domain && r.deleted !== undefined)
-      return t('step.cookiesCleared', { domain: r.domain, count: r.deleted })
     // Downloads
     if (r.downloads) return t('step.downloadsFound', { count: r.found || 0 })
     if (r.downloadId !== undefined)
@@ -1746,6 +1578,9 @@ export function useAIEngine() {
     }
     // Sessions
     if (r.restored) return t('step.tabRestored', { id: r.restored })
+    // chrome_api::sessions.getRecentlyClosed 的最近关闭列表（sessions 字段，避免落进兜底裸 JSON）
+    if (r.sessions)
+      return t('step.sessionsListed', { count: r.found || (r.sessions as unknown[]).length })
     // Batch
     if (r.results && r.total !== undefined) return t('step.batchExecuted', { count: r.total })
     // 旧格式兼容（DOM 脚本 action）
@@ -1774,6 +1609,9 @@ export function useAIEngine() {
     }
     if (r.enabled) return t('step.extEnabledNamed', { name: r.enabled })
     if (r.disabled) return t('step.extDisabledNamed', { name: r.disabled })
+    // 兜底改进：自带 message 的裸成功结果（如 delete_history 清空全部、顶层 EXEC_ERROR）
+    // 直接展示 message，不再落到 JSON 兜底显示 '{"success":true,...}' 原始串
+    if (typeof r.message === 'string' && r.message) return r.message
     return JSON.stringify(r).slice(0, 100)
   }
 
@@ -1927,11 +1765,6 @@ export function useAIEngine() {
       }
       abortController = null
     }
-    try {
-      sessionStorage.removeItem(SESSION_KEY)
-    } catch {
-      // ignore
-    }
   }
 
   /**
@@ -1966,33 +1799,6 @@ export function useAIEngine() {
       { role: 'system', content: '[已省略中间对话]' },
       ...recent.filter((m) => m.role !== 'system')
     )
-  }
-
-  function persistPlanTracker() {
-    try {
-      // 压缩对话上下文并保存（供下次恢复）
-      let savedConversation: ChatMessage[] | null = null
-      if (conversationMessages.value) {
-        const compressed: ChatMessage[] = []
-        const sysMsg = conversationMessages.value.find((m) => m.role === 'system')
-        const recent = conversationMessages.value.slice(-20).filter((m) => m.role !== 'system')
-        if (sysMsg) compressed.push(sysMsg)
-        compressed.push({ role: 'system', content: '[已省略中间对话]' })
-        compressed.push(...recent)
-        savedConversation = compressed
-      }
-      sessionStorage.setItem(
-        SESSION_KEY,
-        JSON.stringify({
-          planTracker: planTracker.value,
-          lessons: lessons.value,
-          conversationMessages: savedConversation,
-          timestamp: Date.now(),
-        })
-      )
-    } catch {
-      // ignore
-    }
   }
 
   function updatePlanTracker(
@@ -2190,6 +1996,36 @@ export function useAIEngine() {
       }
     }
 
+    // 整组移动分组：调 chrome.tabGroups.move 把分组（含全部标签）移到目标窗口
+    // 或窗口内目标位置，分组与组内顺序保持不变
+    if (r.clientExec === 'tabs_group_move') {
+      const groups = r.groups as Array<{
+        groupId: number
+        index: number
+        windowId?: number
+        title: string
+      }>
+      const g = groups[0]
+      if (!g) return result
+      try {
+        const moveProps: chrome.tabGroups.MoveProperties = { index: g.index }
+        if (g.windowId !== undefined) moveProps.windowId = g.windowId
+        await chrome.tabGroups.move(g.groupId, moveProps)
+        return {
+          success: true,
+          groupMoved: { title: g.title, windowId: g.windowId },
+          message: t('step.groupMoved', { title: g.title || String(g.groupId) }),
+        }
+      } catch (e: unknown) {
+        const reason = e instanceof Error ? e.message : String(e)
+        console.warn('[clientExec] 移动分组失败:', g.groupId, 'err=', reason)
+        return {
+          success: false,
+          message: t('engine.groupMoveFailed', { list: reason }),
+        }
+      }
+    }
+
     // 按域名分组：调 chrome.tabs.group 创建分组，再 chrome.tabGroups.update 设标题
     if (r.clientExec === 'tabs_group_by_domain') {
       const groups = r.groups as Array<{ title: string; tabIds: number[]; windowId: number }>
@@ -2277,10 +2113,6 @@ export function useAIEngine() {
       lines.push(`| \`${cmd}\` | ${aliases} | \`${arg}\` | ${desc} |`)
     }
     return lines.join('\n')
-  }
-
-  function formatSlashCommands(): string {
-    return SLASH_COMMANDS.map((c) => `/${c.slash} — ${t(`slash.${c.intent}.desc`)}`).join('\n')
   }
 
   async function renderExecutionResult(

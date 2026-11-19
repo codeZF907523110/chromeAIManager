@@ -39,14 +39,14 @@ export class AIEngine {
 
     const config = this.currentModel
     if (!config) {
-      this._checked = { available: false, reason: '未选择模型' }
+      this._checked = { available: false, reason: 'no-model' }
       return this._checked
     }
 
-    const cap = await detectAICapability()
+    const detect = await detectAICapability()
 
     if (
-      cap !== AI_CAPABILITIES.NONE &&
+      detect.capability !== AI_CAPABILITIES.NONE &&
       (config.provider === 'auto' || config.provider === 'gemini-nano')
     ) {
       this._checked = { available: true, backend: 'gemini-nano', offline: true }
@@ -57,12 +57,38 @@ export class AIEngine {
     } else {
       this._checked = {
         available: false,
-        reason: !config.apiKey
-          ? '请配置 API Key（推荐 DeepSeek V3: https://platform.deepseek.com 申请 key，极便宜），或使用 OpenAI / Ollama'
-          : 'AI 服务不可用，请检查配置',
+        reason: this.unavailableReasonCode(config, detect.rawStatus),
       }
     }
     return this._checked
+  }
+
+  /**
+   * 不可用原因码（checkAvailability 失败分支）
+   * 只返回稳定的原因码，不产出界面文案——多语言与结构化 markdown 提示
+   * 由 UI 层按码经 i18n 的 engine.reason* 词条生成（见 useAIEngine 的 AI_REASON_KEYS）。
+   *
+   * @param config 当前模型配置
+   * @param nanoStatus 内置 AI 探测的原始状态值（available/readily=就绪；downloadable/
+   *        downloading/after-download=未下载；unavailable/no=设备不支持；no-api=浏览器无此 API）
+   * @returns 原因码：'nano-not-downloaded'（模型未下载）| 'nano-unsupported'（设备不支持）|
+   *          'nano-no-api'（浏览器无此 API）| 'no-api-key'（云端模型缺 Key）| 'generic'（其它）
+   */
+  private unavailableReasonCode(config: AIModel, nanoStatus = ''): string {
+    if (config.provider === 'gemini-nano' || config.provider === 'auto') {
+      if (
+        nanoStatus === 'downloadable' ||
+        nanoStatus === 'downloading' ||
+        nanoStatus === 'after-download'
+      ) {
+        return 'nano-not-downloaded'
+      }
+      if (nanoStatus === 'unavailable' || nanoStatus === 'no') return 'nano-unsupported'
+      if (nanoStatus === 'no-api') return 'nano-no-api'
+      return 'generic'
+    }
+    if (!config.apiKey) return 'no-api-key'
+    return 'generic'
   }
 
   async prompt(
@@ -76,19 +102,16 @@ export class AIEngine {
 
   /**
    * Agent Loop 专用：传入完整 messages 数组（含历史）
+   *
+   * @throws 后端未实现 chatWithMessages 时显式抛错——不再静默降级为
+   *         "只取最后一条"，那会丢掉全部对话历史导致模型失忆
    */
   async chatWithHistory(messages: ChatMessage[], options: AIOptions = {}): Promise<string> {
     const backend = await this.getBackend()
     if (backend.chatWithMessages) {
       return backend.chatWithMessages(messages, options)
     }
-    // 降级：取最后一条消息作为 userMessage
-    if (!messages.length) {
-      throw new Error('消息列表为空，无法调用 AI')
-    }
-    const last = messages[messages.length - 1]
-    const system = messages.find((m) => m.role === 'system')?.content || ''
-    return backend.chat(system, last.content || '', options)
+    throw new Error('当前 AI 后端未实现 chatWithMessages，无法携带对话历史')
   }
 
   /**
@@ -125,9 +148,7 @@ export class AIEngine {
     if (!status.available) throw new Error('NO_AI_BACKEND')
 
     if (status.backend === 'gemini-nano') {
-      // 使用 checkAvailability 中已检测的能力，避免重复调用
-      const cap = await detectAICapability()
-      this.backend = new GeminiNanoAdapter(cap)
+      this.backend = new GeminiNanoAdapter()
     } else {
       if (!this.currentModel) throw new Error('NO_MODEL_CONFIGURED')
       if (this.currentModel.provider === 'anthropic') {

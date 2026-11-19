@@ -12,7 +12,8 @@
   <div class="message-item message-item-ai-chat">
     <div class="bubble bubble-ai-chat">
       <div class="bubble-content">
-        <span class="live-body" v-html="renderedHtml"></span><span class="live-caret"></span>
+        <span class="live-body" v-html="renderedHtml" @click="onMarkdownClick"></span
+        ><span class="live-caret"></span>
       </div>
     </div>
   </div>
@@ -20,7 +21,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { renderMarkdown } from '../composables/useMarkdown'
+import { renderMarkdown, onMarkdownClick } from '../composables/useMarkdown'
 
 const props = defineProps<{
   /** 已流式显示的回复文本（单调增长的前缀，经 partial JSON 提取） */

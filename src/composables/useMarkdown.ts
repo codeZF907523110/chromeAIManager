@@ -6,7 +6,8 @@
  *   2. 未知标签按普通文本处理；只有 src/components/blocks/registry.ts 白名单内的标签被吞掉
  *   3. 占位符渲染为 <div data-custom-block data-tag data-id>，由 MessageBubble 渲染后挂载 Vue 组件
  *   4. 代码块走 highlight.js 语法高亮；token 颜色由 src/styles/highlight.css 按 data-theme 切换
- *   5. DOMPurify 加固：允许 target/rel/title，协议限制 https?:|mailto:
+ *   5. DOMPurify 加固：允许 target/rel/title，协议限制 https?:|mailto:；
+ *      sanitize 后给所有 <a> 盖 target=_blank（配合 onMarkdownClick 点击委托，链接一律浏览器新标签打开）
  *
  * 关键约束：marked.parse 强制 async:false。marked v5+ 在默认情况下可能返回 Promise；
  * 一旦拿到 Promise 会被 DOMPurify.sanitize 字符串化为空，整个气泡变空白。
@@ -15,6 +16,16 @@
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js/lib/core'
+
+// 链接一律外开：侧边栏是扩展页（无历史栈/返回按钮），链接在面板内导航会卡死整个插件。
+// 渲染层在 sanitize 后给所有 <a> 盖 target=_blank（中键/Cmd+点击走浏览器原生新标签）；
+// 点击层兜底见 MessageBubble/LiveBubble 的事件委托（chrome.tabs.create）。
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A' && node.getAttribute('href')) {
+    node.setAttribute('target', '_blank')
+    node.setAttribute('rel', 'noopener noreferrer')
+  }
+})
 
 // 按需注册语言：核心库 + 主流语言。
 // 用 lib/core 而不是直接 import highlight.js，避免打入未用语言。
@@ -197,4 +208,24 @@ export function renderMarkdown(md: string): string {
 export function newBlockId(prefix = 'b'): string {
   // crypto.randomUUID 在 MV3 Service Worker / 浏览器均可用
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`
+}
+
+/**
+ * markdown 内容的链接点击委托（配合文件顶部的 DOMPurify 钩子双保险）：
+ * 命中 http(s)/mailto 链接时阻止侧边栏内导航，改为浏览器新标签打开
+ * （侧边栏是扩展页，无返回按钮，面板内导航会卡死整个插件）。
+ * 用法：在承载 v-html 的容器上绑定 @click="onMarkdownClick"。
+ *
+ * @param e 容器上冒泡的点击事件；非链接点击不处理
+ */
+export function onMarkdownClick(e: MouseEvent): void {
+  const anchor = (e.target as HTMLElement | null)?.closest?.('a[href]')
+  if (!anchor) return
+  const href = anchor.getAttribute('href') || ''
+  // data:/blob:（录屏下载卡等）不拦截，保留 download 属性的原生行为
+  if (!/^(https?:|mailto:)/i.test(href)) return
+  // 拦截链接点击：不再向上冒泡（避免同时触发折叠区 toggle 等容器行为）
+  e.preventDefault()
+  e.stopPropagation()
+  chrome.tabs.create({ url: href })
 }

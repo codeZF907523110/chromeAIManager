@@ -2,17 +2,18 @@
  * 命令执行器 — 解析 AI 响应并派发到 Chrome API
  */
 
-import { execPlan } from './task-planner'
 import { swT } from '../shared/sw-i18n'
+import { AGENT_CONFIRM_REQUIRED } from '../shared/commands'
 import { applyDarkCss, removeDarkCss, rememberSite, getTabHostname } from './page-theme'
 
 import type { ExecutionResult } from '../types/execution'
 
 /**
  * 局部 Chrome API 类型补丁。
- * 项目依赖的 @types/chrome@0.2.7 较老，缺少 chrome.cookies.set / chrome.downloads /
- * chrome.permissions.getAll / chrome.storage.StorageArea 命名空间导出。
- * 这里按实际用到的最小集补声明，避免升级 @types/chrome 引入连锁破坏。
+ * 项目的 chrome 类型唯一来源是手写的 src/env.d.ts（不再依赖 @types/chrome，
+ * 见 docs/code-review-fixes.md F7）。env.d.ts 未覆盖到的
+ * chrome.cookies.set / chrome.downloads / chrome.permissions.getAll /
+ * chrome.storage.StorageArea 在此按实际用到的最小集补声明。
  * 运行时 chrome.* 对象由 Chrome 提供，声明仅用于类型检查。
  */
 type ChromeSameSiteStatus = 'no_restriction' | 'lax' | 'strict'
@@ -76,6 +77,26 @@ const DANGEROUS_INTENTS = new Set([
   'extensions_remove',
 ])
 
+/**
+ * 危险操作需人工确认的错误。Service Worker 中不可用 confirm()，
+ * checkDangerousConfirm 抛出本错误，由 executeCommand 转为 NEEDS_CONFIRM
+ * 结果交给前端确认卡处理。
+ */
+class NeedsConfirmError extends Error {
+  readonly code = 'NEEDS_CONFIRM'
+  readonly detail?: Record<string, unknown>
+
+  /**
+   * @param message 确认提示文案（展示在确认卡标题）
+   * @param detail 确认详情（intent/payload/children 等，前端确认卡按字段渲染）
+   */
+  constructor(message: string, detail?: Record<string, unknown>) {
+    super(message)
+    this.name = 'NeedsConfirmError'
+    this.detail = detail
+  }
+}
+
 // ──── 执行入口 ────
 
 export async function executeCommand(
@@ -87,13 +108,12 @@ export async function executeCommand(
     try {
       await checkDangerousConfirm(intent, payload)
     } catch (err: unknown) {
-      const e = err as { code?: string; message?: string }
-      if (e?.code === 'NEEDS_CONFIRM') {
+      if (err instanceof NeedsConfirmError) {
         return {
           success: false,
-          code: 'NEEDS_CONFIRM',
-          message: (e as { message?: string }).message || swT('sw.needConfirm'),
-          detail: (e as { detail?: Record<string, unknown> }).detail,
+          code: err.code,
+          message: err.message || swT('sw.needConfirm'),
+          detail: err.detail,
         }
       }
       throw err
@@ -117,7 +137,11 @@ export async function executeCommand(
     case 'tabs_remove_by_url':
       return await removeTabsByUrl(payload)
     case 'tabs_observe_groups':
-      return await observeGroups()
+      return await observeGroups(payload)
+    case 'tabs_group_move':
+      // 整组移动（含跨窗口）走 clientExec 模式：chrome.tabGroups.* 在 MV3 SW
+      // 非用户激活上下文会静默挂起（与 tabs_group_by_domain 同理），SW 只做校验
+      return await prepareGroupMove(payload)
     case 'tabs_group_by_domain':
       // 这个命令由 side panel 自己执行（chrome.tabs.group 需要用户激活的上下文），
       // SW 只负责计算 tabIds + windowId 映射，返回给 side panel 让它直接调 API
@@ -154,6 +178,9 @@ export async function executeCommand(
       return await searchHistory(payload)
     case 'history_remove':
       return await removeHistory(payload)
+    // ──── CHROME API 兜底 ────
+    case 'chrome_api':
+      return await executeChromeApi(payload)
     // ──── NAVIGATION ────
     case 'navigate':
       return await navigateTo(payload)
@@ -218,11 +245,6 @@ export async function executeCommand(
     // ──── BATCH ────
     case 'batch':
       return await batchExecute(payload)
-    // ──── TASK_PLAN ────
-    case 'task_plan':
-      return (await execPlan(
-        payload as unknown as import('./task-planner').ExecPlanPayload
-      )) as unknown as ExecutionResult
     // ──── BROWSER DOM 操作（Playwright MCP 兼容）────
     case 'browser_snapshot':
       return await executeBrowserTool('browser_snapshot', payload)
@@ -282,22 +304,20 @@ async function checkDangerousConfirm(
 ): Promise<boolean> {
   // force=true 表示用户已在前端确认，跳过二次确认
   if (payload.force === true) return true
-  throw {
-    success: false,
-    code: 'NEEDS_CONFIRM',
-    message: swT('sw.confirmIntent', { intent }),
+  throw new NeedsConfirmError(
+    swT('sw.confirmIntent', { intent }),
     // 填充 children 字段，让前端确认卡可以展示可勾选的子项列表。
     // 各 intent 的子项计算逻辑不同：
     //   - bookmarks_remove_node: 文件夹下的直接子节点（书签 + 子文件夹）
     //   - tabs_remove: 用户传入的 tabIds 对应的标签列表（前端已计算）
-    detail: {
+    {
       intent,
       payload,
       nodeId: payload.nodeId,
       title: payload.title,
       children: await buildConfirmChildren(intent, payload),
-    },
-  }
+    }
+  )
 }
 
 /**
@@ -379,7 +399,10 @@ async function observeTabs(payload: Record<string, unknown>): Promise<ExecutionR
     // MV3 SW 上下文下 `currentWindow: true` 经常返回 0 个标签（因为 SW 不属于
     // 任何普通窗口，sidepanel 窗口也没有普通标签页）。fallback 到最近聚焦的
     // 窗口，确保用户能看到浏览器主窗口的标签列表。
-    query.windowId = await getFallbackWindowId()
+    // fallback 为 -1（WINDOW_ID_NONE，找不到普通窗口）时不设置 windowId——
+    // tabs.query({windowId:-1}) 返回空列表，保持空 query 才能查到所有窗口的标签。
+    const fallbackId = await getFallbackWindowId()
+    if (fallbackId > 0) query.windowId = fallbackId
   }
   if (payload.pinned !== undefined) query.pinned = payload.pinned as boolean
   if (payload.muted !== undefined) query.muted = payload.muted as boolean
@@ -444,6 +467,27 @@ async function updateTab(payload: Record<string, unknown>): Promise<ExecutionRes
   return { success: true, tab, reloaded: payload.reload ? true : undefined }
 }
 
+/**
+ * 移动标签页（窗口内调整位置 / 跨窗口移动）。
+ *
+ * 参数与语义：
+ * - tabIds：要移动的标签 id 数组；缺省时移动当前活动标签
+ * - index：目标位置（0-based）；-1 或缺省 = 追加到末尾
+ * - windowId：目标窗口 id（来自 windows_observe）；缺省 = 窗口内移动；
+ *   与源窗口相同时按窗口内移动处理
+ *
+ * 顺序保证（多标签输入顺序 = 最终排列顺序）：
+ * - 窗口内 index>=0：倒序逐个 move 到同一 index（既有技巧，输入顺序落在 index 处）
+ * - 窗口内 index=-1 / 跨窗口：正序逐个 move（append 语义下正序才保持输入顺序，
+ *   倒序 append 会得到逆序——旧实现在此场景有顺序反转 bug）
+ * - 跨窗口显式 index：正序逐个以 index+i 递增插入
+ *
+ * pinned 保护：pinned 与非 pinned 混合时报 PINNED_MIXED（建议先取消固定）；
+ * 全 pinned 时忽略 index 一律移到目标窗口最前（pinned 区，Chrome 自动保持固定状态）
+ *
+ * @returns 成功返回 { moved, tabIds, windowId?, newIndex }；失败返回
+ *          NO_TABS_FOUND / WINDOW_NOT_FOUND / WINDOW_INCOGNITO / PINNED_MIXED / MOVE_FAILED
+ */
 async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResult> {
   // 统一处理 tabIds，支持字符串数组或数字数组
   const tabIds = (payload.tabIds as unknown[])
@@ -451,7 +495,39 @@ async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResu
         .map((id: unknown) => Number(id))
         .filter((id: number) => !isNaN(id))
     : undefined
-  const index = payload.index as number
+  // index 归一化：缺省 -1（末尾）。模型可能输出字符串数字，NaN 视为未传
+  const rawIndex = payload.index !== undefined ? Number(payload.index) : -1
+  const index = Number.isFinite(rawIndex) ? rawIndex : -1
+  // windowId 归一化：缺省=窗口内移动；NaN 视为未传
+  const rawWindowId = payload.windowId !== undefined ? Number(payload.windowId) : undefined
+  const targetWindowId =
+    rawWindowId !== undefined && Number.isFinite(rawWindowId) && rawWindowId > 0
+      ? rawWindowId
+      : undefined
+
+  // 目标窗口存在性校验（跨窗口移动前拦截无效 windowId；隐身窗口拒绝——
+  // 普通窗口的标签移入隐身窗口会被 Chrome 拒绝，提前拦截给出可读错误）
+  if (targetWindowId !== undefined) {
+    let win: chrome.windows.Window
+    try {
+      win = await chrome.windows.get(targetWindowId)
+    } catch {
+      return {
+        success: false,
+        code: 'WINDOW_NOT_FOUND',
+        message: swT('sw.windowNotFound', { id: targetWindowId }),
+        suggestion: swT('sw.observeWindowsFirst'),
+      }
+    }
+    if (win.incognito) {
+      return {
+        success: false,
+        code: 'WINDOW_INCOGNITO',
+        message: swT('sw.windowIncognito', { id: targetWindowId }),
+        suggestion: swT('sw.observeWindowsFirst'),
+      }
+    }
+  }
 
   if (!tabIds?.length) {
     // 没有指定 tabIds，移动当前活动标签
@@ -464,30 +540,78 @@ async function moveTabs(payload: Record<string, unknown>): Promise<ExecutionResu
         message: swT('sw.noActiveTab'),
         suggestion: swT('sw.openTabFirst'),
       }
-    const tabs = await chrome.tabs.move([active.id], { index })
+    // pinned 活动标签只能落在 pinned 区（最前），按 F9 同规则忽略 AI 传的 index
+    const activeIndex = active.pinned ? 0 : index
+    const moveProps: chrome.tabs.MoveProperties = { index: activeIndex }
+    if (targetWindowId !== undefined) moveProps.windowId = targetWindowId
+    await chrome.tabs.move([active.id], moveProps)
     return {
       success: true,
-      moved: Array.isArray(tabs) ? tabs.length : 1,
+      moved: 1,
       tabId: active.id,
-      newIndex: index,
+      ...(targetWindowId !== undefined ? { windowId: targetWindowId } : {}),
+      newIndex: activeIndex,
     }
   }
 
   try {
-    // chrome.tabs.move 支持单 tab 移动和批量移动两种形式。
-    // 这里要做"全局重排"：批量 move 会按 tabIds 顺序依次放到 index 起点，
-    // 与"按当前期望顺序整体替换"的语义不一致——批量后顺序是输入顺序的反向 / 错位，
-    // 并且同域名的相邻 tab 会被前面的非相邻插入分隔开。
-    // 正确做法：把期望顺序倒序逐个 move 到 0，最终结果正好等于期望顺序。
-    //   期望 [D1, D2, D3]
-    //   move D3→0: [D3, ...]
-    //   move D2→0: [D2, D3, ...]
-    //   move D1→0: [D1, D2, D3, ...] ✓
-    const reversed = [...tabIds].reverse()
-    for (const id of reversed) {
-      await chrome.tabs.move([id], { index })
+    // pinned 保护（对齐 reorderTabs）：pinned 标签固定占窗口前部，与非 pinned
+    // 混合移动/移到非 pinned 位置会被 Chrome 直接拒绝。全部读取后分三种情况处理。
+    const allTabs = await Promise.all(tabIds.map((id) => chrome.tabs.get(id)))
+    const pinnedCount = allTabs.filter((t) => t.pinned).length
+    if (pinnedCount > 0 && pinnedCount < tabIds.length) {
+      return {
+        success: false,
+        code: 'PINNED_MIXED',
+        message: swT('sw.pinnedMixed'),
+        suggestion: swT('sw.unpinFirst'),
+      }
     }
-    return { success: true, moved: reversed.length, tabIds, newIndex: index }
+    // 全 pinned：只能落在目标窗口的 pinned 区，忽略 AI 传的 index 一律移到最前
+    //（index 0；Chrome 自动落入 pinned 区，跨窗口时同样保持 pinned 状态）
+    const allPinned = pinnedCount === tabIds.length
+    const effectiveIndex = allPinned ? 0 : index
+
+    // 读取源窗口：以第一个标签的 windowId 为准（移动前所有 tabIds 应在同一窗口）
+    const first = allTabs[0]
+    const sourceWindowId = first.windowId
+    const crossWindow = targetWindowId !== undefined && targetWindowId !== sourceWindowId
+
+    if (crossWindow) {
+      // 跨窗口：正序逐个插入目标窗口。index=-1 恒为追加末尾（每次 append，
+      // 正序=保持输入顺序）；显式 index 时递增插入（每次插入把右侧标签推后一位，
+      // 正序+递增=输入顺序落在 index 处）
+      for (let i = 0; i < tabIds.length; i++) {
+        const insertIndex = effectiveIndex === -1 ? -1 : effectiveIndex + i
+        await chrome.tabs.move([tabIds[i]], { windowId: targetWindowId, index: insertIndex })
+      }
+      return {
+        success: true,
+        moved: tabIds.length,
+        tabIds,
+        windowId: targetWindowId,
+        newIndex: effectiveIndex,
+      }
+    }
+
+    // 窗口内移动
+    if (effectiveIndex === -1) {
+      // 追加到末尾：正序逐个 move 到 -1（append 语义下正序才保持输入顺序）
+      for (const id of tabIds) {
+        await chrome.tabs.move([id], { index: -1 })
+      }
+    } else {
+      // 指定位置：倒序逐个 move 到同一 index，最终正好按输入顺序落在 index 处。
+      //   期望 [D1, D2, D3] 落在 index p：
+      //   move D3→p: [.., D3, ..]
+      //   move D2→p: [.., D2, D3, ..]
+      //   move D1→p: [.., D1, D2, D3, ..] ✓
+      const reversed = [...tabIds].reverse()
+      for (const id of reversed) {
+        await chrome.tabs.move([id], { index: effectiveIndex })
+      }
+    }
+    return { success: true, moved: tabIds.length, tabIds, newIndex: effectiveIndex }
   } catch (err: unknown) {
     const e = err as { message?: string }
     return {
@@ -623,9 +747,10 @@ async function removeTabsByUrl(payload: Record<string, unknown>): Promise<Execut
  * 识别目标分组（按标题或内容）并拿到 tabIds 用于取消分组。
  * 旧实现用第一个 tab 的 title 当分组标题、color 硬编码 grey、tabs 只存标题字符串，
  * 导致 AI 无法识别目标分组（如"wzyp"分组标题被误报成首个 tab 标题）。
+ * @param payload - { maxResults? } 返回分组数上限（缺省不截断）
  * @returns { success, groups: Array<{ id, title, color, windowId, collapsed, tabIds, tabs }>, observed }
  */
-async function observeGroups(): Promise<ExecutionResult> {
+async function observeGroups(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const tabs = await chrome.tabs.query({})
   // tabId → tab，补全每个分组内 tab 的详情
   const tabById = new Map<number, chrome.tabs.Tab>(tabs.map((t) => [t.id as number, t]))
@@ -654,7 +779,10 @@ async function observeGroups(): Promise<ExecutionResult> {
       }),
     }
   })
-  return { success: true, groups, observed: groups.length }
+  // maxResults：截断返回的分组数（registry 声明的 slot，防止分组过多撑爆上下文）
+  const maxResults = (payload.maxResults as number) || groups.length
+  const limited = groups.slice(0, maxResults)
+  return { success: true, groups: limited, observed: limited.length }
 }
 
 /**
@@ -795,6 +923,95 @@ function safeHostname(url: string): string {
 }
 
 /**
+ * 校验并准备「整组移动分组」的数据（clientExec 模式，真正执行在 side panel）。
+ *
+ * chrome.tabGroups.move 支持把分组连同全部标签移动到另一个窗口，且只允许
+ * normal 类型窗口之间移动（官方约束）。SW 端负责：
+ * 1. 校验 groupId 存在（chrome.tabGroups.get）
+ * 2. 校验目标窗口存在且为 normal 类型
+ * 3. 组装 side panel 直接可用的执行数据
+ *
+ * @param payload.groupId 分组 id（来自 tabs_observe_groups）
+ * @param payload.windowId 目标窗口 id（来自 windows_observe）；缺省=窗口内移动
+ * @param payload.index 目标位置；-1 或缺省=末尾
+ * @returns 成功返回 { clientExec: 'tabs_group_move', groups: [{groupId, index, windowId?, title}] }；
+ *          失败返回 GROUP_NOT_FOUND / WINDOW_NOT_FOUND / WINDOW_INCOGNITO / WINDOW_NOT_NORMAL
+ */
+async function prepareGroupMove(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const groupId = Number(payload.groupId)
+  if (!Number.isFinite(groupId)) {
+    return {
+      success: false,
+      code: 'GROUP_NOT_FOUND',
+      message: swT('sw.groupsNotFound', { ids: String(payload.groupId) }),
+      suggestion: swT('sw.observeGroupsFirst'),
+    }
+  }
+
+  // 分组存在性校验（id 无效/已解散时 chrome.tabGroups.get 抛错）
+  let title = ''
+  try {
+    const group = await chrome.tabGroups.get(groupId)
+    title = group.title || ''
+  } catch {
+    return {
+      success: false,
+      code: 'GROUP_NOT_FOUND',
+      message: swT('sw.groupsNotFound', { ids: groupId }),
+      suggestion: swT('sw.observeGroupsFirst'),
+    }
+  }
+
+  // index / windowId 归一化（模型可能输出字符串数字）
+  const rawIndex = payload.index !== undefined ? Number(payload.index) : -1
+  const index = Number.isFinite(rawIndex) ? rawIndex : -1
+  const rawWindowId = payload.windowId !== undefined ? Number(payload.windowId) : undefined
+  const windowId =
+    rawWindowId !== undefined && Number.isFinite(rawWindowId) && rawWindowId > 0
+      ? rawWindowId
+      : undefined
+
+  // 目标窗口校验：必须存在且为普通（非隐身）normal 窗口
+  //（tabGroups.move 官方只支持 normal 窗口间移动；隐身窗口 type 也是 normal，
+  // 需单独检查 incognito，否则到 side panel 执行时才静默失败）
+  if (windowId !== undefined) {
+    let win: chrome.windows.Window
+    try {
+      win = await chrome.windows.get(windowId)
+    } catch {
+      return {
+        success: false,
+        code: 'WINDOW_NOT_FOUND',
+        message: swT('sw.windowNotFound', { id: windowId }),
+        suggestion: swT('sw.observeWindowsFirst'),
+      }
+    }
+    if (win.incognito) {
+      return {
+        success: false,
+        code: 'WINDOW_INCOGNITO',
+        message: swT('sw.windowIncognito', { id: windowId }),
+        suggestion: swT('sw.observeWindowsFirst'),
+      }
+    }
+    if (win.type !== 'normal') {
+      return {
+        success: false,
+        code: 'WINDOW_NOT_NORMAL',
+        message: swT('sw.windowNotNormal'),
+        suggestion: swT('sw.observeWindowsFirst'),
+      }
+    }
+  }
+
+  return {
+    success: true,
+    clientExec: 'tabs_group_move',
+    groups: [{ groupId, index, ...(windowId !== undefined ? { windowId } : {}), title }],
+  }
+}
+
+/**
  * 观察书签树
  * 支持三种取数模式：
  * 1. parentId：只取指定文件夹的直接子项（用 chrome.bookmarks.getChildren，局部视图，AI 整理某文件夹时用）
@@ -930,11 +1147,18 @@ async function moveBookmark(payload: Record<string, unknown>): Promise<Execution
 }
 
 async function createBookmark(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  // nodeType 是一致性校验而非创建参数（chrome.bookmarks.create 按「有无 url」决定类型）：
+  // schema 宣告了 nodeType 就必须兑现——bookmark 不带 url 会被静默建成文件夹，这里显式拦截
+  const nodeType = payload.nodeType as string | undefined
+  const url = payload.url as string | undefined
+  if (nodeType === 'bookmark' && !url) {
+    return { success: false, code: 'INVALID_PARAMS', message: swT('sw.urlRequired') }
+  }
   const opts: chrome.bookmarks.CreateDetails = {
     title: payload.title as string,
     parentId: payload.parentId as string,
   }
-  if (payload.url !== undefined) opts.url = payload.url as string
+  if (url !== undefined) opts.url = url
   if (payload.index !== undefined) opts.index = payload.index as number
   const node = await chrome.bookmarks.create(opts)
   // 返回 createdNode 让前端区分"创建文件夹"vs"创建书签"
@@ -1064,11 +1288,30 @@ async function addCurrentPageBookmark(payload: Record<string, unknown>): Promise
 
 // ──── WINDOWS 实现 ────
 
+/**
+ * 观察窗口列表。
+ * 每个窗口附加 index（第几个窗口，1-based）和 tabCount（标签数），让 AI 能把
+ * 用户口语"第二个窗口"映射到 windowId（chrome.windows.Window 原生无序号）。
+ * @param payload.includeTabs 是否附带完整标签列表（populate）
+ * @returns { success, windows, observed }
+ */
 async function observeWindows(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const opts: chrome.windows.QueryOptions = { windowTypes: ['normal', 'popup', 'app'] }
   if (payload.includeTabs) opts.populate = true
   const wins = await chrome.windows.getAll(opts)
-  return { success: true, windows: wins, observed: wins.length }
+  // 各窗口标签计数（一次全量查询按 windowId 分桶，比逐窗口 query 省往返）
+  const allTabs = await chrome.tabs.query({})
+  const tabCountMap = new Map<number, number>()
+  for (const t of allTabs) {
+    if (t.windowId === undefined) continue
+    tabCountMap.set(t.windowId, (tabCountMap.get(t.windowId) || 0) + 1)
+  }
+  const windows = wins.map((w, i) => ({
+    ...w,
+    index: i + 1,
+    tabCount: w.id !== undefined ? tabCountMap.get(w.id) || 0 : 0,
+  }))
+  return { success: true, windows, observed: windows.length }
 }
 
 async function createWindow(payload: Record<string, unknown>): Promise<ExecutionResult> {
@@ -1084,19 +1327,170 @@ async function updateWindow(payload: Record<string, unknown>): Promise<Execution
   if (payload.focused !== undefined) changes.focused = payload.focused as boolean
   if (payload.state) changes.state = payload.state as chrome.windows.WindowState
   const win = await chrome.windows.update(payload.windowId as number, changes)
-  return { success: true, window: win }
+  // updated 标记供步骤摘要区分「更新窗口」与 createWindow 同形的「创建窗口」
+  // （两者都返回 window 字段，无标记会把 /update-window 渲染成"已创建窗口"）
+  return { success: true, window: win, updated: true }
 }
 
 // ──── HISTORY 实现 ────
 
+/** history_search 各时间范围的标签词条 key（与 slots.timeRange 枚举一一对应，供 swT 按范围取词） */
+const HISTORY_RANGE_LABEL_KEYS = {
+  today: 'sw.today',
+  yesterday: 'sw.yesterday',
+  week: 'sw.week',
+  month: 'sw.month',
+  all: 'sw.all',
+} as const
+
+/** timeRange 非法时的统一拒绝结果（message 提示合法枚举，suggestion 给替代方案，模型据此改参或如实告知用户） */
+function invalidTimeRangeResult(): ExecutionResult {
+  return {
+    success: false,
+    code: 'INVALID_PARAMS',
+    message: swT('sw.invalidTimeRange'),
+    suggestion: swT('sw.invalidTimeRangeHint'),
+  }
+}
+
+/**
+ * 校验 payload.timeRange 是否为合法枚举（today | yesterday | week | month | all，忽略大小写）。
+ * 缺省/null 视为未传（由调用方决定默认行为）；显式传了非法值（日期字符串/对象等）返回 false。
+ * @param payload - 命令 payload
+ * @returns 是否通过校验
+ */
+function isValidHistoryRange(payload: Record<string, unknown>): boolean {
+  const raw: unknown = payload.timeRange
+  if (raw === undefined || raw === null) return true
+  if (typeof raw !== 'string') return false
+  const range = raw.trim().toLowerCase()
+  return range !== '' && range in HISTORY_RANGE_LABEL_KEYS
+}
+
+/** history_search 日期参数（startDate/endDate）的合法格式：YYYY-MM-DD */
+const HISTORY_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * 解析 YYYY-MM-DD 日期串为本地时区当天 0 点的毫秒时间戳
+ * @param value 日期串（如 '2026-11-09'）
+ * @returns 当天 0 点时间戳；日期不存在（如 2026-02-30，ISO 扩展格式自带范围校验）返回 null
+ */
+function parseLocalDayStart(value: string): number | null {
+  const date = new Date(value + 'T00:00:00')
+  return Number.isNaN(date.getTime()) ? null : date.setHours(0, 0, 0, 0)
+}
+
+/**
+ * 把某天 0 点时间戳转为「含当天」的搜索窗口右端（次日 0 点）
+ * @param dayStart 当天 0 点的毫秒时间戳（本地时区）
+ * @returns 次日 0 点时间戳——setDate 走本地日历运算，跨 DST 不会丢当天尾部的记录
+ */
+function endOfDayExclusive(dayStart: number): number {
+  const next = new Date(dayStart)
+  next.setDate(next.getDate() + 1)
+  return next.setHours(0, 0, 0, 0)
+}
+
+/**
+ * 解析 history_search 的日期窗参数（startDate/endDate，YYYY-MM-DD，本地时区）
+ * @param payload 命令 payload
+ * @returns 未传任何日期参数返回 null；格式/日期非法返回 { error }（带原值插值提示）；
+ *          合法返回 { startTime, endTime, label }——仅 startDate = 从当天到现在，
+ *          仅 endDate = 全部历史到当天末尾，endDate 含当天
+ */
+function resolveDateWindow(
+  payload: Record<string, unknown>
+): { startTime: number; endTime: number; label: string } | { error: string } | null {
+  const given = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+  const rawStart = given(payload.startDate) ? payload.startDate.trim() : ''
+  const rawEnd = given(payload.endDate) ? payload.endDate.trim() : ''
+
+  // 显式传了 startDate/endDate 但不是非空字符串（数字时间戳/对象等）→ 拒绝：
+  // 静默忽略会让模型以为日期过滤已生效，拿到假成功结果（v2 教训）
+  const wasGiven = (v: unknown): boolean => v !== undefined && v !== null && v !== ''
+  if ((!rawStart && wasGiven(payload.startDate)) || (!rawEnd && wasGiven(payload.endDate))) {
+    const bad = !rawStart && wasGiven(payload.startDate) ? payload.startDate : payload.endDate
+    return { error: swT('sw.invalidDateParam', { value: String(bad) }) }
+  }
+
+  if (!rawStart && !rawEnd) return null
+
+  for (const d of [rawStart, rawEnd]) {
+    if (d && (!HISTORY_DATE_RE.test(d) || parseLocalDayStart(d) === null)) {
+      return { error: swT('sw.invalidDateParam', { value: d }) }
+    }
+  }
+
+  const startTs = rawStart ? (parseLocalDayStart(rawStart) as number) : 0
+  const endTs = rawEnd ? (parseLocalDayStart(rawEnd) as number) : null
+  return {
+    startTime: startTs,
+    endTime: endTs === null ? Date.now() : endOfDayExclusive(endTs),
+    // label 直接回显日期串（日期本身无本地化需求），前端反馈卡片可直接用作标题
+    label: [rawStart, rawEnd].filter(Boolean).join(' ~ '),
+  }
+}
+
 async function searchHistory(payload: Record<string, unknown>): Promise<ExecutionResult> {
-  // /history 默认展示今天全部；query 留空 = 列出当天所有历史，非空 = 按关键词过滤
+  // /history 默认展示今天全部；query 留空 = 列出该时间窗所有历史，非空 = 按关键词过滤
   // （chrome.history.search 自带 title/url 匹配）。
+  // 时间窗两套参数，日期窗（startDate/endDate，YYYY-MM-DD 本地时区，endDate 含当天）
+  // **优先于** timeRange 枚举（today | yesterday | week | month | all，缺省 = 今天，
+  // /history 现状不变）——模型传了具体日期就按日期查，无需再校验枚举（结果真实反映
+  // 日期窗，无假成功风险）。
+  // 显式传非法值（模型编造的日期串、对象等）**直接拒绝**并提示合法值——静默回落 today
+  // 会让模型拿到假成功结果无限重试（真机复现：AI 三次换格式传日期全被当 today，
+  // 浪费 3 步还没告知用户能力边界）。
   const query = ((payload.query as string) || '').trim()
   const maxResults = (payload.maxResults as number) || 50
-  // 把"今天的 0 点"和"现在的时刻"一起回传给前端，便于反馈里直接显示"今天"时间窗。
-  const startTime = new Date().setHours(0, 0, 0, 0)
-  const endTime = Date.now()
+  const now = Date.now()
+  const todayStart = new Date().setHours(0, 0, 0, 0)
+
+  let startTime = todayStart
+  let endTime = now
+  let label = swT(HISTORY_RANGE_LABEL_KEYS.today)
+
+  const dateWindow = resolveDateWindow(payload)
+  if (dateWindow) {
+    if ('error' in dateWindow) {
+      return { success: false, code: 'INVALID_PARAMS', message: dateWindow.error }
+    }
+    startTime = dateWindow.startTime
+    endTime = dateWindow.endTime
+    label = dateWindow.label
+  } else {
+    // 无日期参数：走相对枚举窗（缺省默认今天；显式非法值拒绝）
+    if (!isValidHistoryRange(payload)) return invalidTimeRangeResult()
+    const range =
+      typeof payload.timeRange === 'string' ? payload.timeRange.trim().toLowerCase() : ''
+    let labelKey: keyof typeof HISTORY_RANGE_LABEL_KEYS = 'today'
+    switch (range) {
+      case 'yesterday': {
+        // 昨日窗口 = 昨日 0 点 → 今日 0 点；先 setDate(-1) 再 setHours 归零，DST 安全
+        const yesterday = new Date()
+        yesterday.setDate(yesterday.getDate() - 1)
+        startTime = yesterday.setHours(0, 0, 0, 0)
+        endTime = todayStart
+        labelKey = 'yesterday'
+        break
+      }
+      case 'week':
+        startTime = now - 7 * 86400000
+        labelKey = 'week'
+        break
+      case 'month':
+        startTime = now - 30 * 86400000
+        labelKey = 'month'
+        break
+      case 'all':
+        // startTime 0 = epoch，覆盖全部历史
+        startTime = 0
+        labelKey = 'all'
+        break
+      // '' / 'today' / 未知值 → 默认今天（/history 现状不变）
+    }
+    label = swT(HISTORY_RANGE_LABEL_KEYS[labelKey])
+  }
 
   const items = await chrome.history.search({
     text: query,
@@ -1113,8 +1507,8 @@ async function searchHistory(payload: Record<string, unknown>): Promise<Executio
       visitCount: i.visitCount,
     })),
     found: items.length,
-    // 时间窗 meta：让前端知道这是当天的结果，反馈卡片标题可以直接用 "今天" 标记
-    timeRange: { start: startTime, end: endTime, label: swT('sw.today') },
+    // 时间窗 meta：label 按实际范围返回（日期窗回显日期串 / 枚举窗取词条），前端可直接用作标题
+    timeRange: { start: startTime, end: endTime, label },
   }
 }
 
@@ -1123,7 +1517,8 @@ async function removeHistory(payload: Record<string, unknown>): Promise<Executio
   // 1) 单次删除：payload.timeRange（如 'today' / 'week' / 'all'）+ 可选 payload.query
   // 2) 子集删除：payload.selectedUrls 是从 NEEDS_CONFIRM 二次确认回传的 url 列表，
   //    用于"只删除搜索结果中我勾选的那几个"。
-  const range = payload.timeRange as string
+  // 归一化小写：校验忽略大小写，下方窗口三元链是精确比较，不归一会漏进默认分支（startTime=0）
+  const range = typeof payload.timeRange === 'string' ? payload.timeRange.trim().toLowerCase() : ''
   const selectedUrls = Array.isArray(payload.selectedUrls)
     ? (payload.selectedUrls as unknown[]).map((u) => String(u)).filter(Boolean)
     : []
@@ -1139,9 +1534,14 @@ async function removeHistory(payload: Record<string, unknown>): Promise<Executio
     return { success: true, deleted: selectedUrls.length }
   }
 
+  // timeRange 是必填参数且必须是合法枚举：缺失/非法直接拒绝。绝不能落到下面三元链的
+  // 默认分支——那会得到 startTime=0（全部历史），用户确认"删某天"实际被删掉所有记录
+  if (!(range in HISTORY_RANGE_LABEL_KEYS)) return invalidTimeRangeResult()
+
   if (range === 'all') {
     await chrome.history.deleteAll()
-    return { success: true }
+    // deleteAll 无返回数量，message 供步骤摘要直接展示（裸 {success:true} 会落进 JSON 兜底）
+    return { success: true, message: swT('sw.historyAllCleared') }
   }
   const endTime = Date.now()
   const startTime =
@@ -1170,6 +1570,160 @@ async function removeHistory(payload: Record<string, unknown>): Promise<Executio
 
   const deleted = await chrome.history.deleteRange({ startTime, endTime })
   return { success: true, deleted }
+}
+
+// ──── CHROME API 兜底实现 ────
+
+/**
+ * chrome_api 兜底通道：专用命令参数表达不了需求时（如任意毫秒时间窗查历史、
+ * 最近关闭列表——downloads/bookmarks/tabs 等已有专用 intent），按只读白名单
+ * 直调 Chrome 扩展 API，把原始结果回给模型。
+ * 白名单外 / 参数类型不符一律快速失败（INVALID_PARAMS + suggestion 引导回专用
+ * 命令），绝不静默兜底——与 timeRange 的 v2 结论一致：假成功比失败更糟。
+ * @param payload - 命令 payload（api: API 全名；args: API 原生参数对象，时间为毫秒时间戳）
+ * @returns history.search → items/found；sessions.getRecentlyClosed → sessions/found
+ */
+async function executeChromeApi(payload: Record<string, unknown>): Promise<ExecutionResult> {
+  const api = typeof payload.api === 'string' ? payload.api.trim() : ''
+  if (!api || !CHROME_API_ALLOWLIST.has(api)) {
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: swT('sw.chromeApiNotAllowed', { api: api || '(未传)' }),
+      suggestion: swT('sw.chromeApiNotAllowedHint'),
+    }
+  }
+
+  // args 必须是普通对象（数组/null 误传视为未传，缺省参数走 Chrome 各自的文档默认值）
+  const args =
+    payload.args && typeof payload.args === 'object' && !Array.isArray(payload.args)
+      ? (payload.args as Record<string, unknown>)
+      : {}
+
+  if (api === 'history.search') return await chromeApiHistorySearch(args)
+  return await chromeApiRecentlyClosed(args)
+}
+
+/** chrome_api 只读白名单：显式枚举集合，新增 API 只需在此登记 + 补对应 dispatch 分支；
+ * 不提供任意 namespace.method 反射调用（写操作、cookies 等敏感读进不来） */
+const CHROME_API_ALLOWLIST = new Set(['history.search', 'sessions.getRecentlyClosed'])
+
+/** chrome.sessions.getRecentlyClosed 的单次返回上限（Chrome MAX_SESSION_RESULTS） */
+const SESSIONS_MAX_RESULTS = 25
+
+/**
+ * chrome_api::history.search：按毫秒时间窗直查浏览历史（history_search 只支持相对
+ * 枚举/日期粒度，需要小时级自定义窗口时由本通道兜底）。startTime/endTime 缺省时
+ * 走 Chrome 文档默认（近 24h），不发明自己的默认值。
+ * @param args - { text?, startTime?, endTime?, maxResults? }（时间为毫秒时间戳）
+ * @returns 执行结果；时间参数非有限数字返回 INVALID_PARAMS（chrome 收到错类型只会抛
+ *          英文异常，模型难自查——先校验并回中文提示）
+ */
+async function chromeApiHistorySearch(args: Record<string, unknown>): Promise<ExecutionResult> {
+  for (const key of ['startTime', 'endTime', 'maxResults'] as const) {
+    const v = args[key]
+    if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v))) {
+      return {
+        success: false,
+        code: 'INVALID_PARAMS',
+        message: swT('sw.chromeApiArgsInvalid', { arg: key }),
+      }
+    }
+  }
+
+  // text 是 chrome.history.search 的必填参数：'' = 不限关键词
+  const query: { text: string; startTime?: number; endTime?: number; maxResults?: number } = {
+    text: typeof args.text === 'string' ? args.text : '',
+  }
+  if (typeof args.startTime === 'number') query.startTime = args.startTime
+  if (typeof args.endTime === 'number') query.endTime = args.endTime
+  if (typeof args.maxResults === 'number' && args.maxResults > 0) query.maxResults = args.maxResults
+
+  // chrome.* 原生抛错（SW 消息监听器没有 try/catch，异常会让发送端拿到误导性的
+  // COM_DISCONNECTED）——在这里兜底转成结构化失败结果，模型能读到真实原因
+  try {
+    const items = await chrome.history.search(query)
+    return {
+      success: true,
+      api: 'history.search',
+      found: items.length,
+      items: items.map((i) => ({
+        title: i.title,
+        url: i.url,
+        lastVisitTime: i.lastVisitTime,
+        visitCount: i.visitCount,
+      })),
+    }
+  } catch (e: unknown) {
+    return chromeApiErrorResult('history.search', e)
+  }
+}
+
+/**
+ * chrome_api 各 API 抛错时的统一失败结果（模型可读的真实错误信息 + code: API_ERROR）
+ * @param api - API 全名（history.search 等）
+ * @param e - chrome.* 抛出的异常
+ * @returns 结构化失败结果，message 带原始错误文案
+ */
+function chromeApiErrorResult(api: string, e: unknown): ExecutionResult {
+  const reason = e instanceof Error ? e.message : String(e)
+  return {
+    success: false,
+    code: 'API_ERROR',
+    message: swT('sw.chromeApiFailed', { api, msg: reason }),
+  }
+}
+
+/**
+ * chrome_api::sessions.getRecentlyClosed：列出最近关闭的标签页/窗口。现有
+ * sessions_restore 只能直接恢复、没有「先列出」的专用命令，属真实能力缺口。
+ * @param args - { maxResults?: number }
+ * @returns 执行结果：sessions 数组（tab/window 摘要，关闭单个标签得 tab、整窗得 window）
+ */
+async function chromeApiRecentlyClosed(args: Record<string, unknown>): Promise<ExecutionResult> {
+  const maxResults = args.maxResults
+  if (
+    maxResults !== undefined &&
+    (typeof maxResults !== 'number' || !Number.isFinite(maxResults))
+  ) {
+    return {
+      success: false,
+      code: 'INVALID_PARAMS',
+      message: swT('sw.chromeApiArgsInvalid', { arg: 'maxResults' }),
+    }
+  }
+
+  // chrome.sessions 单次上限 25（MAX_SESSION_RESULTS），请求更多会被 Chrome 拒绝——
+  // 钳制到上限而不是报错，语义仍是「取最近 N 条」
+  const capped =
+    typeof maxResults === 'number' && maxResults > 0
+      ? Math.min(Math.floor(maxResults), SESSIONS_MAX_RESULTS)
+      : undefined
+
+  // chrome.* 原生抛错统一兜底（同 history.search：SW 监听器无 try/catch）
+  try {
+    const sessions = await chrome.sessions.getRecentlyClosed(capped ? { maxResults: capped } : {})
+    return {
+      success: true,
+      api: 'sessions.getRecentlyClosed',
+      found: sessions.length,
+      sessions: sessions.map((s) => ({
+        tab: s.tab
+          ? {
+              sessionId: s.tab.sessionId,
+              title: s.tab.title,
+              url: s.tab.url,
+              lastVisitTime: s.tab.lastVisitTime,
+            }
+          : undefined,
+        window: s.window
+          ? { sessionId: s.window.sessionId, tabCount: s.window.tabs?.length }
+          : undefined,
+      })),
+    }
+  } catch (e: unknown) {
+    return chromeApiErrorResult('sessions.getRecentlyClosed', e)
+  }
 }
 
 // ──── NAVIGATION 实现 ────
@@ -1357,9 +1911,17 @@ async function injectContentScript(tabId: number): Promise<boolean> {
 
 async function setZoom(payload: Record<string, unknown>): Promise<ExecutionResult> {
   const windowId = await getFallbackWindowId()
-  const [tab] = await chrome.tabs.query({ active: true, windowId })
-  if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
-  const currentZoom = await chrome.tabs.getZoom(tab.id)
+  // 目标标签：tabId 缺省时作用于当前活动标签（与命令描述一致；schema 宣告了 tabId 就必须兑现）
+  let targetTabId: number
+  const payloadTabId = payload.tabId as number | undefined
+  if (payloadTabId) {
+    targetTabId = payloadTabId
+  } else {
+    const [tab] = await chrome.tabs.query({ active: true, windowId })
+    if (!tab?.id) return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
+    targetTabId = tab.id
+  }
+  const currentZoom = await chrome.tabs.getZoom(targetTabId)
   const direction = payload.direction as string
   let zoomFactor = currentZoom
 
@@ -1367,15 +1929,16 @@ async function setZoom(payload: Record<string, unknown>): Promise<ExecutionResul
   else if (direction === 'out') zoomFactor = Math.max(currentZoom - 0.25, 0.25)
   else if (direction === 'reset') zoomFactor = 1
 
-  await chrome.tabs.setZoom(tab.id, zoomFactor)
+  await chrome.tabs.setZoom(targetTabId, zoomFactor)
   return { success: true, zoomFactor }
 }
 
 // ──── PAGE THEME 实现 ────
 
 /**
- * 切换当前网页的深色/浅色模式（insertCSS 直达，方案见 docs/page-theme.md）。
- * dark 注入暗化 CSS 并记住域名（后续该站页面由 SW 自动暗化），light 移除并删除记忆。
+ * 切换当前网页的深色/浅色模式（executeScript 注入固定 id 的 <style>，方案见 docs/page-theme.md）。
+ * dark 注入暗化样式并记住域名（后续该站页面由 SW 自动暗化）；light 先删除域名记忆
+ * 再移除样式——记忆先撤，移除期间进来的 onUpdated 事件不会再自动暗化盖回。
  * @param payload - { mode?: 'dark' | 'light' }，mode 缺省视为 dark；始终作用于当前活动标签
  * @returns ExecutionResult：{ success, mode, domain }
  */
@@ -1388,6 +1951,8 @@ async function setPageTheme(payload: Record<string, unknown>): Promise<Execution
     return { success: false, code: 'NO_TABS_FOUND', message: swT('sw.noActiveTab') }
   }
 
+  const domain = await getTabHostname(targetTabId)
+
   if (mode === 'dark') {
     try {
       await applyDarkCss(targetTabId)
@@ -1395,18 +1960,20 @@ async function setPageTheme(payload: Record<string, unknown>): Promise<Execution
       // chrome:// 等受限页面 insertCSS 直接抛错
       return { success: false, code: 'CANNOT_INJECT', message: swT('sw.pageThemeBlocked') }
     }
+    if (domain) {
+      await rememberSite(domain, true)
+    }
   } else {
+    if (domain) {
+      // 先撤记忆再移除：两步之间进来的 onUpdated 事件看到记忆已撤，不会自动暗化盖回
+      await rememberSite(domain, false)
+    }
     try {
       await removeDarkCss(targetTabId)
     } catch {
       // 受限页不可能有本扩展注入的 CSS（insertCSS 进不去），「恢复原样」天然已达成
       return { success: true, mode, domain: '' }
     }
-  }
-
-  const domain = await getTabHostname(targetTabId)
-  if (domain) {
-    await rememberSite(domain, mode === 'dark')
   }
   return { success: true, mode, domain }
 }
@@ -1612,12 +2179,14 @@ async function observeExtensions(payload: Record<string, unknown>): Promise<Exec
 
 async function updateExtension(payload: Record<string, unknown>): Promise<ExecutionResult> {
   await chrome.management.setEnabled(payload.id as string, payload.enabled as boolean)
-  return { success: true }
+  // 回传 id/enabled 供步骤摘要渲染「已启用/已停用」；裸 {success:true} 会落进 JSON 兜底显示原始串
+  return { success: true, id: payload.id, enabled: payload.enabled }
 }
 
 async function removeExtension(payload: Record<string, unknown>): Promise<ExecutionResult> {
   await chrome.management.uninstall(payload.id as string)
-  return { success: true }
+  // uninstalled 供步骤摘要渲染「已卸载」（同上，避免落 JSON 兜底）
+  return { success: true, uninstalled: payload.id }
 }
 
 /**
@@ -1817,7 +2386,7 @@ async function updatePermissions(payload: Record<string, unknown>): Promise<Exec
  * @param area - 存储区域名，缺省/非法值回落到 local
  */
 function getStorageArea(area: unknown): ChromeStorageAreaApi {
-  // 老 @types/chrome 的 chrome.storage 只有 local/session，缺 sync；运行时三者皆有，整体断言取用。
+  // env.d.ts 的 chrome.storage 只声明了 local/session，缺 sync；运行时三者皆有，整体断言取用。
   const storage = chrome.storage as unknown as {
     sync: ChromeStorageAreaApi
     session: ChromeStorageAreaApi
@@ -1979,9 +2548,34 @@ async function batchExecute(payload: Record<string, unknown>): Promise<Execution
   for (let i = 0; i < calls.length; i++) {
     try {
       const call = calls[i]
-      // batch 由 AI agent loop 或斜杠命令触发，子调用视为已授权，注入 force:true
-      // 跳过危险命令的二次确认，否则 batch 内的 bookmarks_remove_node 等会返回 NEEDS_CONFIRM 导致整批失败
+      // 人工确认命令（删历史/删书签文件夹）不允许进 batch：batch 会给子调用
+      // 整体注入 force:true，等于绕过 agent loop 的 NEEDS_CONFIRM 确认卡。
+      // 拒绝并引导 AI 单独调用（单独调用会正常弹出确认卡）
+      if (AGENT_CONFIRM_REQUIRED.has(call.tool)) {
+        results.push({
+          success: false,
+          code: 'CONFIRM_REQUIRED_SOLO',
+          message: swT('sw.batchConfirmRequired', { tool: call.tool }),
+        })
+        failed++
+        continue
+      }
+      // batch 由 AI agent loop 触发，其余子调用视为已授权，注入 force:true
+      // 跳过危险命令的二次确认，否则 batch 内的可逆危险命令会返回 NEEDS_CONFIRM 导致整批失败
       const r = await executeCommand(call.tool, { ...call.args, force: true })
+      // clientExec 命令（tabs_group_move / tabs_group_by_domain / tabs_ungroup 等）
+      // 的真正执行在 side panel（executeClientExec 只处理顶层结果），塞进 batch 会
+      // 静默不执行——这里显式判失败，引导 AI 改为单独调用
+      if ((r as Record<string, unknown>).clientExec) {
+        results.push({
+          success: false,
+          code: 'CLIENT_EXEC_NOT_SUPPORTED_IN_BATCH',
+          message: swT('sw.batchClientExecUnsupported', { tool: call.tool }),
+          suggestion: swT('sw.batchClientExecSuggestion'),
+        })
+        failed++
+        continue
+      }
       results.push(r)
       if (r.success) {
         succeeded++
@@ -2130,7 +2724,9 @@ async function getCurrentTab(): Promise<{ tabId: number } | null> {
  *   1) 优先用 chrome.windows.getLastFocused() 拿最近聚焦的窗口（这是普通浏览器窗口，
  *      含标签页），跳过 type === 'panel'（sidepanel 窗口没有标签）。
  *   2) 如果没有最近聚焦窗口，回退到任意一个非 panel 窗口。
- *   3) 都拿不到则返回 chrome.windows.WINDOW_ID_NONE（-1），等价于"所有窗口"。
+ *   3) 都拿不到则返回 chrome.windows.WINDOW_ID_NONE（-1）。注意：-1 不是
+ *      "所有窗口"——tabs.query({windowId:-1}) 返回空列表，调用方需自行处理
+ *      （如 observeTabs 在 -1 时不设置 windowId 以查询全部窗口）。
  */
 async function getFallbackWindowId(): Promise<number> {
   try {

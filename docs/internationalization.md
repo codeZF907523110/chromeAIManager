@@ -63,6 +63,7 @@ manifest.json           # "name": "__MSG_extName__", "default_locale": "en"
 
 - **vue-i18n 词条（src/locales/*.json）**：全部用户可见文案的唯一来源。UI 组件、composables、SW 三处共用。
 - **`_locales/`**：只放 manifest 必须走 chrome.i18n 的 2~3 条字段（扩展名、描述、快捷键说明），内容极少且几乎不变，与 src/locales 的人为重复可忽略（`extName` / `extDesc` 两条）。
+- **商店描述文案（`extDescription`）**：按优先级三段式——「①浏览器管理（窗口/标签页/历史/书签/分组/截屏/录屏）→ ②网页操作（自动点击/填表）→ ③模型（Gemini Nano 离线 + 云端可选）」，四语言同步（2026-11-16 定稿，zh 为完整句式，en 用 Handles、de/es 用名词清单压缩篇幅）。受 Chrome Web Store **132 字符上限**约束，改文案时必须校验长度（当前 zh 75 / en 128 / de 125 / es 129）。
 
 ### 4.2 i18n 引导（src/locales/index.ts）
 

@@ -1,6 +1,6 @@
 # 网页主题控制方案（AI 设置当前页面的深色 / 浅色模式）
 
-> 状态：已实施 v2（2026-10-26，lint / type-check / build 三绿）
+> 状态：已实施 v2.4（2026-11-16，注入机制换为 executeScript + `<style id>`，见文末补丁）
 > 日期：2026-10-23（方案）/ 2026-10-26（实施，v1 失败后重构）
 > 前置说明：此前曾误将需求实现为「插件侧边栏自身 UI 主题」，经确认回滚（相关误做的
 > theme_update / theme_observe 占位命令与 set_theme 死分支已一并清理）。
@@ -207,6 +207,97 @@ intent，其它命令行为不变）。
    注入的 CSS，「恢复原样」天然已达成
 3. 删除 setPageTheme 中无人传参的 payload.tabId 死分支
 4. 过时注释修正（constants.ts 的 v1 content 架构描述、buildSlots 触发条件描述）
+
+### v2.3 修复：路由切换后 /light「没反应」（同文档重复注入）
+
+**现象（2026-11-16 用户真机复现）**：/dark 生效 → 用户操作页面导致路由跳转（新文档加载）
+→ /light 回复成功但**页面仍是暗的**（再敲一次 /light 才恢复）。
+
+**根因链（三条事实拼出来）**：
+
+1. 官方文档（developer.chrome.com/docs/extensions/reference/api/scripting）：
+   removeCSS 与 insertCSS 按 css/files/origin 严格配对，一次 removeCSS 只移除**一份**
+   匹配注入；移除不存在的样式是静默 no-op。社区实证（SO 79614743「需要点击多次才能
+   移除 CSS」）确认：同段 CSS 注入 N 份就要 remove N 次
+2. `appliedTabs: Set<tabId>` 防重标记在**异步间隙失效**：onUpdated `loading` 分支先删
+   标记，随后 `hydrateSites()`（storage I/O）与 `insertCSS`（IPC）都在途、尚未落定时，
+   `complete` 兜底事件进来，`appliedTabs.has()` 双双通过 → **同一文档注入两份 CSS**
+3. 手动 /dark 与自动暗化并发（同理）、SW 死亡重启后标记丢失 + 事件补发，都会产生重复注入
+
+于是复现路径成为必然：/dark 注入并记住域名 → 路由跳转 → loading 自动暗化注入中 →
+complete 兜底再注入一份 → /light 只移除一份 → 页面仍暗。
+
+**修复（保持 insertCSS 架构不变，消灭重复注入源头）**：
+
+| # | 文件 | 改动 |
+|---|---|---|
+| 1 | `page-theme.ts` | `appliedTabs` 由 `Set<tabId>` 改为 **`Map<tabId, Promise<void>>`（single-flight）**：同 tab 进行中的注入被后续 applyDarkCss 共享（返回同一 promise），同一文档至多一份；注入失败删标记让 complete 兜底可重试 |
+| 2 | `page-theme.ts` | `removeDarkCss` 先 await 在途注入落定（失败忽略）再 removeCSS——杜绝「removeCSS 先执行、在途注入后落定把页面盖回」的次序颠倒 |
+| 3 | `page-theme.ts` | `loading` 分支清标记改为「await 在途注入落定后删除」（`resetInjectionMark`）——跨文档在途注入落定前不放行新注入 |
+| 4 | `executor.ts` | `setPageTheme` light 分支重排：先 `rememberSite(domain, false)` 撤记忆再 `removeCSS`——两步之间进来的 onUpdated 事件看到记忆已撤，不会再自动暗化盖回（旧顺序 removeCSS → 读域名 → rememberSite，中间窗口期事件会用旧记忆重新注入） |
+
+业界参照：Dark Reader 类扩展用 content script 注入带 id 的 `<style>` 元素（存在性检查
+天然幂等）；本项目 v1 的 content script 架构已因「孤儿 CS」真机失败被否，v2 的
+insertCSS 架构下 single-flight Map 是最小且完备的防重方案。
+
+**边界（本次不动，如实记录）**：
+
+- /light 只作用于当前活动标签的当前域名（按域名记忆的设计语义）。/dark 了 A 站后跳到
+  未记忆的 B 站再敲 /light，页面本来就不是暗的、无视觉变化——这不是 bug，是「恢复
+  当前页原样」的定义；回到 A 站会自动暗化（记忆仍在），敲 /light 即恢复
+- insertCSS 以 tabId 为目标、由 Chrome 在执行时刻决定落点文档：若 /dark 的在途注入
+  恰好跨越文档边界（毫秒级窗口），落进新文档后 loading 分支放行的新注入可能与之形成
+  重复——窗口极小且需人手毫秒级操作，第一版接受；single-flight 已消灭全部常态竞态
+- rememberSite 水合失败（storage 异常）时跳过记忆写入：当前页立即恢复，但下次加载该站
+  仍会自动暗化（记忆残留），再敲一次 /light 即可——异常场景，v2.2 既定行为
+
+**验证**：type-check / eslint / prettier / build 全绿（i18n 无词条改动）。真机回归清单：
+
+1. 原始复现路径：/dark → 点击页面链接跳转（新路由）→ /light → 一次恢复原样（此前要点两次）
+2. SPA 路由（pushState 跳转）后 /light → 恢复原样
+3. /dark 后立即连敲 /light（移除与在途注入并发）→ 终态为原样
+4. /dark 后刷新页面 → 自动暗化保持；/light → 恢复且刷新后不再自动暗化（记忆已撤）
+5. chrome://version 上 /dark 报友好错误、/light 静默成功（v2.2 行为不变）
+6. 回归：截图、browser_snapshot 等 content 通道功能不受影响（本改动不触碰消息链路）
+
+### v2.4 重构（2026-11-16）：弃用 insertCSS/removeCSS 配对语义，换 `<style id>` 幂等方案
+
+**v2.3 修复后真机复测仍失败**：/dark → 同标签页路由跳转 → /light 确定性无反应。
+single-flight 只消灭了「我们自己并发注入」的重复，但根治不了 insertCSS/removeCSS
+**按字符串配对**这套有状态机制的固有缺陷——
+
+- 一次 removeCSS 只移除一份匹配注入；样式残留（Chromium 对注入样式的生命周期存在
+  同站导航/同进程渲染器残留怪癖）、历史重复注入、升级残留任一发生，页面就有
+  removeCSS 够不着的「影子副本」，/light 除不净
+- 配对还要求 css/files/origin 逐字段相等，任何漂移都会静默 no-op
+
+**业界参照**：Dark Reader / Stylus 类样式扩展注入**固定 id 的 `<style>` 元素**，
+按 id 幂等增删（存在检查 / remove），无任何配对语义。v1 的「孤儿 content script」
+问题在此不适用：`chrome.scripting.executeScript({ func })` 每次注入全新脚本执行，
+无常驻脚本可变孤儿，仍是 SW 自包含、零常驻 content script。
+
+### 改动
+
+| 文件 | 改动 |
+|---|---|
+| `page-theme.ts` | `applyDarkCss` 改 executeScript：document 里已有该 id 的 `<style>` 则跳过，否则创建（textContent = 暗化 CSS）挂到 documentElement；`removeDarkCss` 改 executeScript：按 id querySelectorAll 全量 remove，并保留一次配对 removeCSS 清 v2.x insertCSS 升级残留（无残留为 no-op） |
+| `page-theme.ts` | 删除 appliedTabs 防重 Map、resetInjectionMark、onRemoved 清理——DOM 侧 id 检查天然幂等，SW 侧不再需要任何防重状态（复杂度净下降） |
+| `page-theme.ts` | applyDarkCss 内 documentElement 未就绪时跳过，由既有 complete 兜底事件自愈 |
+| `env.d.ts` | executeScript 补 func/args 形态类型（原只有 files 形态） |
+| `executor.ts` | setPageTheme 逻辑零改动（apply/remove 签名不变）；注释更新 |
+
+自动暗化监听（onUpdated loading/complete）与站点记忆（darkSites + storage）不变；
+loading 与 complete 重复调用 applyDarkCss 由 DOM id 检查天然去重。
+
+### 验证
+
+type-check / eslint / prettier / build 全绿。真机回归（重点 1-3 为本次缺陷路径）：
+
+1. /dark → 同标签页路由跳转（普通点击跳转与 SPA pushState 都测）→ /light 一次恢复
+2. /dark → 路由跳转 → 再 /dark → /light 一次恢复（多份叠加场景）
+3. v2.x 旧构建上 /dark 过的页面升级新构建后 /light → 升级残留一并清除
+4. /dark 后刷新 → 自动暗化保持；/light → 恢复且刷新不再自动暗化
+5. chrome://version /dark 报友好错误、/light 静默成功；截图 / snapshot 等通道不受影响
 
 
 

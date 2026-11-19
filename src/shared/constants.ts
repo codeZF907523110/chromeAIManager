@@ -97,7 +97,8 @@ export type LegacyErrorCode = (typeof LEGACY_ERRORS)[keyof typeof LEGACY_ERRORS]
 // ──── 系统常量 ────
 
 export const MAX_ELEMENT_TEXT_LENGTH = 200
-export const MAX_AGENT_STEPS = 100
+/** agent loop 单轮最大步数（业界 browser-use 等常用 30-50；另有 TOTAL_TASK_TIMEOUT_MS 总超时双重上限） */
+export const MAX_AGENT_STEPS = 50
 export const STEP_TIMEOUT_MS = 10000
 /** 录屏启动步骤的专用超时：浏览器屏幕选择器需要用户手动选择（挑屏幕/窗口、是否含音频），
  * 通用步超时（STEP_TIMEOUT_MS）会把这段等待误判为 ACT_TIMEOUT，导致 AI 重试再撞 RECORDING_BUSY */
@@ -112,17 +113,25 @@ export const TOTAL_TASK_TIMEOUT_MS = 1000000
 export const MAX_CONSECUTIVE_FAILURES = 3
 /** 聊天记录默认容量上限（IndexedDB 写入时自动 trim） */
 export const DEFAULT_MAX_MESSAGES = 100
+/** 跨轮次对话历史回喂的最大消息条数（user/ai-chat 各算一条，docs/conversation-context-continuity.md） */
+export const HISTORY_MAX_MESSAGES = 20
+/** 跨轮次对话历史回喂的最大累计字符数（条数上限的兜底，防单条超长撑爆上下文） */
+export const HISTORY_MAX_CHARS = 20000
 
 // ──── 默认模型配置 ────
 
+/**
+ * 创建默认模型：Gemini Nano（Chrome 内置 AI，本地离线、无需 API Key）。
+ * 云端模型（DeepSeek 等）由用户在设置中手动添加。
+ */
 export function createDefaultModel(id: string, createdAt: number): AIModel {
   return {
     id,
-    name: 'DeepSeek V3',
-    provider: 'openai',
+    name: 'Gemini Nano',
+    provider: 'gemini-nano',
     apiKey: '',
-    apiEndpoint: 'https://api.deepseek.com',
-    modelName: 'deepseek-chat',
+    apiEndpoint: '',
+    modelName: '',
     isDefault: true,
     createdAt,
   }

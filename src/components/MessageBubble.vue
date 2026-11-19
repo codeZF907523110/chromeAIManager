@@ -26,7 +26,12 @@
       <div class="bubble-content">
         <template v-if="msg.type === 'system' && isLongContent">
           <div class="thinking-content" :class="{ expanded: isExpanded }" @click="toggleExpand">
-            <div ref="contentEl" class="thinking-text" v-html="renderedHtml"></div>
+            <div
+              ref="contentEl"
+              class="thinking-text"
+              v-html="renderedHtml"
+              @click="onMarkdownClick"
+            ></div>
           </div>
           <div class="expand-indicator" @click="toggleExpand">
             <ChevronDown v-if="!isExpanded" :size="12" />
@@ -34,7 +39,7 @@
             <span>{{ isExpanded ? t('bubble.collapse') : t('bubble.expand') }}</span>
           </div>
         </template>
-        <div v-else ref="contentEl" v-html="renderedHtml"></div>
+        <div v-else ref="contentEl" v-html="renderedHtml" @click="onMarkdownClick"></div>
         <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
         <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
         <div v-if="msg.recordingFile" class="recording-file-card">
@@ -85,7 +90,7 @@ import { ElIcon, ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument } from '@element-plus/icons-vue'
 import { ChevronDown, ChevronUp } from 'lucide-vue-next'
 import type { MessageLog } from '../types'
-import { renderMarkdown } from '../composables/useMarkdown'
+import { renderMarkdown, onMarkdownClick } from '../composables/useMarkdown'
 import { useAIEngine } from '../composables/useAIEngine'
 import { blockRegistry } from './blocks/registry'
 import { enhanceCodeBlocks } from './blocks/CodeBlockEnhancer'
