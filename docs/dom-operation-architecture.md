@@ -8,17 +8,18 @@
 
 ### 1.1 业界主流方案对比
 
-| 方案 | 访问模式 | Token 成本 | 可靠性 | 适合场景 | 复杂度 |
-|------|----------|------------|--------|----------|--------|
-| **Claude Computer Use** | 截图 + 视觉模型 | 高 ($0.50-$5/任务) | 78% | 全桌面控制 | 高 |
-| **OpenAI Operator** | 截图 + CUA | 高（托管服务） | 87% | 简单 Web 任务 | 低 |
-| **Stagehand** | Playwright + AI 选择器 | 中 | 89% | 生产级自动化 | 中 |
-| **Browser Use** | Playwright + 多模态 | 高 | 89.1% | 复杂多步工作流 | 高 |
-| **Playwright MCP** | Accessibility Tree + ref | 低 (~200-400 tokens/快照) | 92% | AI 驱动的浏览器操作 | 低 |
+| 方案                    | 访问模式                 | Token 成本                | 可靠性 | 适合场景            | 复杂度 |
+| ----------------------- | ------------------------ | ------------------------- | ------ | ------------------- | ------ |
+| **Claude Computer Use** | 截图 + 视觉模型          | 高 ($0.50-$5/任务)        | 78%    | 全桌面控制          | 高     |
+| **OpenAI Operator**     | 截图 + CUA               | 高（托管服务）            | 87%    | 简单 Web 任务       | 低     |
+| **Stagehand**           | Playwright + AI 选择器   | 中                        | 89%    | 生产级自动化        | 中     |
+| **Browser Use**         | Playwright + 多模态      | 高                        | 89.1%  | 复杂多步工作流      | 高     |
+| **Playwright MCP**      | Accessibility Tree + ref | 低 (~200-400 tokens/快照) | 92%    | AI 驱动的浏览器操作 | 低     |
 
 **选型结论：Playwright MCP 方案最优**
 
 理由：
+
 1. **Token 成本最低** - Accessibility Tree 比截图节省 90%+ tokens
 2. **可靠性最高** - 92% 常见任务成功率（DOM 驱动方案普遍优于视觉方案）
 3. **与 Chrome Extension 架构天然匹配** - 使用 Content Script 替代 Playwright，通过 Extension API 实现相同能力
@@ -52,22 +53,24 @@
 
 ### 2.2 关键设计原则
 
-| 原则 | 说明 |
-|------|------|
-| **确定性引用** | 每个交互元素有唯一 `[ref=eN]` 标识符，AI 用 ref 定位而非自然语言描述 |
-| **Accessibility Tree 优先** | 使用 Chrome Accessibility Tree 而非原始 DOM，天然过滤非交互元素 |
-| **原子操作** | 每次只执行一个操作，避免复杂序列的不可预测性 |
-| **Context 缓存** | 快照结果缓存，页面变化时才重新扫描 |
-| **Ref 失效检测** | 操作失败时自动检测 ref 是否失效，必要时重新扫描 |
-| **Iframe 穿透** | 递归扫描所有 iframe 内的可交互元素 |
+| 原则                        | 说明                                                                 |
+| --------------------------- | -------------------------------------------------------------------- |
+| **确定性引用**              | 每个交互元素有唯一 `[ref=eN]` 标识符，AI 用 ref 定位而非自然语言描述 |
+| **Accessibility Tree 优先** | 使用 Chrome Accessibility Tree 而非原始 DOM，天然过滤非交互元素      |
+| **原子操作**                | 每次只执行一个操作，避免复杂序列的不可预测性                         |
+| **Context 缓存**            | 快照结果缓存，页面变化时才重新扫描                                   |
+| **Ref 失效检测**            | 操作失败时自动检测 ref 是否失效，必要时重新扫描                      |
+| **Iframe 穿透**             | 递归扫描所有 iframe 内的可交互元素                                   |
 
 ### 2.3 与现有系统关系
 
 当前项目存在两套命令体系：
+
 - **旧体系**：`tabs_observe`, `bookmarks_observe_tree`, `navigate` 等（保留，用于浏览器管理）
 - **新体系**：`browser_snapshot`, `browser_click`, `browser_type` 等（新增，用于页面操作）
 
 **迁移策略**：
+
 - 旧体系继续服务于标签页、书签、历史等浏览器层面的操作
 - 新体系专注于页面内容层面的 DOM 操作
 - 两者通过统一的 executeCommand switch 暴露给 AI
@@ -79,45 +82,50 @@
 ### 3.1 工具分类
 
 #### 导航类 (Navigation)
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
-| `browser_navigate` | `{ url: string }` | 导航到指定 URL |
-| `browser_navigate_back` | `{}` | 后退 |
-| `browser_navigate_forward` | `{}` | 前进 |
-| `browser_reload` | `{}` | 刷新页面 |
+
+| 工具名                     | 参数              | 说明           |
+| -------------------------- | ----------------- | -------------- |
+| `browser_navigate`         | `{ url: string }` | 导航到指定 URL |
+| `browser_navigate_back`    | `{}`              | 后退           |
+| `browser_navigate_forward` | `{}`              | 前进           |
+| `browser_reload`           | `{}`              | 刷新页面       |
 
 #### 观察类 (Observation)
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
-| `browser_snapshot` | `{ maxElements?: number, includeIframes?: boolean }` | 获取 Accessibility Tree 快照 |
-| `browser_take_screenshot` | `{ path?: string, fullPage?: boolean }` | 截图（可选） |
-| `browser_console_messages` | `{ limit?: number }` | 获取控制台日志 |
-| `browser_network_requests` | `{}` | 获取网络请求 |
+
+| 工具名                     | 参数                                                 | 说明                         |
+| -------------------------- | ---------------------------------------------------- | ---------------------------- |
+| `browser_snapshot`         | `{ maxElements?: number, includeIframes?: boolean }` | 获取 Accessibility Tree 快照 |
+| `browser_take_screenshot`  | `{ path?: string, fullPage?: boolean }`              | 截图（可选）                 |
+| `browser_console_messages` | `{ limit?: number }`                                 | 获取控制台日志               |
+| `browser_network_requests` | `{}`                                                 | 获取网络请求                 |
 
 #### 交互类 (Interaction)
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
-| `browser_click` | `{ ref: string }` | 点击元素 |
-| `browser_type` | `{ ref: string, text: string, submit?: boolean }` | 输入文本 |
-| `browser_select_option` | `{ ref: string, value: string }` | 选择下拉选项 |
-| `browser_hover` | `{ ref: string }` | 悬停元素 |
-| `browser_drag` | `{ from: string, to: string }` | 拖拽元素 |
-| `browser_press_key` | `{ key: string }` | 按键 |
-| `browser_check` / `browser_uncheck` | `{ ref: string }` | 勾选/取消勾选 |
-| `browser_fill_form` | `{ fields: Array<{ ref, value }> }` | 批量填写表单 |
+
+| 工具名                              | 参数                                              | 说明          |
+| ----------------------------------- | ------------------------------------------------- | ------------- |
+| `browser_click`                     | `{ ref: string }`                                 | 点击元素      |
+| `browser_type`                      | `{ ref: string, text: string, submit?: boolean }` | 输入文本      |
+| `browser_select_option`             | `{ ref: string, value: string }`                  | 选择下拉选项  |
+| `browser_hover`                     | `{ ref: string }`                                 | 悬停元素      |
+| `browser_drag`                      | `{ from: string, to: string }`                    | 拖拽元素      |
+| `browser_press_key`                 | `{ key: string }`                                 | 按键          |
+| `browser_check` / `browser_uncheck` | `{ ref: string }`                                 | 勾选/取消勾选 |
+| `browser_fill_form`                 | `{ fields: Array<{ ref, value }> }`               | 批量填写表单  |
 
 #### 等待类 (Waiting)
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
+
+| 工具名             | 参数                                                | 说明         |
+| ------------------ | --------------------------------------------------- | ------------ |
 | `browser_wait_for` | `{ text?: string, ref?: string, timeout?: number }` | 等待条件满足 |
 
 #### 标签页类 (Tabs) - 复用旧体系
-| 工具名 | 参数 | 说明 |
-|--------|------|------|
-| `browser_tab_list` | `{}` | 列出所有标签页 → 映射到 `tabs_observe` |
-| `browser_tab_new` | `{ url?: string }` | 新建标签页 → 映射到 `tabs_create` |
-| `browser_tab_select` | `{ index: number }` | 切换标签页 → 映射到 `tabs_update` |
-| `browser_tab_close` | `{ index?: number }` | 关闭标签页 → 映射到 `tabs_remove` |
+
+| 工具名               | 参数                 | 说明                                   |
+| -------------------- | -------------------- | -------------------------------------- |
+| `browser_tab_list`   | `{}`                 | 列出所有标签页 → 映射到 `tabs_observe` |
+| `browser_tab_new`    | `{ url?: string }`   | 新建标签页 → 映射到 `tabs_create`      |
+| `browser_tab_select` | `{ index: number }`  | 切换标签页 → 映射到 `tabs_update`      |
+| `browser_tab_close`  | `{ index?: number }` | 关闭标签页 → 映射到 `tabs_remove`      |
 
 ### 3.2 工具白名单机制
 
@@ -155,7 +163,10 @@ const TOOL_WHITELIST = new Set([
   'browser_tab_close',
 ])
 
-async function executeCommand(intent: string, payload: Record<string, unknown>): Promise<ExecutionResult> {
+async function executeCommand(
+  intent: string,
+  payload: Record<string, unknown>
+): Promise<ExecutionResult> {
   // 新体系工具白名单检查
   if (intent.startsWith('browser_')) {
     if (!TOOL_WHITELIST.has(intent)) {
@@ -171,7 +182,8 @@ async function executeCommand(intent: string, payload: Record<string, unknown>):
 
   // 旧体系保持兼容
   switch (intent) {
-    case 'tabs_observe': return await observeTabs(payload)
+    case 'tabs_observe':
+      return await observeTabs(payload)
     // ... 其他旧命令
   }
 }
@@ -217,7 +229,7 @@ Playwright MCP 的 `browser_snapshot` 返回 YAML-like 结构：
 - button "Sign in" [ref=e6]
 - link "Forgot password?" [ref=e7]
 - listitem:
-  - checkbox "Remember me" [ref=e8]
+    - checkbox "Remember me" [ref=e8]
 ```
 
 ### 4.2 数据结构定义
@@ -227,30 +239,30 @@ Playwright MCP 的 `browser_snapshot` 返回 YAML-like 结构：
 
 export interface AccessibilityNode {
   // 基础属性
-  role: string           // button, textbox, link, heading, listitem 等
-  name: string           // 可访问名称（aria-label 或文本内容）
-  ref: string            // 唯一引用 [ref=e0]
-  level?: number         // heading 级别
-  checked?: boolean      // checkbox/radio 状态
-  disabled?: boolean     // 是否禁用
-  required?: boolean     // 是否必填
-  selected?: boolean     // option 是否选中
-  expanded?: boolean     // 是否展开
-  value?: string         // 当前值
+  role: string // button, textbox, link, heading, listitem 等
+  name: string // 可访问名称（aria-label 或文本内容）
+  ref: string // 唯一引用 [ref=e0]
+  level?: number // heading 级别
+  checked?: boolean // checkbox/radio 状态
+  disabled?: boolean // 是否禁用
+  required?: boolean // 是否必填
+  selected?: boolean // option 是否选中
+  expanded?: boolean // 是否展开
+  value?: string // 当前值
   children?: AccessibilityNode[]
 
   // 位置信息（用于调试和错误恢复）
-  tagName?: string       // 原始 HTML 标签名
-  xpath?: string         // 唯一 XPath（用于 ref 失效时的备用定位）
+  tagName?: string // 原始 HTML 标签名
+  xpath?: string // 唯一 XPath（用于 ref 失效时的备用定位）
   rect?: {
     x: number
     y: number
     width: number
     height: number
-  }                      // 元素位置（用于截图参考）
+  } // 元素位置（用于截图参考）
 
   // iframe 信息
-  iframeSrc?: string     // 所在 iframe 的 src
+  iframeSrc?: string // 所在 iframe 的 src
 }
 
 export interface PageSnapshot {
@@ -613,7 +625,7 @@ export function findElementByRef(ref: string): HTMLElement | null {
   const cleanRef = ref.replace('[ref=', '').replace(']', '')
 
   // 通过 snapshotCache 找到对应的节点，再用 XPath 查找
-  const node = snapshotCache?.nodes.find(n => n.ref === `[ref=${cleanRef}]`)
+  const node = snapshotCache?.nodes.find((n) => n.ref === `[ref=${cleanRef}]`)
   if (!node?.xpath) return null
 
   try {
@@ -739,23 +751,23 @@ async function executeBrowserTool(
 
 ### 6.2 Action 类型
 
-| Action | 说明 | 参数 |
-|--------|------|------|
-| `browser_navigate` | 导航 | `{ url: string }` |
-| `browser_snapshot` | 扫描页面 | `{ maxElements?: number, includeIframes?: boolean }` |
-| `browser_click` | 点击 | `{ ref: string }` |
-| `browser_type` | 输入 | `{ ref: string, text: string, submit?: boolean }` |
-| `browser_select_option` | 选择 | `{ ref: string, value: string }` |
-| `browser_hover` | 悬停 | `{ ref: string }` |
-| `browser_press_key` | 按键 | `{ key: string }` |
-| `browser_check` | 勾选 | `{ ref: string }` |
-| `browser_uncheck` | 取消勾选 | `{ ref: string }` |
-| `browser_fill_form` | 填表单 | `{ fields: Array<{ ref, value }> }` |
-| `browser_wait_for` | 等待 | `{ text?: string, ref?: string, timeout?: number }` |
-| `browser_take_screenshot` | 截图 | `{ path?: string }` |
-| `done` | 完成 | - |
-| `ask` | 询问用户 | `{ question: string }` |
-| `chat` | 纯对话 | `{ message: string }` |
+| Action                    | 说明     | 参数                                                 |
+| ------------------------- | -------- | ---------------------------------------------------- |
+| `browser_navigate`        | 导航     | `{ url: string }`                                    |
+| `browser_snapshot`        | 扫描页面 | `{ maxElements?: number, includeIframes?: boolean }` |
+| `browser_click`           | 点击     | `{ ref: string }`                                    |
+| `browser_type`            | 输入     | `{ ref: string, text: string, submit?: boolean }`    |
+| `browser_select_option`   | 选择     | `{ ref: string, value: string }`                     |
+| `browser_hover`           | 悬停     | `{ ref: string }`                                    |
+| `browser_press_key`       | 按键     | `{ key: string }`                                    |
+| `browser_check`           | 勾选     | `{ ref: string }`                                    |
+| `browser_uncheck`         | 取消勾选 | `{ ref: string }`                                    |
+| `browser_fill_form`       | 填表单   | `{ fields: Array<{ ref, value }> }`                  |
+| `browser_wait_for`        | 等待     | `{ text?: string, ref?: string, timeout?: number }`  |
+| `browser_take_screenshot` | 截图     | `{ path?: string }`                                  |
+| `done`                    | 完成     | -                                                    |
+| `ask`                     | 询问用户 | `{ question: string }`                               |
+| `chat`                    | 纯对话   | `{ message: string }`                                |
 
 ---
 
@@ -851,10 +863,7 @@ export class ContextCache {
     return `${tabId}:${url}`
   }
 
-  async getOrFetch(
-    tabId: number,
-    forceRefresh = false
-  ): Promise<CachedSnapshot | null> {
+  async getOrFetch(tabId: number, forceRefresh = false): Promise<CachedSnapshot | null> {
     const url = await this.getCurrentUrl(tabId)
     const key = this.getCacheKey(tabId, url)
 
@@ -949,15 +958,15 @@ export enum DOMErrorType {
 
 ### 9.2 自愈策略
 
-| 错误类型 | 自愈策略 |
-|----------|----------|
-| `ELEMENT_NOT_FOUND` | 重新扫描页面，获取新的 ref |
-| `REF_INVALID` | 重新扫描页面 |
-| `PAGE_NAVIGATED` | 等待页面加载完成，重新扫描 |
-| `CONTENT_SCRIPT_UNRESPONSIVE` | 等待重试（最多 3 次） |
-| `TIMEOUT` | 延长等待时间后重试 |
-| `ELEMENT_NOT_VISIBLE` | 尝试滚动到元素位置后重试 |
-| `UNKNOWN_TOOL` | 返回可用工具列表给 AI |
+| 错误类型                      | 自愈策略                   |
+| ----------------------------- | -------------------------- |
+| `ELEMENT_NOT_FOUND`           | 重新扫描页面，获取新的 ref |
+| `REF_INVALID`                 | 重新扫描页面               |
+| `PAGE_NAVIGATED`              | 等待页面加载完成，重新扫描 |
+| `CONTENT_SCRIPT_UNRESPONSIVE` | 等待重试（最多 3 次）      |
+| `TIMEOUT`                     | 延长等待时间后重试         |
+| `ELEMENT_NOT_VISIBLE`         | 尝试滚动到元素位置后重试   |
+| `UNKNOWN_TOOL`                | 返回可用工具列表给 AI      |
 
 ---
 
@@ -1017,6 +1026,7 @@ export enum DOMErrorType {
 ### 10.2 上下文注入
 
 每次 LLM 调用时，注入以下内容：
+
 - 当前任务目标
 - 历史操作记录（最近 5 步）
 - 当前页面快照（Accessibility Tree）
@@ -1062,7 +1072,7 @@ src/
 ```json
 {
   "manifest_version": 3,
-  "name": "AI Browser Commander",
+  "name": "StarCat - AI Browser Assistant",
   "version": "0.2.0",
   "content_scripts": [
     {
@@ -1117,7 +1127,7 @@ export default defineConfig({
         // Service Worker 入口
         'service-worker': resolve(__dirname, 'src/service-worker/index.ts'),
         // Content Script 入口（新增）
-        'content': resolve(__dirname, 'src/content/index.ts'),
+        content: resolve(__dirname, 'src/content/index.ts'),
       },
     },
   },
@@ -1166,107 +1176,105 @@ function init(): void {
 }
 
 function setupMessageListener(): void {
-  chrome.runtime.onMessage.addListener(
-    (message: ContentScriptMessage, _sender, sendResponse) => {
-      if (!enabled) {
+  chrome.runtime.onMessage.addListener((message: ContentScriptMessage, _sender, sendResponse) => {
+    if (!enabled) {
+      sendResponse({
+        success: false,
+        error: 'DOM感知未启用',
+        timestamp: Date.now(),
+      } as ContentScriptResponse)
+      return false
+    }
+
+    switch (message.type) {
+      case 'SNAPSHOT':
+        snapshotCache = captureAccessibilityTree({ includeIframes: true })
+        console.log(
+          '[DOM感知] SNAPSHOT 响应, 元素数量=',
+          snapshotCache.nodes.length,
+          'URL=',
+          snapshotCache.url
+        )
+        sendResponse({
+          success: true,
+          data: snapshotCache,
+          timestamp: message.timestamp,
+        } as ContentScriptResponse)
+        return false
+
+      case 'CLICK':
+        sendResponse(executeClick(message.ref))
+        return false
+
+      case 'TYPE':
+        sendResponse(executeType(message.ref, message.text, message.submit))
+        return false
+
+      case 'SELECT':
+        sendResponse(executeSelect(message.ref, message.value))
+        return false
+
+      case 'HOVER':
+        sendResponse(executeHover(message.ref))
+        return false
+
+      case 'PRESS_KEY':
+        sendResponse(executeKeyPress(message.key))
+        return false
+
+      case 'CHECK':
+        sendResponse(executeCheck(message.ref, true))
+        return false
+
+      case 'UNCHECK':
+        sendResponse(executeCheck(message.ref, false))
+        return false
+
+      case 'FILL_FORM':
+        sendResponse(executeFillForm(message.fields))
+        return false
+
+      case 'WAIT_FOR':
+        sendResponse(executeWaitFor(message.text, message.ref, message.timeout))
+        return false
+
+      case 'NAVIGATE':
+        window.location.href = message.url
+        sendResponse({ success: true, timestamp: message.timestamp })
+        return false
+
+      case 'NAVIGATE_BACK':
+        window.history.back()
+        sendResponse({ success: true, timestamp: message.timestamp })
+        return false
+
+      case 'NAVIGATE_FORWARD':
+        window.history.forward()
+        sendResponse({ success: true, timestamp: message.timestamp })
+        return false
+
+      case 'RELOAD':
+        window.location.reload()
+        sendResponse({ success: true, timestamp: message.timestamp })
+        return false
+
+      case 'SCREENSHOT':
+        sendResponse({
+          success: true,
+          data: 'screenshot_not_implemented_yet',
+          timestamp: message.timestamp,
+        })
+        return false
+
+      default:
         sendResponse({
           success: false,
-          error: 'DOM感知未启用',
+          error: 'UNKNOWN_MESSAGE_TYPE',
           timestamp: Date.now(),
         } as ContentScriptResponse)
         return false
-      }
-
-      switch (message.type) {
-        case 'SNAPSHOT':
-          snapshotCache = captureAccessibilityTree({ includeIframes: true })
-          console.log(
-            '[DOM感知] SNAPSHOT 响应, 元素数量=',
-            snapshotCache.nodes.length,
-            'URL=',
-            snapshotCache.url
-          )
-          sendResponse({
-            success: true,
-            data: snapshotCache,
-            timestamp: message.timestamp,
-          } as ContentScriptResponse)
-          return false
-
-        case 'CLICK':
-          sendResponse(executeClick(message.ref))
-          return false
-
-        case 'TYPE':
-          sendResponse(executeType(message.ref, message.text, message.submit))
-          return false
-
-        case 'SELECT':
-          sendResponse(executeSelect(message.ref, message.value))
-          return false
-
-        case 'HOVER':
-          sendResponse(executeHover(message.ref))
-          return false
-
-        case 'PRESS_KEY':
-          sendResponse(executeKeyPress(message.key))
-          return false
-
-        case 'CHECK':
-          sendResponse(executeCheck(message.ref, true))
-          return false
-
-        case 'UNCHECK':
-          sendResponse(executeCheck(message.ref, false))
-          return false
-
-        case 'FILL_FORM':
-          sendResponse(executeFillForm(message.fields))
-          return false
-
-        case 'WAIT_FOR':
-          sendResponse(executeWaitFor(message.text, message.ref, message.timeout))
-          return false
-
-        case 'NAVIGATE':
-          window.location.href = message.url
-          sendResponse({ success: true, timestamp: message.timestamp })
-          return false
-
-        case 'NAVIGATE_BACK':
-          window.history.back()
-          sendResponse({ success: true, timestamp: message.timestamp })
-          return false
-
-        case 'NAVIGATE_FORWARD':
-          window.history.forward()
-          sendResponse({ success: true, timestamp: message.timestamp })
-          return false
-
-        case 'RELOAD':
-          window.location.reload()
-          sendResponse({ success: true, timestamp: message.timestamp })
-          return false
-
-        case 'SCREENSHOT':
-          sendResponse({
-            success: true,
-            data: 'screenshot_not_implemented_yet',
-            timestamp: message.timestamp,
-          })
-          return false
-
-        default:
-          sendResponse({
-            success: false,
-            error: 'UNKNOWN_MESSAGE_TYPE',
-            timestamp: Date.now(),
-          } as ContentScriptResponse)
-          return false
-      }
     }
-  )
+  })
 }
 
 function executeClick(ref: string): ContentScriptResponse {
@@ -1363,11 +1371,7 @@ function executeFillForm(fields: Array<{ ref: string; value: string }>): Content
   return { success: true, timestamp: Date.now() }
 }
 
-function executeWaitFor(
-  text?: string,
-  ref?: string,
-  timeout?: number
-): ContentScriptResponse {
+function executeWaitFor(text?: string, ref?: string, timeout?: number): ContentScriptResponse {
   const ms = timeout || 5000
   return { success: true, timestamp: Date.now() }
 }
@@ -1427,17 +1431,17 @@ case 'browser_tab_close':
 
 ### 14.1 快照压缩
 
-| 策略 | 说明 | 效果 |
-|------|------|------|
-| 剔除未渲染元素 | `display:none` / `aria-hidden` 子树剪枝，0×0 元素不入快照（详见问题 12） | 对标 Chrome a11y tree，消除 hover 按钮/隐藏弹层噪声 |
-| 只保留交互元素 | 非交互元素不入快照 | 减少 60-80% |
-| 文本截断 | 单元素文本超过 200 字符截断 | 减少 20-30% |
-| 全局 role 预算 | 非表单 role 在 AI 视图最多 20 个，超出按 role 汇总为"已省略 N 个"标记；表单类 role 豁免（详见问题 11/12） | 侧边栏/长列表降噪，对交替序列同样生效 |
-| 传输瘦身 | `toAISnapshot()` 剥掉 xpath/rect/tagName，AI 视图只留决策字段（xpath 留在 content script 本地缓存供 ref 定位） | 单节点 token 减少约 70% |
-| 回灌格式 | AI 视图剔除 nodes 数组，只回灌 Playwright 式逐行文本 `nodesText`（对标 4.1 设计）；通用字符串 500 截断对快照放宽到 8000（详见问题 13） | 单快照 token 降约 60%，模型逐行可读 |
-| 回灌截断 | AI 视图总量上限 120 在 `toAISnapshot` 收口；`sanitizeResult` 对快照 nodes 同步放宽到 120，其余大数组 30 条 | 兼顾视野完整性与上下文窗口 |
-| 深度限制 | 递归深度不超过 24 层（覆盖现代 SPA 包装层） | 防止过深树 |
-| iframe 限制 | 最多扫描 3 个 iframe | 防止性能问题 |
+| 策略           | 说明                                                                                                                                   | 效果                                                |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| 剔除未渲染元素 | `display:none` / `aria-hidden` 子树剪枝，0×0 元素不入快照（详见问题 12）                                                               | 对标 Chrome a11y tree，消除 hover 按钮/隐藏弹层噪声 |
+| 只保留交互元素 | 非交互元素不入快照                                                                                                                     | 减少 60-80%                                         |
+| 文本截断       | 单元素文本超过 200 字符截断                                                                                                            | 减少 20-30%                                         |
+| 全局 role 预算 | 非表单 role 在 AI 视图最多 20 个，超出按 role 汇总为"已省略 N 个"标记；表单类 role 豁免（详见问题 11/12）                              | 侧边栏/长列表降噪，对交替序列同样生效               |
+| 传输瘦身       | `toAISnapshot()` 剥掉 xpath/rect/tagName，AI 视图只留决策字段（xpath 留在 content script 本地缓存供 ref 定位）                         | 单节点 token 减少约 70%                             |
+| 回灌格式       | AI 视图剔除 nodes 数组，只回灌 Playwright 式逐行文本 `nodesText`（对标 4.1 设计）；通用字符串 500 截断对快照放宽到 8000（详见问题 13） | 单快照 token 降约 60%，模型逐行可读                 |
+| 回灌截断       | AI 视图总量上限 120 在 `toAISnapshot` 收口；`sanitizeResult` 对快照 nodes 同步放宽到 120，其余大数组 30 条                             | 兼顾视野完整性与上下文窗口                          |
+| 深度限制       | 递归深度不超过 24 层（覆盖现代 SPA 包装层）                                                                                            | 防止过深树                                          |
+| iframe 限制    | 最多扫描 3 个 iframe                                                                                                                   | 防止性能问题                                        |
 
 ### 14.2 增量更新
 
@@ -1446,14 +1450,14 @@ function computeDelta(
   oldNodes: AccessibilityNode[],
   newNodes: AccessibilityNode[]
 ): { added: AccessibilityNode[]; removed: AccessibilityNode[]; changed: AccessibilityNode[] } {
-  const oldRefs = new Set(oldNodes.map(n => n.ref))
-  const newRefs = new Set(newNodes.map(n => n.ref))
+  const oldRefs = new Set(oldNodes.map((n) => n.ref))
+  const newRefs = new Set(newNodes.map((n) => n.ref))
 
   return {
-    added: newNodes.filter(n => !oldRefs.has(n.ref)),
-    removed: oldNodes.filter(n => !newRefs.has(n.ref)),
-    changed: oldNodes.filter(old => {
-      const newOne = newNodes.find(n => n.ref === old.ref)
+    added: newNodes.filter((n) => !oldRefs.has(n.ref)),
+    removed: oldNodes.filter((n) => !newRefs.has(n.ref)),
+    changed: oldNodes.filter((old) => {
+      const newOne = newNodes.find((n) => n.ref === old.ref)
       return newOne && (old.name !== newOne.name || old.value !== newOne.value)
     }),
   }
@@ -1493,9 +1497,7 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
   return Object.fromEntries(
     Object.entries(data).map(([key, value]) => [
       key,
-      SENSITIVE_FIELDS.some(f => key.toLowerCase().includes(f))
-        ? '***MASKED***'
-        : value,
+      SENSITIVE_FIELDS.some((f) => key.toLowerCase().includes(f)) ? '***MASKED***' : value,
     ])
   )
 }
@@ -1506,6 +1508,7 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 ## 16. 实施计划
 
 ### Phase 1: 核心基础设施（优先级最高）
+
 - [ ] 创建 `src/content/dom-perception.ts`（包含完整的 Accessibility Tree 采集逻辑）
 - [ ] 创建 `src/content/messages.ts`
 - [ ] 创建 `src/content/index.ts`
@@ -1514,6 +1517,7 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 - [ ] 测试小红书页面扫描（验证 tree 长度 > 0）
 
 ### Phase 2: Service Worker 集成
+
 - [ ] 修改 `executor.ts` 添加 `browser_*` 命令处理
 - [ ] 创建 `src/service-worker/context-cache.ts`
 - [ ] 创建 `src/types/dom.ts`
@@ -1521,12 +1525,14 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 - [ ] 测试 `browser_snapshot` 和 `browser_click` 端到端流程
 
 ### Phase 3: Agent 循环适配
+
 - [ ] 修改 `prompts.ts` 使用新的工具名和输出格式
 - [ ] 修改 `useAIEngine.ts` 适配新的 toolCall 结构
 - [ ] 统一 AI 输出格式为 `{ thought, action, args, predict, step }`
 - [ ] 端到端测试小红书登录流程
 
 ### Phase 4: 优化与完善
+
 - [ ] 实现截图功能
 - [ ] 实现控制台消息和网络请求获取
 - [ ] 性能优化和 Token 压缩
@@ -1537,23 +1543,29 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 ## 17. 已知问题与解决方案
 
 ### 问题 1：当前 AI 输出 `browser_type` 但 executor 不识别
+
 **根因**：executor.ts 的 switch 语句没有 `browser_*` case
 **解决**：在 executor.ts 中添加所有 `browser_*` 命令的 case
 
 ### 问题 2：Content Script 不存在
+
 **根因**：`src/content/` 目录未创建，manifest.json 未配置 content_scripts
 **解决**：按 Phase 1 计划创建所有文件并更新配置
 
 ### 问题 3：DOM 遍历提前终止
+
 **根因**：原代码在非交互元素处 `return`，导致整个子树被跳过
 **解决**：已在 dom-perception.ts 中修复，子元素遍历在交互判断之前
 
 ### 问题 4：Ref 查找使用不存在的 `data-ref` 属性
+
 **根因**：dom-perception.ts 没往 DOM 写 `data-ref`，但查找逻辑用了它
 **解决**：改用 XPath 查找，通过 `node.xpath` 定位元素
 
 ### 问题 5：AI 输出格式与代码解析逻辑不匹配（关键）
+
 **根因**：
+
 - 当前 `useAIEngine.ts:554-565` 期望 AI 输出 `{ action: 'exec_tool', toolCall: { name, args } }`
 - 当前 `types/ai.ts:30` 定义的 action 类型是 `'exec_tool' | 'execute' | 'done' | ...`
 - 文档新提示词要求 AI 输出 `{ action: 'browser_click', args: { ref } }`
@@ -1562,6 +1574,7 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 **最终决策：采用方案 B（扁平格式，符合 MCP 标准）**
 
 选择理由：
+
 1. **标准化** - 与 Playwright MCP、Claude Computer Use 等业界标准一致
 2. **代码更简洁** - AI 直接说"我要做什么"，不需要理解包装结构
 3. **长期维护成本更低** - 未来集成其他 MCP 工具无需适配层
@@ -1570,46 +1583,71 @@ function maskSensitiveData(data: Record<string, unknown>): Record<string, unknow
 **完整改动清单**：
 
 #### 1. `types/ai.ts` - 修改 AIResponse 类型
+
 ```typescript
 export interface AIResponse {
   thought?: string
   action:
-    | 'browser_snapshot' | 'browser_click' | 'browser_type' | 'browser_select_option'
-    | 'browser_hover' | 'browser_press_key' | 'browser_check' | 'browser_uncheck'
-    | 'browser_fill_form' | 'browser_wait_for' | 'browser_take_screenshot'
-    | 'browser_navigate' | 'browser_navigate_back' | 'browser_navigate_forward'
-    | 'browser_reload' | 'browser_tab_list' | 'browser_tab_new' | 'browser_tab_select'
+    | 'browser_snapshot'
+    | 'browser_click'
+    | 'browser_type'
+    | 'browser_select_option'
+    | 'browser_hover'
+    | 'browser_press_key'
+    | 'browser_check'
+    | 'browser_uncheck'
+    | 'browser_fill_form'
+    | 'browser_wait_for'
+    | 'browser_take_screenshot'
+    | 'browser_navigate'
+    | 'browser_navigate_back'
+    | 'browser_navigate_forward'
+    | 'browser_reload'
+    | 'browser_tab_list'
+    | 'browser_tab_new'
+    | 'browser_tab_select'
     | 'browser_tab_close'
-    | 'done' | 'ask' | 'scan' | 'chat' | 'exec_plan' | 'askUserResponse'
-  args?: Record<string, unknown>   // 新增：扁平化参数
+    | 'done'
+    | 'ask'
+    | 'scan'
+    | 'chat'
+    | 'exec_plan'
+    | 'askUserResponse'
+  args?: Record<string, unknown> // 新增：扁平化参数
   plan?: string
   predict?: string
   reply?: string
   content?: string
-  step?: number                    // 新增：步骤序号
+  step?: number // 新增：步骤序号
   // ... exec_plan 相关字段保持不变
 }
 ```
 
 #### 2. `prompts.ts` - 更新输出格式说明
+
 将输出格式从：
+
 ```json
 { "action": "exec_tool", "toolCall": { "name": "...", "args": {...} } }
 ```
+
 改为：
+
 ```json
 { "action": "browser_click", "args": { "ref": "e6" }, "predict": "..." }
 ```
 
 #### 3. `useAIEngine.ts` - 适配扁平格式解析（核心改动）
+
 关键替换逻辑（约 15 行）：
+
 ```typescript
 // 原代码（line 564-565）
 const toolCall = json.toolCall
 const toolName = toolCall.name
 
 // 新代码
-const toolName = json.action  // action 本身就是工具名
+const toolName = json.action // action 本身就是工具名
 const toolArgs = json.args || {}
 
 // 执行
@@ -1625,14 +1663,17 @@ if (toolName === 'chat') {
 **注意**：`exec_plan`、`scan` 等非 browser 命令的解析逻辑也需要保留兼容。
 
 ### 问题 6：`executeCommand` 函数不存在于 Service Worker
+
 **根因**：`useAIEngine.ts:825` 定义了本地 `executeCommand` 函数，通过 `chrome.runtime.sendMessage` 调用 Service Worker
 **解决**：确认 `service-worker/index.ts:45` 已经正确接收并分发消息，无需额外修改
 
 ### 问题 7：vite.config.ts 缺少 Content Script 构建入口
+
 **根因**：`vite.config.ts:119-124` 只有 `sidepanel` 和 `service-worker` 两个入口
 **解决**：按文档第 12.2 节添加 `content` 入口
 
 ### 问题 8：Manifest 缺少 Content Script 配置
+
 **根因**：`manifest.json` 没有 `content_scripts` 字段
 **解决**：按文档第 12.1 节添加 content_scripts 配置
 
@@ -1662,16 +1703,17 @@ if (toolName === 'chat') {
 
 **修复方案**：
 
-| # | 位置 | 改动 |
-|---|------|------|
-| 1 | `content/index.ts` `executeType` | 按元素类型取原生 prototype：textarea 用 `HTMLTextAreaElement.prototype` 的 value setter，input 维持原样；contenteditable 分支不变 |
-| 2 | `dom-perception.ts` | `MAX_DEPTH` 10 → 24（覆盖现代 SPA 包装层深度） |
-| 3 | `dom-perception.ts` `traverseNode` | 改为前序：交互元素**先 push 再递归子节点**，节点顺序 = 文档序，ref 编号自上而下 |
-| 4 | `dom-perception.ts` | heading 节点补 `level`（h1-h6）；textarea 同样回填 `value`（让 AI 看到已有草稿） |
-| 5 | `dom-perception.ts` | 新增 `toAISnapshot()`：回传给 sidepanel 的快照瘦身——剥掉 `xpath`/`rect`/`tagName`（AI 按 ref 操作，xpath 仅 content script 内部 `findElementByRef` 用 `snapshotCache` 全量副本，通道里不需要）；删除无任何调用的死代码 `serializeSnapshot` |
-| 6 | `useAIEngine.ts` `sanitizeResult` | `browser_snapshot` 的数组截断上限放宽为 120（节点已瘦身、单条约 10-15 token），其余大数组（历史/书签）维持 30 |
+| #   | 位置                               | 改动                                                                                                                                                                                                                                       |
+| --- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `content/index.ts` `executeType`   | 按元素类型取原生 prototype：textarea 用 `HTMLTextAreaElement.prototype` 的 value setter，input 维持原样；contenteditable 分支不变                                                                                                          |
+| 2   | `dom-perception.ts`                | `MAX_DEPTH` 10 → 24（覆盖现代 SPA 包装层深度）                                                                                                                                                                                             |
+| 3   | `dom-perception.ts` `traverseNode` | 改为前序：交互元素**先 push 再递归子节点**，节点顺序 = 文档序，ref 编号自上而下                                                                                                                                                            |
+| 4   | `dom-perception.ts`                | heading 节点补 `level`（h1-h6）；textarea 同样回填 `value`（让 AI 看到已有草稿）                                                                                                                                                           |
+| 5   | `dom-perception.ts`                | 新增 `toAISnapshot()`：回传给 sidepanel 的快照瘦身——剥掉 `xpath`/`rect`/`tagName`（AI 按 ref 操作，xpath 仅 content script 内部 `findElementByRef` 用 `snapshotCache` 全量副本，通道里不需要）；删除无任何调用的死代码 `serializeSnapshot` |
+| 6   | `useAIEngine.ts` `sanitizeResult`  | `browser_snapshot` 的数组截断上限放宽为 120（节点已瘦身、单条约 10-15 token），其余大数组（历史/书签）维持 30                                                                                                                              |
 
 **自查**：
+
 - ref 定位链不受影响：`findElementByRef` 走 content script 本地 `snapshotCache`（含 xpath），传输副本瘦身不影响定位；
 - `scanCurrentPage`（sidepanel）只消费 `role/name/ref`，瘦身字段无外部消费方（已 grep 确认 xpath/rect/tagName 在 content 目录外无引用）；
 - 前序遍历只改 push 时机，"非交互节点也要递归子树"的关键修复保留；
@@ -1702,6 +1744,7 @@ if (toolName === 'chat') {
 折叠后 DeepSeek 首页侧边栏 100+ 项塌缩为 16 条，textarea 落在窗口前段，且保持文档序。
 
 **自查**：
+
 - 标记节点 `ref` 为空串，`findElementByRef` 按 `[ref=eN]` 匹配永不命中，无可 click 性；
 - 折叠不改变 ref 编号（采集期不变），AI 引用的 ref 均来自它真实看到的节点；
 - 复杂页面（如 40 个并排按钮的工具栏）折叠后 AI 通过"已省略 N 项"标记知晓有更多元素，
@@ -1727,14 +1770,15 @@ if (toolName === 'chat') {
 
 **修复方案**：
 
-| # | 位置 | 改动 |
-|---|------|------|
-| 1 | `dom-perception.ts` `traverseNode` | 未渲染子树整体剪枝：`getComputedStyle(el).display === 'none'` 或 `aria-hidden="true"` 直接 return（对标 Chrome a11y tree / Playwright） |
-| 2 | `dom-perception.ts` 采集守卫 | `rect` 为 0×0 的元素不入快照（未渲染/不可用），子树继续遍历（`visibility:hidden` 的子元素可能可见） |
-| 3 | `dom-perception.ts` `buildAINodes` | 折叠从"连续同 role 长跑"升级为**全局 role 预算**：非表单 role 在 AI 视图中最多出现 20 次（`MAX_ROLE_TOTAL`），超出省略并按 role 汇总为末尾标记节点（`已省略 N 个 <role> 元素`）——对交替序列同样生效；表单 role 仍豁免 |
-| 4 | `prompts.ts` 操作原则 | 新增第 16 条：连续两次快照结果一致时不得重复同一操作；聊天类站点首页往往就是新对话页，应先在当前页面找输入框 |
+| #   | 位置                               | 改动                                                                                                                                                                                                                  |
+| --- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `dom-perception.ts` `traverseNode` | 未渲染子树整体剪枝：`getComputedStyle(el).display === 'none'` 或 `aria-hidden="true"` 直接 return（对标 Chrome a11y tree / Playwright）                                                                               |
+| 2   | `dom-perception.ts` 采集守卫       | `rect` 为 0×0 的元素不入快照（未渲染/不可用），子树继续遍历（`visibility:hidden` 的子元素可能可见）                                                                                                                   |
+| 3   | `dom-perception.ts` `buildAINodes` | 折叠从"连续同 role 长跑"升级为**全局 role 预算**：非表单 role 在 AI 视图中最多出现 20 次（`MAX_ROLE_TOTAL`），超出省略并按 role 汇总为末尾标记节点（`已省略 N 个 <role> 元素`）——对交替序列同样生效；表单 role 仍豁免 |
+| 4   | `prompts.ts` 操作原则              | 新增第 16 条：连续两次快照结果一致时不得重复同一操作；聊天类站点首页往往就是新对话页，应先在当前页面找输入框                                                                                                          |
 
 **自查**：
+
 - 剪枝只影响可见性判定，不改变 ref 语义：`findElementByRef` 走本地全量缓存（缓存同样只含已渲染节点，AI 不会引用到已剪枝节点）；
 - `display:none` 子树整体剪枝是安全的（后代必然未渲染）；`visibility:hidden` 不剪枝、只靠 0×0 守卫兜底（后代可单独 `visibility:visible`）；
 - 全局 role 预算替换连续折叠后逻辑更简单（无 run 状态机），文档序保持不变，表单元素永不省略；
@@ -1756,20 +1800,22 @@ if (toolName === 'chat') {
 
 **修复方案**：
 
-| # | 位置 | 改动 |
-|---|------|------|
-| 1 | `dom-perception.ts` | `toAISnapshot` 在瘦节点列表之外新增 `nodesText` 字段：Playwright 式逐行紧凑文本（`- role "名称" [ref=eN] [状态…]`），折叠标记渲染为 `- text "（已省略 N 个 …）"` |
-| 2 | `useAIEngine.ts` `sanitizeResult` | browser_snapshot 专属：AI 视图剔除 `nodes` 数组（仅程序消费，如 `scanCurrentPage`），只留 `nodesText/url/title/totalElements`；字符串截断阈值对 browser_snapshot 放宽到 8000（nodesText 是一整段文本，500→200 的通用截断会毁掉它） |
-| 3 | `prompts.ts` | 工具说明中补充 nodesText 逐行格式说明：textbox/searchbox 等输入元素**永远完整列出**，看到 `- textbox "…" [ref=eN]` 即可用 browser_type 直接输入 |
-| 4 | `content/dom-perception.ts` | 临时诊断 `diagnoseInputBoxes()`（textarea/input/contenteditable 逐个报告 rect、placeholder、未采集原因，SNAPSHOT 时打印到页面 console）：已确认采集层无问题、链路端到端验证成功（DeepSeek textarea 成功定位并输入）后**按"第一版不留无用代码"规则移除** |
+| #   | 位置                              | 改动                                                                                                                                                                                                                                                    |
+| --- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `dom-perception.ts`               | `toAISnapshot` 在瘦节点列表之外新增 `nodesText` 字段：Playwright 式逐行紧凑文本（`- role "名称" [ref=eN] [状态…]`），折叠标记渲染为 `- text "（已省略 N 个 …）"`                                                                                        |
+| 2   | `useAIEngine.ts` `sanitizeResult` | browser_snapshot 专属：AI 视图剔除 `nodes` 数组（仅程序消费，如 `scanCurrentPage`），只留 `nodesText/url/title/totalElements`；字符串截断阈值对 browser_snapshot 放宽到 8000（nodesText 是一整段文本，500→200 的通用截断会毁掉它）                      |
+| 3   | `prompts.ts`                      | 工具说明中补充 nodesText 逐行格式说明：textbox/searchbox 等输入元素**永远完整列出**，看到 `- textbox "…" [ref=eN]` 即可用 browser_type 直接输入                                                                                                         |
+| 4   | `content/dom-perception.ts`       | 临时诊断 `diagnoseInputBoxes()`（textarea/input/contenteditable 逐个报告 rect、placeholder、未采集原因，SNAPSHOT 时打印到页面 console）：已确认采集层无问题、链路端到端验证成功（DeepSeek textarea 成功定位并输入）后**按"第一版不留无用代码"规则移除** |
 
 **自查**：
+
 - `scanCurrentPage`（斜杠命令/上下文/后验证）继续消费 `nodes` 数组，不受 AI 视图剔除影响——
   它把结果转换成 `{totalCount, count, elements}` 后以 `scan` 名义走 sanitize，toolName 不命中 browser_snapshot；
 - `verifyPredict` 对 `JSON.stringify(result)` 做关键词匹配，nodesText 保留了全部 name，匹配能力不降级；
 - 折叠标记在文本里呈现为普通行，模型可读。
 
 ### 问题 14：扩展重载后，已打开页面所有 DOM 工具报「Content Script 未响应」（关键）
+
 **现象**：每次 `pnpm build` 后在 chrome://extensions 重载扩展，之前已打开的网页上执行
 browser_snapshot / browser_click / browser_type 等全部报
 `[CONTENT_SCRIPT_ERROR] Content Script 未响应，请确认页面已加载扩展`。
@@ -1783,14 +1829,15 @@ browser_snapshot / browser_click / browser_type 等全部报
 
 **修复方案**：
 
-| # | 位置 | 改动 |
-|---|------|------|
-| 1 | `service-worker/executor.ts` | 抽通用 helper `sendToContentScriptWithInjection(tabId, message, retryDelayMs?)`：先 sendMessage，接收端不存在时动态注入 content.js 并重试一次；注入失败（chrome:// 等受限页）抛 INJECTION_FAILED |
-| 2 | `service-worker/executor.ts` `executeBrowserTool` | 改用 helper（retryDelayMs=1200：content script 的 `enabled` 有 1s 就绪延迟，注入后立即重试会得到"DOM感知未启用"）；错误按"受限页 / 仍无响应"区分文案 |
-| 3 | `service-worker/executor.ts` `forwardScreenshotToContent` | 同样改用 helper（retryDelayMs=0，SCREENSHOT 分支不检查 enabled），消除两段重复的 try/catch |
-| 4 | `content/index.ts` `init()` | 幂等守卫：window 标记防重复注入产生双 listener——bundle 重执行会重建模块作用域，必须用 window 标记；否则双 listener 会导致 click 等副作用执行两次 |
+| #   | 位置                                                      | 改动                                                                                                                                                                                             |
+| --- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `service-worker/executor.ts`                              | 抽通用 helper `sendToContentScriptWithInjection(tabId, message, retryDelayMs?)`：先 sendMessage，接收端不存在时动态注入 content.js 并重试一次；注入失败（chrome:// 等受限页）抛 INJECTION_FAILED |
+| 2   | `service-worker/executor.ts` `executeBrowserTool`         | 改用 helper（retryDelayMs=1200：content script 的 `enabled` 有 1s 就绪延迟，注入后立即重试会得到"DOM感知未启用"）；错误按"受限页 / 仍无响应"区分文案                                             |
+| 3   | `service-worker/executor.ts` `forwardScreenshotToContent` | 同样改用 helper（retryDelayMs=0，SCREENSHOT 分支不检查 enabled），消除两段重复的 try/catch                                                                                                       |
+| 4   | `content/index.ts` `init()`                               | 幂等守卫：window 标记防重复注入产生双 listener——bundle 重执行会重建模块作用域，必须用 window 标记；否则双 listener 会导致 click 等副作用执行两次                                                 |
 
 **自查**：
+
 - 动态注入发生在页面加载完成后（executeScript 由 SW 主动调用），readyState 不会是 loading，
   走 1000ms 就绪分支，1200ms 等待窗口足够；
 - 兜底只在「接收端不存在」时触发，正常通信零开销（一次 try/catch）；
@@ -1799,15 +1846,17 @@ browser_snapshot / browser_click / browser_type 等全部报
 - 两条链路错误文案保持"受限页 vs 未响应"的区分，AI 可据此换标签页或提示刷新。
 
 ### 问题 15：AI 视图裁剪形成"黑洞"，目标元素被折叠后 AI 永远找不到（关键）
+
 **现象**：用户让 AI 点「开启新对话」，AI 回复找不到该按钮。实际按钮在页面上。
 
 **根因**：两层。
+
 1. **裁剪黑洞（结构性）**：AI 视图 = 文档序前 120 个保留节点 + 每 role 预算 20
-  （问题 11/12 的降噪方案）。侧边栏历史列表几十个 button + 噪声角色会把目标按钮挤出窗口；
-  而折叠标记只有「（已省略 N 个 button 元素）」一行——AI 既不知道里面有没有目标，
-  也拿不到被省略元素的 ref。**被裁剪的元素对 AI 不可见也不可恢复**。
+   （问题 11/12 的降噪方案）。侧边栏历史列表几十个 button + 噪声角色会把目标按钮挤出窗口；
+   而折叠标记只有「（已省略 N 个 button 元素）」一行——AI 既不知道里面有没有目标，
+   也拿不到被省略元素的 ref。**被裁剪的元素对 AI 不可见也不可恢复**。
 2. **语义匹配失败**：用户口语（"开启新对话"）与页面文案（"新的对话"）不完全一致时，
-  AI 直接断言"页面上没有"，不做模糊匹配、不换关键词。
+   AI 直接断言"页面上没有"，不做模糊匹配、不换关键词。
 
 **业界方案**：Playwright 的语义 locator `getByRole('button', { name: /新对话/ })`——
 按名称模糊匹配、实时查询、与快照截断无关；browser-use / Chrome DevTools MCP 均提供
@@ -1816,16 +1865,17 @@ browser_snapshot / browser_click / browser_type 等全部报
 
 **修复方案**：新增 `browser_find` 工具（对标 Playwright 语义 locator）
 
-| # | 位置 | 改动 |
-|---|------|------|
-| 1 | `content/dom-perception.ts` | 新增 `findNodesByText(query)`：实时重新采集（保证 ref 新鲜，顺带刷新 snapshotCache），在**全量**节点（500 上限，不经 120/20 裁剪）上做包含匹配；匹配范围 = 可访问名 + 输入框 value，空白归一化 + 大小写不敏感；返回 serializeAINodes 逐行文本（最多 10 条 + count + truncated） |
-| 2 | `content/messages.ts` | 消息联合类型新增 `{ type: 'FIND'; query: string }` |
-| 3 | `content/index.ts` | FIND case：query 缺失返回 MISSING_QUERY，否则返回 findNodesByText 结果 |
-| 4 | `service-worker/executor.ts` | `executeCommand` 增加 `case 'browser_find'` 分发；`BROWSER_TOOL_TO_MESSAGE` 增加 `browser_find → 'FIND'`（响应映射走通用 mapContentScriptResponse，无需改） |
-| 5 | `shared/prompts.ts` | ①工具列表加 browser_find 说明；②「快照阅读方法」补充：折叠标记只说明该类元素过多、不代表目标不存在；③操作原则新增第 17 条：找不到目标时的标准动作序列 = 语义模糊匹配名称 → browser_find 用核心关键词检索 → 仍找不到才 ask，禁止直接断言"页面上没有" |
-| 6 | `shared/commands.ts` | COMMANDS 注册表新增 browser_find 条目（slots: query 必填 / role 可选，swIntent: 'browser_find'）。**首轮改动遗漏**：sidepanel `executeCommand` 先经 `getCommand()` 查该注册表，未注册直接返回"未知命令： browser_find"，SW 侧分发根本不会触达——教训：新增 AI 工具必须同时登记 SW executor 与 shared/commands.ts 两处 |
+| #   | 位置                         | 改动                                                                                                                                                                                                                                                                                                                 |
+| --- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `content/dom-perception.ts`  | 新增 `findNodesByText(query)`：实时重新采集（保证 ref 新鲜，顺带刷新 snapshotCache），在**全量**节点（500 上限，不经 120/20 裁剪）上做包含匹配；匹配范围 = 可访问名 + 输入框 value，空白归一化 + 大小写不敏感；返回 serializeAINodes 逐行文本（最多 10 条 + count + truncated）                                      |
+| 2   | `content/messages.ts`        | 消息联合类型新增 `{ type: 'FIND'; query: string }`                                                                                                                                                                                                                                                                   |
+| 3   | `content/index.ts`           | FIND case：query 缺失返回 MISSING_QUERY，否则返回 findNodesByText 结果                                                                                                                                                                                                                                               |
+| 4   | `service-worker/executor.ts` | `executeCommand` 增加 `case 'browser_find'` 分发；`BROWSER_TOOL_TO_MESSAGE` 增加 `browser_find → 'FIND'`（响应映射走通用 mapContentScriptResponse，无需改）                                                                                                                                                          |
+| 5   | `shared/prompts.ts`          | ①工具列表加 browser_find 说明；②「快照阅读方法」补充：折叠标记只说明该类元素过多、不代表目标不存在；③操作原则新增第 17 条：找不到目标时的标准动作序列 = 语义模糊匹配名称 → browser_find 用核心关键词检索 → 仍找不到才 ask，禁止直接断言"页面上没有"                                                                  |
+| 6   | `shared/commands.ts`         | COMMANDS 注册表新增 browser_find 条目（slots: query 必填 / role 可选，swIntent: 'browser_find'）。**首轮改动遗漏**：sidepanel `executeCommand` 先经 `getCommand()` 查该注册表，未注册直接返回"未知命令： browser_find"，SW 侧分发根本不会触达——教训：新增 AI 工具必须同时登记 SW executor 与 shared/commands.ts 两处 |
 
 **自查**：
+
 - findNodesByText 复用 captureAccessibilityTree 而非读旧 snapshotCache——每次 find 都是
   新鲜采集，返回的 ref 必然可被 findElementByRef 解析，规避"页面已变、缓存 ref 失效"；
 - 回灌体积：10 行 × 约 35 字符 ≈ 350 字符 < sanitize 非快照工具 500 上限；
@@ -1835,16 +1885,18 @@ browser_snapshot / browser_click / browser_type 等全部报
 - 裁剪黑洞的定位不变：概览继续裁剪（控 token），黑洞由 browser_find 按需找回（保可达）。
 
 ### 问题 16：操作准确性综合优化（四项，对标 Playwright / Playwright MCP）
+
 **背景**：问题 15 落地后继续排查"AI 操作不准确"的剩余来源，确认四项：
 
-| # | 问题 | 根因 | 业界对标 | 方案 |
-|---|------|------|----------|------|
-| 1 | 名称含换行/多空格破坏快照行格式 | `getAccessibleName` 只 trim 首尾，textContent 中部的 `\n`+缩进原样进入 nodesText——一行元素被拆成多行乱码，模型阅读与 browser_find 匹配同时失配；名称含 `"` 还会破坏引号格式 | Playwright aria snapshot 的 yaml 对文本做归一化/转义 | `getAccessibleName` 出口统一 `replace(/\s+/g,' ').trim()`；`serializeAINodes` 对 name/value 做 `"` → `'` 转义 + 同样归一化（双保险，value 来自 textarea 可含换行） |
-| 2 | 扁平列表无层级上下文 | 20 个 button 平铺，模型无法判断哪个在侧边栏/主区域，只能猜 | Playwright aria snapshot 是**缩进树**，层级就是模型的定位上下文 | 采集时记录 `depth`，`serializeAINodes` 按深度输出行首缩进（上限 6 层防超长行）；折叠造成的空隙不影响相对分组 |
-| 3 | browser_find 命中按文档序取前 10，低质量命中挤占配额 | 历史会话标题包含查询词时（如"帮我写开启新对话的文案"），可能把精确命中的按钮挤出 10 条配额 | Playwright `getByRole(role, { name })`：role 限定 + 名称匹配 | 匹配结果分档排序：名称完全相等 > 前缀匹配 > 包含匹配，档内保持文档序（Array.sort 稳定）；新增可选 `args.role` 过滤（大小写不敏感） |
-| 4 | 操作后 AI 需再调一次 browser_snapshot 验证，且存在竞态 | click/submit 返回是同步的，SPA 渲染是异步的——AI 紧接着的快照可能拍到旧 DOM，误判"操作没生效"再乱点 | **Playwright MCP：所有 mutation action 的返回都自动附带操作后的新 aria snapshot**，一步顶两步 | content script 对 DOM 操作类消息（CLICK/TYPE/SELECT/HOVER/PRESS_KEY/CHECK/UNCHECK/FILL_FORM）改为异步响应：执行后等 500ms（SPA 渲染窗口）再采集，响应 `data.snapshot = {url,title,totalElements,nodesText}`；采集失败降级为原响应。sanitizeResult 把这些工具纳入快照级（剔 nodes 留 nodesText、放宽阈值）；提示词引导"操作结果自带最新快照，先读它，别再单独调 browser_snapshot" |
+| #   | 问题                                                   | 根因                                                                                                                                                                        | 业界对标                                                                                      | 方案                                                                                                                                                                                                                                                                                                                                                                             |
+| --- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 名称含换行/多空格破坏快照行格式                        | `getAccessibleName` 只 trim 首尾，textContent 中部的 `\n`+缩进原样进入 nodesText——一行元素被拆成多行乱码，模型阅读与 browser_find 匹配同时失配；名称含 `"` 还会破坏引号格式 | Playwright aria snapshot 的 yaml 对文本做归一化/转义                                          | `getAccessibleName` 出口统一 `replace(/\s+/g,' ').trim()`；`serializeAINodes` 对 name/value 做 `"` → `'` 转义 + 同样归一化（双保险，value 来自 textarea 可含换行）                                                                                                                                                                                                               |
+| 2   | 扁平列表无层级上下文                                   | 20 个 button 平铺，模型无法判断哪个在侧边栏/主区域，只能猜                                                                                                                  | Playwright aria snapshot 是**缩进树**，层级就是模型的定位上下文                               | 采集时记录 `depth`，`serializeAINodes` 按深度输出行首缩进（上限 6 层防超长行）；折叠造成的空隙不影响相对分组                                                                                                                                                                                                                                                                     |
+| 3   | browser_find 命中按文档序取前 10，低质量命中挤占配额   | 历史会话标题包含查询词时（如"帮我写开启新对话的文案"），可能把精确命中的按钮挤出 10 条配额                                                                                  | Playwright `getByRole(role, { name })`：role 限定 + 名称匹配                                  | 匹配结果分档排序：名称完全相等 > 前缀匹配 > 包含匹配，档内保持文档序（Array.sort 稳定）；新增可选 `args.role` 过滤（大小写不敏感）                                                                                                                                                                                                                                               |
+| 4   | 操作后 AI 需再调一次 browser_snapshot 验证，且存在竞态 | click/submit 返回是同步的，SPA 渲染是异步的——AI 紧接着的快照可能拍到旧 DOM，误判"操作没生效"再乱点                                                                          | **Playwright MCP：所有 mutation action 的返回都自动附带操作后的新 aria snapshot**，一步顶两步 | content script 对 DOM 操作类消息（CLICK/TYPE/SELECT/HOVER/PRESS_KEY/CHECK/UNCHECK/FILL_FORM）改为异步响应：执行后等 500ms（SPA 渲染窗口）再采集，响应 `data.snapshot = {url,title,totalElements,nodesText}`；采集失败降级为原响应。sanitizeResult 把这些工具纳入快照级（剔 nodes 留 nodesText、放宽阈值）；提示词引导"操作结果自带最新快照，先读它，别再单独调 browser_snapshot" |
 
 **自查**：
+
 - #4 的竞态兜底：操作导致页面跳转时响应可能丢失 → SW 兜底注入重发 → `findElementByRef` 的 URL 守卫判定 ref 失效返回 ELEMENT_NOT_FOUND，**不会跨页面重复执行动作**；
 - #4 异步响应通道：与 SCREENSHOT 相同的 `return true` 模式，成功/失败/异常三条路径都有且仅有一次 sendResponse；
 - #2 缩进只加在 serializeAINodes 输出层，nodes 数据结构（transport/scanCurrentPage 消费方）不受影响；
@@ -1858,12 +1910,13 @@ browser_snapshot / browser_click / browser_type 等全部报
 AI 随即调截图"看图找元素"，任务失败。
 
 **根因**：两层。
+
 1. **role 硬过滤**：页面大量"按钮"是 div/span 模拟（无原生 button 语义），a11y role 是
-  `generic`/`text` 而非 `button`。AI 按用户口语（"按钮"）传 `role="button"`，
-  findNodesByText 把 role 当硬过滤条件 → 文本明明存在却被筛光。语义检索场景里
-  role 是 AI 的**猜测**，猜测不能作为召回的前置条件。
+   `generic`/`text` 而非 `button`。AI 按用户口语（"按钮"）传 `role="button"`，
+   findNodesByText 把 role 当硬过滤条件 → 文本明明存在却被筛光。语义检索场景里
+   role 是 AI 的**猜测**，猜测不能作为召回的前置条件。
 2. **截图兜底无禁令**：提示词只在"整理/总结"场景禁止截图，DOM 操作失败路径没有任何
-  限制，模型自发退化成多模态"看图猜元素"——但截图拿不到 ref，点了也没用，纯属浪费步数。
+   限制，模型自发退化成多模态"看图猜元素"——但截图拿不到 ref，点了也没用，纯属浪费步数。
 
 **业界方案**：模糊检索工具的过滤参数只作**优先级**不作召回门槛（检索保召回、排序保精度）；
 Playwright 的 getByRole 是精确匹配，但前提是 role 来自真实 aria 树而非模型猜测。
@@ -1872,12 +1925,13 @@ Playwright 的 getByRole 是精确匹配，但前提是 role 来自真实 aria �
 
 **修复方案**：
 
-| # | 位置 | 改动 |
-|---|------|------|
-| 1 | `content/dom-perception.ts` | `findNodesByText`：role 从硬过滤改为**优先筛选**——先按文本取全量命中 pool；role 命中非空则返回 role 子集；role 命中为空则返回全量 pool 并标记 `roleRelaxed: true`。返回类型增加 `roleRelaxed` |
-| 2 | `shared/prompts.ts` | ①browser_find 工具说明：args.role 不要随意传（div 模拟按钮的真实 role 多为 generic），仅快照里明确看到目标 role 时才传；限定后无匹配自动放宽并返回 `roleRelaxed: true`。②操作原则第 17 条：处置序列第②步改为 browser_find **不传 role**。③新增第 18 条：DOM 操作全程禁止截图兜底——找不到就 find 换关键词 → ask 用户；截图仅在用户明确要求时使用 |
+| #   | 位置                        | 改动                                                                                                                                                                                                                                                                                                                                            |
+| --- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `content/dom-perception.ts` | `findNodesByText`：role 从硬过滤改为**优先筛选**——先按文本取全量命中 pool；role 命中非空则返回 role 子集；role 命中为空则返回全量 pool 并标记 `roleRelaxed: true`。返回类型增加 `roleRelaxed`                                                                                                                                                   |
+| 2   | `shared/prompts.ts`         | ①browser_find 工具说明：args.role 不要随意传（div 模拟按钮的真实 role 多为 generic），仅快照里明确看到目标 role 时才传；限定后无匹配自动放宽并返回 `roleRelaxed: true`。②操作原则第 17 条：处置序列第②步改为 browser_find **不传 role**。③新增第 18 条：DOM 操作全程禁止截图兜底——找不到就 find 换关键词 → ask 用户；截图仅在用户明确要求时使用 |
 
 **自查**：
+
 - 放宽逻辑只在 role 命中为空时触发，role 命中非空时行为与之前完全一致（精确优先）；
 - `roleRelaxed` 是纯新增字段，旧消费方（mapContentScriptResponse 透传 + sanitize 白名单
   标量）无需改动；
@@ -1886,6 +1940,7 @@ Playwright 的 getByRole 是精确匹配，但前提是 role 来自真实 aria �
 - 既有 browser_* 工具与快照链路零改动。
 
 ### 问题 9：`traverseNode` 闭包作用域问题
+
 **根因**：文档第 4.3 节的 `traverseNode` 函数引用了 `options?.maxElements`，但 `options` 是 `captureAccessibilityTree` 的参数，在 `traverseNode` 闭包中无法直接访问
 **解决**：在 `captureAccessibilityTree` 中提取 `maxElements` 到局部变量，传入 `traverseNode` 或通过闭包访问
 
@@ -1906,17 +1961,20 @@ export function captureAccessibilityTree(options: {...}): PageSnapshot {
 ## 18. 参考资料
 
 ### 官方文档
+
 - [Playwright MCP 官方文档](https://playwright.dev/mcp)
 - [Model Context Protocol 规范](https://modelcontextprotocol.io)
 - [Playwright Accessibility API](https://playwright.dev/docs/accessibility)
 - [Chrome Extensions API](https://developer.chrome.com/docs/extensions/reference)
 
 ### 开源项目
+
 - [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp) - 官方 MCP 服务器
 - [Browserbase/stagehand](https://github.com/browserbase/stagehand) - TypeScript 自动化框架
 - [browser-use/browser-use](https://github.com/browser-use/browser-use) - Python Agent 框架
 
 ### 行业文章
+
 - [Playwright MCP Complete Guide (2026)](https://mcp.directory/blog/playwright-browser-mcp-guide-2026)
 - [Browser Use vs Stagehand vs Playwright MCP](https://fp8.co/articles/Browser-Use-vs-Stagehand-vs-Playwright-MCP-AI-Agent-Browser-Automation)
 - [How We Made Our AI Browser Agent Stop Clicking the Wrong Button](https://dev.to/omidseyfan/how-we-made-our-ai-browser-agent-stop-clicking-the-wrong-button-3kkl)

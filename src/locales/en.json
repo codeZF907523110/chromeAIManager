@@ -1,6 +1,6 @@
 {
   "app": {
-    "brand": "AI Browser Commander",
+    "brand": "StarCat",
     "toLight": "Switch to light mode",
     "toDark": "Switch to dark mode",
     "back": "Back",
@@ -674,6 +674,20 @@
     "chromeApiArgsInvalid": "Invalid type for \"{arg}\": expected a number (time params are millisecond timestamps, not date strings)",
     "execFailed": "Command {intent} failed: {msg}",
     "historyAllCleared": "All browsing history cleared",
-    "chromeApiFailed": "API {api} call failed: {msg}"
+    "chromeApiFailed": "API {api} call failed: {msg}",
+    "reloadPageHint": "Reload the page and retry",
+    "switchTabHint": "Switch to a normal web page and retry"
+  },
+  "empty": {
+    "title": "Hi, I'm StarCat",
+    "desc": "Manage your browser with one sentence: search history, organize tabs, clear cookies, capture full pages — start with an example below",
+    "setupModel": "Choose a model",
+    "tryLabel": "Try these",
+    "example1": "Show my browsing history for today",
+    "example2": "Group all tabs by domain",
+    "example3": "Close duplicate tabs for me",
+    "example4": "Take a full-page screenshot of this page",
+    "example5": "Clear cookies for this website",
+    "example6": "Which tabs did I recently close?"
   }
 }

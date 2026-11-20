@@ -1,5 +1,5 @@
 /**
- * AI 浏览器管家 — TypeScript 类型统一导出
+ * 星猫 — TypeScript 类型统一导出
  */
 
 // AI 相关类型

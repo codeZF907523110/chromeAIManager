@@ -40,7 +40,15 @@
           </div>
         </template>
         <div v-else ref="contentEl" v-html="renderedHtml" @click="onMarkdownClick"></div>
-        <img v-if="msg.image" :src="msg.image" class="screenshot-img" />
+        <!-- 截图：el-image 自带全屏预览（缩放/旋转/Esc），teleport 到 body 避免被侧边栏裁剪 -->
+        <el-image
+          v-if="msg.image"
+          :src="msg.image"
+          :preview-src-list="[msg.image]"
+          preview-teleported
+          hide-on-click-modal
+          class="screenshot-img"
+        />
         <video v-if="msg.video" :src="msg.video" controls class="recording-video" />
         <div v-if="msg.recordingFile" class="recording-file-card">
           <video
@@ -614,9 +622,17 @@ onBeforeUnmount(() => {
 
 .screenshot-img {
   max-width: 100%;
+  /* el-image 是 wrapper div：按图片自然尺寸收缩，避免小图被拉伸成容器宽 */
+  width: fit-content;
   border-radius: 8px;
   margin-top: 8px;
   display: block;
+  cursor: zoom-in;
+}
+
+.screenshot-img :deep(.el-image__inner) {
+  max-width: 100%;
+  border-radius: 8px;
 }
 
 .recording-video {

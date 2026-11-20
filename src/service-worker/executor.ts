@@ -1754,6 +1754,24 @@ async function navigateTo(payload: Record<string, unknown>): Promise<ExecutionRe
   return { success: true, navigated: url }
 }
 
+/** 受限页 URL 特征：浏览器内部页/扩展页/devtools 等，content script 无法注入，captureVisibleTab 同样被拒 */
+const RESTRICTED_URL_RE = /^(chrome|edge|about|devtools|view-source|chrome-extension):/i
+
+/** Chrome 应用商店页 URL 特征：普通 https 但 Chrome 禁止扩展注入，与内部页同等对待 */
+const WEBSTORE_URL_RE = /^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)\//i
+
+/**
+ * 判断目标标签页是否为受限页（浏览器内部页、应用商店）。
+ * 截图/DOM 操作前做确定性 URL 预检——不匹配 chrome.* 抛错字符串（不稳定且随浏览器本地化）。
+ * @param tab - 目标标签页（可能为 undefined）
+ * @returns 受限页返回结构化失败结果（shotBlockedPage 自含指引，不带 suggestion——刷新救不了内部页），普通页返回 null
+ */
+function restrictedPageResult(tab: chrome.tabs.Tab | undefined): ExecutionResult | null {
+  const url = tab?.url ?? ''
+  if (!RESTRICTED_URL_RE.test(url) && !WEBSTORE_URL_RE.test(url)) return null
+  return { success: false, code: 'PAGE_RESTRICTED', message: swT('sw.shotBlockedPage') }
+}
+
 /**
  * 截图命令：按 mode 分流到三种模式。
  * - visible（默认）：SW 直接 captureVisibleTab 截可视区域。
@@ -1787,6 +1805,9 @@ async function takeScreenshot(payload: Record<string, unknown>): Promise<Executi
   }
   if (!targetTab?.windowId)
     return { success: false, code: 'ELE_NOT_FOUND', message: swT('sw.noActiveTab') }
+  // 受限页（chrome:// 等）captureVisibleTab 必被拒，提前给出「换普通网页」指引而非笼统的「截图被拒绝」
+  const restricted = restrictedPageResult(targetTab)
+  if (restricted) return restricted
   try {
     const dataUrl = await chrome.tabs.captureVisibleTab(targetTab.windowId, { format: 'png' })
     return { success: true, screenshot: dataUrl, mode: 'visible' }
@@ -1810,14 +1831,25 @@ async function forwardScreenshotToContent(
   mode: 'full' | 'area'
 ): Promise<ExecutionResult> {
   let targetTabId = tabId
+  let targetTab: chrome.tabs.Tab | undefined
   if (!targetTabId) {
     const windowId = await getFallbackWindowId()
-    const [tab] = await chrome.tabs.query({ active: true, windowId })
-    targetTabId = tab?.id
+    ;[targetTab] = await chrome.tabs.query({ active: true, windowId })
+    targetTabId = targetTab?.id
+  } else {
+    try {
+      targetTab = await chrome.tabs.get(targetTabId)
+    } catch {
+      /* ignore */
+    }
   }
   if (!targetTabId) {
     return { success: false, code: 'ELE_NOT_FOUND', message: swT('sw.noActiveTab') }
   }
+  // 受限页（chrome:// 等）无法注入 content script，提前给出「换普通网页」指引；
+  // 下方 catch 的 INJECTION_FAILED 映射保留作兜底（普通页罕见注入异常，RELOAD_PAGE 对其正确）
+  const restricted = restrictedPageResult(targetTab)
+  if (restricted) return restricted
 
   // 接收端不存在（扩展重载后已打开页面不会自动注入）时兜底注入并重试一次；
   // SCREENSHOT 分支不检查 enabled，无需等待就绪
@@ -1834,7 +1866,7 @@ async function forwardScreenshotToContent(
       success: false,
       code: 'CONTENT_SCRIPT_ERROR',
       message: isRestricted ? swT('sw.shotBlockedPage') : swT('sw.csNotResponding'),
-      suggestion: 'RELOAD_PAGE',
+      suggestion: swT('sw.reloadPageHint'),
     }
   }
 
@@ -2676,7 +2708,7 @@ async function executeBrowserTool(
       success: false,
       code: 'CONTENT_SCRIPT_ERROR',
       message: isRestricted ? swT('sw.injectBlockedPage') : swT('sw.csNotResponding'),
-      suggestion: isRestricted ? 'SWITCH_TAB' : 'RELOAD_PAGE',
+      suggestion: isRestricted ? swT('sw.switchTabHint') : swT('sw.reloadPageHint'),
     }
   }
 }

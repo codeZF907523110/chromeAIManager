@@ -1,4 +1,4 @@
-# AI Browser Commander
+# StarCat
 
 键盘驱动的 AI 浏览器命令中心。用自然语言管理标签、书签和浏览会话。
 
@@ -34,6 +34,7 @@ npm run build
 ## AI 配置
 
 在设置面板中配置 API Key：
+
 - DeepSeek（推荐）：https://platform.deepseek.com
 - OpenAI
 - Gemini Nano（离线，需 Chrome AI 支持）

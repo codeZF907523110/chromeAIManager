@@ -6,7 +6,13 @@
     <!-- 标题栏 -->
     <header class="header">
       <div class="header-brand">
-        <span class="header-icon">◆</span>
+        <!-- 品牌动画：sparkle 流光 + 伴星闪烁 + 辉光呼吸，AI 思考中加速高亮（docs/header-logo-animation.md） -->
+        <span class="header-icon" :class="{ thinking: isThinking }">
+          <span class="icon-glow"></span>
+          <span class="icon-spark"></span>
+          <span class="icon-spark-mini spark-a"></span>
+          <span class="icon-spark-mini spark-b"></span>
+        </span>
         <span class="header-title">{{ t('app.brand') }}</span>
       </div>
       <div class="header-actions">
@@ -32,6 +38,8 @@
       :active-loop-id="state.activeLoopId"
       :live-stream="state.liveStream"
       @delete="deleteMessage"
+      @use-example="applyExample"
+      @open-settings="openSettings"
     />
 
     <!-- 确认卡片 -->
@@ -249,7 +257,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { Settings, ChevronRight, ChevronLeft, Plus, Sun, Moon } from 'lucide-vue-next'
 import ParticleCanvas from './components/ParticleCanvas.vue'
 import MessageList from './components/MessageList.vue'
@@ -290,6 +298,21 @@ const { themeMode, setThemeMode, locale, setLocale } = useSettings()
 const { t } = useI18n()
 
 /**
+ * AI 是否处于「思考/执行中」，供 header logo 切换思考动画。
+ * 覆盖三类工作态：agent loop 运行中（含工具执行间隙）、思考流增量（thoughtText）、
+ * 回复流增量（replyActive）；等待用户确认卡不算思考（等输入 ≠ 工作）。
+ * @returns true 表示应播放思考动画，false 回落 idle 常转
+ */
+const isThinking = computed(() => {
+  if (pendingConfirm.value) return false
+  return (
+    state.activeLoopId !== null ||
+    state.liveStream.replyActive ||
+    state.liveStream.thoughtText !== ''
+  )
+})
+
+/**
  * 处理设置面板中的语言切换
  * @param code 下拉框选中的语言代码
  */
@@ -303,6 +326,22 @@ async function handleLocaleChange(code: LocaleCode) {
 
 const commandInput = commandInputValue
 const commandInputRef = ref<InstanceType<typeof import('./components/CommandInput.vue').default>>()
+
+/**
+ * 空对话引导页：点击案例标签，把案例文案回填进输入框并聚焦（不自动发送，保留编辑权）。
+ * @param text 案例文案
+ */
+function applyExample(text: string) {
+  commandInput.value = text
+  commandInputRef.value?.focus()
+}
+
+/**
+ * 空对话引导页：点击「去选择模型」，打开设置抽屉。
+ */
+function openSettings() {
+  void toggleSettings()
+}
 
 // 设置页面
 const settingsPage = ref<SettingsPage>('home')
@@ -470,19 +509,174 @@ body {
   gap: 8px;
 }
 
+/* ─── header 品牌动画 v2：sparkle 流光（docs/header-logo-animation.md）─── */
 .header-icon {
-  color: var(--app-text-primary);
-  font-size: 16px;
-  animation: pulse 2s ease-in-out infinite;
+  /* 四角星形状（内联 SVG data URI），主星与伴星共用同一 mask */
+  --spark-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 0C8.6 4.6 11.4 7.4 16 8C11.4 8.6 8.6 11.4 8 16C7.4 11.4 4.6 8.6 0 8C4.6 7.4 7.4 4.6 8 0Z'/%3E%3C/svg%3E");
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
 }
 
-@keyframes pulse {
+/* 辉光层：accent 蓝径向光晕，呼吸起伏 */
+.icon-glow {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--app-accent) 45%, transparent) 0%,
+    transparent 70%
+  );
+  filter: blur(2px);
+  animation: icon-glow-idle 3.2s ease-in-out infinite;
+}
+
+/* 主星：青→蓝→紫渐变填充 + 呼吸缩放 */
+.icon-spark {
+  position: relative;
+  z-index: 1;
+  width: 15px;
+  height: 15px;
+  background: linear-gradient(135deg, #22d3ee, #3b82f6 50%, #a78bfa);
+  -webkit-mask: var(--spark-shape) center / contain no-repeat;
+  mask: var(--spark-shape) center / contain no-repeat;
+  animation: icon-breathe 3.2s ease-in-out infinite;
+}
+
+/* 主星流光：高光带横向扫过（mask 裁剪到星形内，首尾在形外，循环无缝） */
+.icon-spark::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    120deg,
+    transparent 35%,
+    rgba(255, 255, 255, 0.85) 50%,
+    transparent 65%
+  );
+  transform: translateX(-120%);
+  animation: icon-sheen 2.8s linear infinite;
+}
+
+/* 伴星：小四角星错峰闪烁 */
+.icon-spark-mini {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  background: #22d3ee;
+  -webkit-mask: var(--spark-shape) center / contain no-repeat;
+  mask: var(--spark-shape) center / contain no-repeat;
+  animation: icon-twinkle 2.4s ease-in-out infinite;
+}
+
+.spark-a {
+  top: 0;
+  right: 1px;
+}
+
+.spark-b {
+  bottom: 1px;
+  left: 0;
+  background: #a78bfa;
+  animation-delay: -1.2s;
+}
+
+/* 思考中：主星脉冲加大、流光加快、伴星加快、辉光增强 */
+.header-icon.thinking .icon-spark {
+  animation-name: icon-pulse;
+  animation-duration: 0.9s;
+}
+
+.header-icon.thinking .icon-spark::after {
+  animation-duration: 1.2s;
+}
+
+.header-icon.thinking .icon-spark-mini {
+  animation-duration: 1.1s;
+}
+
+.header-icon.thinking .icon-glow {
+  animation-name: icon-glow-active;
+  animation-duration: 0.9s;
+}
+
+@keyframes icon-breathe {
   0%,
   100% {
-    opacity: 0.6;
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes icon-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.22);
+  }
+}
+
+@keyframes icon-sheen {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes icon-twinkle {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: scale(0.5);
   }
   50% {
     opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes icon-glow-idle {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.12);
+  }
+}
+
+@keyframes icon-glow-active {
+  0%,
+  100% {
+    opacity: 0.6;
+    transform: scale(1.05);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.28);
+  }
+}
+
+/* 无障碍：系统开启「减少动态效果」时静止全部动画 */
+@media (prefers-reduced-motion: reduce) {
+  .icon-glow,
+  .icon-spark,
+  .icon-spark::after,
+  .icon-spark-mini {
+    animation: none;
   }
 }
 

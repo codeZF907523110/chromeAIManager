@@ -5,6 +5,12 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 
+/**
+ * 星空背景（docs/starfield-background.md）
+ * 星色取自品牌 sparkle 图标的渐变三色（青 → 蓝 → 紫）+ shadowBlur 同色光晕 +
+ * 每星独立相位的正弦闪烁（异步「一闪一闪」）+ 缓慢太空漂移（无连线）。
+ */
+
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let animationId: number | null = null
 let ctx: CanvasRenderingContext2D | null = null
@@ -18,20 +24,53 @@ interface Particle {
   y: number
   vx: number
   vy: number
+  /** 星点半径（0.8–2px 随机，制造远近层次） */
   size: number
-  opacity: number
-  opacityDir: number
+  /** 闪烁初相（随机，保证各星异步闪烁） */
+  phase: number
+  /** 闪烁角速度（rad/s，约 3–10 秒一闪） */
+  speed: number
+  /** 星色索引（STAR_COLORS 下标，创建时随机抽取） */
+  colorIndex: number
 }
+
+/** 星色盘：品牌 sparkle 图标渐变的三色取样（青 #22d3ee → 蓝 #3b82f6 → 紫 #a78bfa） */
+const STAR_COLORS = ['#22d3ee', '#3b82f6', '#a78bfa']
+
+/** 主题亮度参数：闪烁中心/振幅、光晕强度 */
+interface StarThemeConfig {
+  base: number
+  amp: number
+  glowBase: number
+  glowAmp: number
+}
+const THEME_CONFIG_DARK: StarThemeConfig = {
+  base: 0.5,
+  amp: 0.4,
+  glowBase: 4,
+  glowAmp: 6,
+}
+const THEME_CONFIG_LIGHT: StarThemeConfig = {
+  base: 0.35,
+  amp: 0.25,
+  glowBase: 3,
+  glowAmp: 4,
+}
+
+// 主题参数按 --app-bg 值缓存，避免逐帧重算
+let themeCacheKey = ''
+let starConfig: StarThemeConfig = THEME_CONFIG_DARK
 
 function createParticle(): Particle {
   return {
     x: Math.random() * width,
     y: Math.random() * height,
-    vx: (Math.random() - 0.5) * 0.3,
-    vy: (Math.random() - 0.5) * 0.3,
-    size: Math.random() * 1.5 + 0.5,
-    opacity: Math.random() * 0.5 + 0.1,
-    opacityDir: Math.random() > 0.5 ? 1 : -1,
+    vx: (Math.random() - 0.5) * 0.12,
+    vy: (Math.random() - 0.5) * 0.12,
+    size: Math.random() * 1.2 + 0.8,
+    phase: Math.random() * Math.PI * 2,
+    speed: Math.random() * 1.6 + 0.6,
+    colorIndex: Math.floor(Math.random() * STAR_COLORS.length),
   }
 }
 
@@ -51,11 +90,19 @@ function rgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-function getParticleColor(): string {
-  return (
-    getComputedStyle(document.documentElement).getPropertyValue('--app-text-muted').trim() ||
-    '#555555'
-  )
+/**
+ * 读取当前主题的亮度参数（按 --app-bg 亮度判断明暗，缓存避免逐帧重算）
+ * @returns 暗色/亮色主题对应配置
+ */
+function getStarTheme(): StarThemeConfig {
+  const bg = getBgColor()
+  if (bg !== themeCacheKey) {
+    const { r, g, b } = hexToRgb(bg)
+    const dark = (0.299 * r + 0.587 * g + 0.114 * b) / 255 < 0.5
+    starConfig = dark ? THEME_CONFIG_DARK : THEME_CONFIG_LIGHT
+    themeCacheKey = bg
+  }
+  return starConfig
 }
 
 function initCanvas() {
@@ -77,7 +124,7 @@ function initCanvas() {
   height = canvas.height = h
 
   particles = []
-  const count = Math.floor((width * height) / 15000)
+  const count = Math.floor((width * height) / 10000)
   for (let i = 0; i < count; i++) {
     particles.push(createParticle())
   }
@@ -92,8 +139,10 @@ function draw() {
   ctx.fillStyle = getBgColor()
   ctx.fillRect(0, 0, width, height)
 
-  // 绘制粒子（颜色随主题变化）
-  const particleColor = getParticleColor()
+  const config = getStarTheme()
+  const t = performance.now() / 1000
+
+  // 绘制星点：独立相位的正弦闪烁 + 同色光晕（品牌渐变色）
   for (const p of particles) {
     // 更新位置
     p.x += p.vx
@@ -103,34 +152,18 @@ function draw() {
     if (p.x < 0 || p.x > width) p.vx *= -1
     if (p.y < 0 || p.y > height) p.vy *= -1
 
-    // 呼吸效果
-    p.opacity += p.opacityDir * 0.005
-    if (p.opacity > 0.6 || p.opacity < 0.1) p.opacityDir *= -1
+    // 闪烁亮度：base ± amp，随各自相位异步起伏
+    const tw = Math.sin(t * p.speed + p.phase)
+    const alpha = Math.max(config.base + config.amp * tw, 0.05)
+    const color = STAR_COLORS[p.colorIndex]
 
-    // 绘制
     ctx.beginPath()
     ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2)
-    ctx.fillStyle = rgba(particleColor, p.opacity)
+    // 光晕随闪烁峰值增强，谷值时近乎熄灭
+    ctx.shadowBlur = config.glowBase + config.glowAmp * Math.max(0, tw)
+    ctx.shadowColor = color
+    ctx.fillStyle = rgba(color, alpha)
     ctx.fill()
-  }
-
-  // 绘制连线
-  for (let i = 0; i < particles.length; i++) {
-    for (let j = i + 1; j < particles.length; j++) {
-      const dx = particles[i].x - particles[j].x
-      const dy = particles[i].y - particles[j].y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-
-      if (dist < 100) {
-        const alpha = (1 - dist / 100) * 0.15
-        ctx.beginPath()
-        ctx.moveTo(particles[i].x, particles[i].y)
-        ctx.lineTo(particles[j].x, particles[j].y)
-        ctx.strokeStyle = rgba(particleColor, alpha)
-        ctx.lineWidth = 0.5
-        ctx.stroke()
-      }
-    }
   }
 
   animationId = requestAnimationFrame(draw)

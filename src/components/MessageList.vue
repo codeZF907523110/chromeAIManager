@@ -9,6 +9,12 @@
 <template>
   <div class="messages-wrap">
     <div ref="containerRef" class="messages">
+      <!-- 空对话引导页：无任何消息时的首次使用指引（案例点击只回填输入框） -->
+      <ChatEmptyGuide
+        v-if="messages.length === 0"
+        @use-example="(text) => emit('use-example', text)"
+        @open-settings="emit('open-settings')"
+      />
       <template v-for="item in renderItems" :key="renderKey(item)">
         <MessageBubble
           v-if="item.kind === 'bubble'"
@@ -54,6 +60,7 @@ import type { LiveStreamState } from '../shared/agent-stream'
 import MessageBubble from './MessageBubble.vue'
 import TaskBlock from './TaskBlock.vue'
 import LiveBubble from './LiveBubble.vue'
+import ChatEmptyGuide from './ChatEmptyGuide.vue'
 import { useTaskBlocks, type RenderItem } from '../composables/useTaskBlocks'
 
 const { t } = useI18n()
@@ -74,6 +81,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   delete: [index: number]
+  /** 空状态案例标签点击：透传案例文案给 App（回填输入框并聚焦） */
+  'use-example': [text: string]
+  /** 空状态「去选择模型」点击：透传给 App（打开设置抽屉） */
+  'open-settings': []
 }>()
 
 const containerRef = ref<HTMLDivElement>()

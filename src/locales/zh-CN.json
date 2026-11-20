@@ -1,6 +1,6 @@
 {
   "app": {
-    "brand": "AI 浏览器管家",
+    "brand": "星猫",
     "toLight": "切换到浅色模式",
     "toDark": "切换到深色模式",
     "back": "返回",
@@ -674,6 +674,20 @@
     "chromeApiArgsInvalid": "参数 \"{arg}\" 类型无效：需为数字（时间参数是毫秒时间戳，不是日期字符串）",
     "execFailed": "命令 {intent} 执行失败：{msg}",
     "historyAllCleared": "已清空全部浏览历史",
-    "chromeApiFailed": "API {api} 调用失败：{msg}"
+    "chromeApiFailed": "API {api} 调用失败：{msg}",
+    "reloadPageHint": "刷新页面后重试",
+    "switchTabHint": "切换到普通网页后重试"
+  },
+  "empty": {
+    "title": "你好，我是星猫",
+    "desc": "用一句话帮你管理浏览器：查浏览记录、整理标签页、清理 Cookie、整页截图，从下面的例子开始试试",
+    "setupModel": "去选择模型",
+    "tryLabel": "试试这些",
+    "example1": "看看我今天的浏览记录",
+    "example2": "把所有标签页按域名分组",
+    "example3": "帮我关掉重复的标签页",
+    "example4": "给当前页面截一张完整长图",
+    "example5": "清理这个网站的 Cookie",
+    "example6": "最近关掉了哪些标签页？"
   }
 }

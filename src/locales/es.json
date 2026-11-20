@@ -1,6 +1,6 @@
 {
   "app": {
-    "brand": "AI Browser Commander",
+    "brand": "StarCat",
     "toLight": "Cambiar a modo claro",
     "toDark": "Cambiar a modo oscuro",
     "back": "Atrás",
@@ -674,6 +674,20 @@
     "chromeApiArgsInvalid": "Tipo no válido para \"{arg}\": se esperaba un número (los parámetros de tiempo son marcas de tiempo en milisegundos, no cadenas de fecha)",
     "execFailed": "El comando {intent} falló: {msg}",
     "historyAllCleared": "Se borró todo el historial de navegación",
-    "chromeApiFailed": "La llamada a la API {api} falló: {msg}"
+    "chromeApiFailed": "La llamada a la API {api} falló: {msg}",
+    "reloadPageHint": "Recarga la página y reintenta",
+    "switchTabHint": "Cambia a una página web normal y reintenta"
+  },
+  "empty": {
+    "title": "Hola, soy StarCat",
+    "desc": "Gestiona tu navegador con una frase: buscar historial, organizar pestañas, borrar cookies, capturar páginas completas — empieza con un ejemplo",
+    "setupModel": "Elegir modelo",
+    "tryLabel": "Prueba esto",
+    "example1": "Muestra mi historial de navegación de hoy",
+    "example2": "Agrupa todas las pestañas por dominio",
+    "example3": "Cierra las pestañas duplicadas",
+    "example4": "Haz una captura de toda la página",
+    "example5": "Borra las cookies de este sitio",
+    "example6": "¿Qué pestañas cerré recientemente?"
   }
 }

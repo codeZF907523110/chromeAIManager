@@ -1,5 +1,5 @@
 /**
- * Service Worker — AI 浏览器管家后台入口
+ * Service Worker — 星猫后台入口
  * 管理消息路由、上下文收集、命令执行、录制协调
  */
 

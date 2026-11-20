@@ -1,5 +1,5 @@
 /**
- * AI 浏览器管家 — 主逻辑 Composable
+ * 星猫 — 主逻辑 Composable
  * 封装所有 AI 引擎、Agent 循环、命令处理的业务逻辑
  */
 
@@ -300,7 +300,7 @@ export function useAIEngine() {
     context.pageStructure = (pageData ?? undefined) as unknown as typeof context.pageStructure
     context.recentLessons = lessons.value.slice(-3)
 
-    // 模型名注入身份段落：主人明确问"你是什么模型"时 AI 才如实说出（默认身份是塔比，不提模型）
+    // 模型名注入身份段落：主人明确问"你是什么模型"时 AI 才如实说出（默认身份是星猫，不提模型）
     const systemPrompt = buildAgentSystemPrompt(context, settingsComposable.getActiveModel()?.name)
     let messages: ChatMessage[]
 

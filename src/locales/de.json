@@ -1,6 +1,6 @@
 {
   "app": {
-    "brand": "AI Browser Commander",
+    "brand": "StarCat",
     "toLight": "Zum hellen Design wechseln",
     "toDark": "Zum dunklen Design wechseln",
     "back": "Zurück",
@@ -674,6 +674,20 @@
     "chromeApiArgsInvalid": "Ungültiger Typ für \"{arg}\": Zahl erwartet (Zeitparameter sind Millisekunden-Zeitstempel, keine Datumsstrings)",
     "execFailed": "Befehl {intent} fehlgeschlagen: {msg}",
     "historyAllCleared": "Gesamter Browserverlauf gelöscht",
-    "chromeApiFailed": "API-Aufruf {api} fehlgeschlagen: {msg}"
+    "chromeApiFailed": "API-Aufruf {api} fehlgeschlagen: {msg}",
+    "reloadPageHint": "Lade die Seite neu und versuche es erneut",
+    "switchTabHint": "Wechsle zu einer normalen Webseite und versuche es erneut"
+  },
+  "empty": {
+    "title": "Hallo, ich bin StarCat",
+    "desc": "Verwalte deinen Browser mit einem Satz: Verlauf durchsuchen, Tabs organisieren, Cookies löschen, ganze Seiten aufnehmen — starte mit einem Beispiel",
+    "setupModel": "Modell auswählen",
+    "tryLabel": "Probiere das",
+    "example1": "Zeig meinen heutigen Browserverlauf",
+    "example2": "Gruppiere alle Tabs nach Domain",
+    "example3": "Schließe doppelte Tabs für mich",
+    "example4": "Mach einen Screenshot von der ganzen Seite",
+    "example5": "Lösche die Cookies dieser Website",
+    "example6": "Welche Tabs habe ich kürzlich geschlossen?"
   }
 }
